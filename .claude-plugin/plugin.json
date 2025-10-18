@@ -1,13 +1,13 @@
 {
-  "name": "using-chrome-directly",
+  "name": "superpowers-chrome",
   "version": "1.1.0",
   "description": "BETA: VERY LIGHTLY TESTED - Direct Chrome DevTools Protocol access. Skill mode (17 CLI commands) + MCP mode (single use_browser tool). Zero dependencies, auto-starts Chrome.",
   "author": {
     "name": "Jesse Vincent",
     "email": "jesse@fsck.com"
   },
-  "homepage": "https://github.com/obra/superpower-using-chrome-directly",
-  "repository": "https://github.com/obra/superpower-using-chrome-directly",
+  "homepage": "https://github.com/obra/superpowers-chrome",
+  "repository": "https://github.com/obra/superpowers-chrome",
   "license": "MIT",
   "keywords": ["chrome", "browser", "automation", "devtools", "cdp", "websocket"],
   "mcpServers": {

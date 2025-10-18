@@ -1,8 +1,8 @@
-# Using Chrome Directly - Claude Code Plugin
+# Superpowers Chrome - Claude Code Plugin
 
 Direct browser control via Chrome DevTools Protocol. Two modes available:
 
-1. **Skill Mode** - CLI tool for Claude Code agents
+1. **Skill Mode** - CLI tool for Claude Code agents (`browsing` skill)
 2. **MCP Mode** - Ultra-lightweight MCP server for any MCP client
 
 ## Features
@@ -17,13 +17,13 @@ Direct browser control via Chrome DevTools Protocol. Two modes available:
 
 ```bash
 /plugin marketplace add obra/superpowers-marketplace
-/plugin install using-chrome-directly@superpowers-marketplace
+/plugin install superpowers-chrome@superpowers-marketplace
 ```
 
 ## Quick Start
 
 ```bash
-cd ~/.claude/plugins/cache/using-chrome-directly/skills/using-chrome-directly
+cd ~/.claude/plugins/cache/superpowers-chrome/skills/browsing
 ./chrome-ws start                        # Launch Chrome
 ./chrome-ws new "https://example.com"   # Create tab
 ./chrome-ws navigate 0 "https://google.com"
@@ -55,7 +55,7 @@ Add to Claude Desktop config:
     "chrome": {
       "command": "node",
       "args": [
-        "/path/to/using-chrome-directly/mcp/dist/index.js"
+        "/path/to/superpowers-chrome/mcp/dist/index.js"
       ]
     }
   }
@@ -90,9 +90,9 @@ See [mcp/README.md](mcp/README.md) for complete documentation.
 
 ## Documentation
 
-- [SKILL.md](skills/using-chrome-directly/SKILL.md) - Complete skill guide
-- [EXAMPLES.md](skills/using-chrome-directly/EXAMPLES.md) - Real-world examples
-- [chrome-ws README](skills/using-chrome-directly/README.md) - Tool documentation
+- [SKILL.md](skills/browsing/SKILL.md) - Complete skill guide
+- [EXAMPLES.md](skills/browsing/EXAMPLES.md) - Real-world examples
+- [chrome-ws README](skills/browsing/README.md) - Tool documentation
 
 ## License
 
