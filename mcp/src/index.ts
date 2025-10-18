@@ -242,9 +242,11 @@ server.tool(
   "use_browser",
   `Control persistent Chrome browser via DevTools Protocol. Use the superpowers-chrome:browsing skill for detailed guidance.
 
-CRITICAL: Selectors support CSS or XPath (XPath must start with / or //). Append \\n in 'type' to submit forms. State persists across calls.
+CRITICAL: Selectors support CSS or XPath (XPath must start with / or //). Append \\n to payload in 'type' action to submit forms. State persists across calls.
 
-Workflows: navigate→await_element→extract | navigate→type→type(\\n)→await_text`,
+Examples: {action:"click", selector:"//button[@type='submit']"} | {action:"extract", payload:"text", selector:"//h2"}
+
+Workflows: navigate→await_element→extract | navigate→type(payload:"text\\n")→await_text`,
   UseBrowserParams,
   {
     readOnlyHint: false,

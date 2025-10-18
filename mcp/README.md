@@ -5,10 +5,11 @@ Ultra-lightweight MCP server for Chrome DevTools Protocol via `chrome-ws`.
 ## Features
 
 - **Single Tool**: `use_browser` with 13 actions
+- **XPath & CSS**: Selectors support both CSS and XPath (auto-detected)
 - **Auto-start**: Chrome launches automatically on first use
 - **Zero Config**: No setup required, works out of the box
-- **Minimal Context**: Single unified interface reduces token usage
-- **Zero Dependencies**: Only MCP SDK and Zod
+- **Minimal Context**: Streamlined descriptions reduce token usage
+- **Direct Integration**: Library-based (not subprocess) for speed and error handling
 
 ## Installation
 
@@ -43,7 +44,7 @@ The `use_browser` tool accepts these parameters:
 
 - `action` (required): Action to perform (see Actions below)
 - `tab_index` (optional): Tab index to operate on (default: 0)
-- `selector` (optional): CSS selector for element operations
+- `selector` (optional): CSS or XPath selector (XPath must start with / or //)
 - `payload` (optional): Action-specific data
 - `timeout` (optional): Timeout in ms for await operations (default: 5000, max: 60000)
 
@@ -107,6 +108,15 @@ The `use_browser` tool accepts these parameters:
   "action": "attr",
   "selector": "a.download",
   "payload": "href"
+}
+```
+
+**Extract with XPath:**
+```json
+{
+  "action": "extract",
+  "selector": "//h2 | //h3",
+  "payload": "text"
 }
 ```
 
