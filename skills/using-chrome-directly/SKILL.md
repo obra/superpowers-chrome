@@ -1,6 +1,7 @@
 ---
 name: using-chrome-directly
 description: Use when you need direct browser control without MCP - teaches Chrome DevTools Protocol for controlling existing browser sessions, multi-tab management, form automation, and content extraction via lightweight chrome-ws tool
+allowed-tools: mcp__chrome__use_browser
 ---
 
 # Using Chrome Directly
