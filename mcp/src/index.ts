@@ -16,7 +16,7 @@ import { fileURLToPath } from "url";
 // Get the directory of the chrome-ws executable (relative to this MCP server)
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
-const CHROME_WS_PATH = join(__dirname, "../../skills/using-chrome-directly/chrome-ws");
+const CHROME_WS_PATH = join(__dirname, "../../skills/browsing/chrome-ws");
 
 // Track if Chrome has been started
 let chromeStarted = false;

@@ -13877,7 +13877,7 @@ import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 var __filename = fileURLToPath(import.meta.url);
 var __dirname = dirname(__filename);
-var CHROME_WS_PATH = join(__dirname, "../../skills/using-chrome-directly/chrome-ws");
+var CHROME_WS_PATH = join(__dirname, "../../skills/browsing/chrome-ws");
 var chromeStarted = false;
 var BrowserAction = /* @__PURE__ */ ((BrowserAction2) => {
   BrowserAction2["NAVIGATE"] = "navigate";
