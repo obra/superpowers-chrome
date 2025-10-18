@@ -193,6 +193,17 @@ async function resolveWsUrl(wsUrlOrIndex) {
 // Message ID counter (simple incrementing counter)
 let messageIdCounter = 1;
 
+// Helper to generate element selection code (supports CSS and XPath)
+function getElementSelector(selector) {
+  if (selector.startsWith('/') || selector.startsWith('//')) {
+    // XPath selector
+    return `document.evaluate(${JSON.stringify(selector)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue`;
+  } else {
+    // CSS selector
+    return `document.querySelector(${JSON.stringify(selector)})`;
+  }
+}
+
 // Send CDP command and wait for response
 async function sendCdpCommand(wsUrl, method, params = {}) {
   const ws = new WebSocketClient(wsUrl);
@@ -285,7 +296,7 @@ async function navigate(tabIndexOrWsUrl, url) {
 
 async function click(tabIndexOrWsUrl, selector) {
   const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
-  const js = `document.querySelector(${JSON.stringify(selector)})?.click()`;
+  const js = `${getElementSelector(selector)}?.click()`;
   await sendCdpCommand(wsUrl, 'Runtime.evaluate', { expression: js });
 }
 
@@ -294,7 +305,7 @@ async function fill(tabIndexOrWsUrl, selector, value) {
   const escapedValue = value.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\n/g, '\\n');
   const js = `
     (() => {
-      const el = document.querySelector(${JSON.stringify(selector)});
+      const el = ${getElementSelector(selector)};
       if (el) {
         el.value = '${escapedValue}';
         el.dispatchEvent(new Event('input', { bubbles: true }));
@@ -310,7 +321,7 @@ async function selectOption(tabIndexOrWsUrl, selector, value) {
   const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
   const js = `
     (() => {
-      const el = document.querySelector(${JSON.stringify(selector)});
+      const el = ${getElementSelector(selector)};
       if (el && el.tagName === 'SELECT') {
         el.value = ${JSON.stringify(value)};
         el.dispatchEvent(new Event('change', { bubbles: true }));
@@ -337,7 +348,7 @@ async function evaluate(tabIndexOrWsUrl, expression) {
 
 async function extractText(tabIndexOrWsUrl, selector) {
   const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
-  const js = `document.querySelector(${JSON.stringify(selector)})?.textContent`;
+  const js = `${getElementSelector(selector)}?.textContent`;
   const result = await sendCdpCommand(wsUrl, 'Runtime.evaluate', {
     expression: js,
     returnByValue: true
@@ -348,7 +359,7 @@ async function extractText(tabIndexOrWsUrl, selector) {
 async function getHtml(tabIndexOrWsUrl, selector = null) {
   const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
   const js = selector
-    ? `document.querySelector(${JSON.stringify(selector)})?.innerHTML`
+    ? `${getElementSelector(selector)}?.innerHTML`
     : 'document.documentElement.outerHTML';
   const result = await sendCdpCommand(wsUrl, 'Runtime.evaluate', {
     expression: js,
@@ -359,7 +370,7 @@ async function getHtml(tabIndexOrWsUrl, selector = null) {
 
 async function getAttribute(tabIndexOrWsUrl, selector, attrName) {
   const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
-  const js = `document.querySelector(${JSON.stringify(selector)})?.getAttribute(${JSON.stringify(attrName)})`;
+  const js = `${getElementSelector(selector)}?.getAttribute(${JSON.stringify(attrName)})`;
   const result = await sendCdpCommand(wsUrl, 'Runtime.evaluate', {
     expression: js,
     returnByValue: true
@@ -373,7 +384,7 @@ async function waitForElement(tabIndexOrWsUrl, selector, timeout = 5000) {
     new Promise((resolve, reject) => {
       const timeout = setTimeout(() => reject(new Error('Timeout')), ${timeout});
       const check = () => {
-        if (document.querySelector(${JSON.stringify(selector)})) {
+        if (${getElementSelector(selector)}) {
           clearTimeout(timeout);
           resolve(true);
         } else {
@@ -419,7 +430,7 @@ async function screenshot(tabIndexOrWsUrl, filename, selector = null) {
     // Get element bounds
     const js = `
       (() => {
-        const el = document.querySelector(${JSON.stringify(selector)});
+        const el = ${getElementSelector(selector)};
         if (!el) return null;
         const rect = el.getBoundingClientRect();
         return {

@@ -13897,11 +13897,11 @@ var BrowserAction = /* @__PURE__ */ ((BrowserAction2) => {
   return BrowserAction2;
 })(BrowserAction || {});
 var UseBrowserParams = {
-  action: external_exports.nativeEnum(BrowserAction).describe("Browser action to perform. Navigate goes to URL, click/type interact with elements (CSS selectors only, NOT XPath), extract gets page content, eval runs JavaScript, await_element/await_text wait for content."),
-  tab_index: external_exports.number().int().min(0).default(0).describe("Tab index to operate on (default: 0). WARNING: Indices shift when tabs close - tab 2 becomes tab 1 after closing tab 1."),
-  selector: external_exports.string().optional().describe(`CSS selector for element operations. Required for: click, type, select, attr, await_element. Use 'input[name="email"]' NOT '//input[@name="email"]'.`),
-  payload: external_exports.string().optional().describe("Action-specific data: URL string for navigate, text for type (append \\n to submit form), 'markdown'|'text'|'html' for extract, filepath for screenshot, JavaScript code for eval, option value for select, attribute name for attr, text to find for await_text."),
-  timeout: external_exports.number().int().min(0).max(6e4).default(5e3).describe("Timeout in milliseconds for await_element and await_text actions only (default: 5000, max: 60000). Other actions have no timeout.")
+  action: external_exports.nativeEnum(BrowserAction).describe("Action to perform"),
+  tab_index: external_exports.number().int().min(0).default(0).describe("Which tab. Indices shift when tabs close."),
+  selector: external_exports.string().optional().describe("CSS or XPath selector. XPath must start with / or //."),
+  payload: external_exports.string().optional().describe("Action-specific data"),
+  timeout: external_exports.number().int().min(0).max(6e4).default(5e3).describe("Timeout in ms. Only for await actions.")
 };
 async function ensureChromeRunning() {
   if (chromeStarted) {
@@ -14047,24 +14047,11 @@ var server = new McpServer({
 });
 server.tool(
   "use_browser",
-  `Control persistent Chrome browser. State persists between calls - tabs, navigation, page content all remain.
+  `Control persistent Chrome browser via DevTools Protocol. Use the superpowers-chrome:browsing skill for detailed guidance.
 
-CRITICAL: CSS selectors only (NOT XPath). Append \\n to text in 'type' to submit forms. Chrome auto-starts on first call. Tab indices shift when tabs close.
+CRITICAL: Selectors support CSS or XPath (XPath must start with / or //). Append \\n in 'type' to submit forms. State persists across calls.
 
-ACTIONS:
-navigate: Go to URL, waits for load. {action:"navigate", payload:"https://example.com"}
-click: Click element. {action:"click", selector:"button.submit"}
-type: Type into input. {action:"type", selector:"#email", payload:"user@example.com\\n"}
-extract: Get page content. {action:"extract", payload:"markdown|text|html"}
-screenshot: Capture page/element. {action:"screenshot", payload:"/tmp/page.png"}
-eval: Run JavaScript. {action:"eval", payload:"document.title"}
-select: Choose dropdown. {action:"select", selector:"select", payload:"US"}
-attr: Get attribute. {action:"attr", selector:"a", payload:"href"}
-await_element: Wait for element. {action:"await_element", selector:".loaded", timeout:10000}
-await_text: Wait for text. {action:"await_text", payload:"Success!", timeout:10000}
-list_tabs/new_tab/close_tab: Manage tabs
-
-WORKFLOWS: Scrape: navigate\u2192await_element\u2192extract | Form: navigate\u2192type\u2192type(\\n)\u2192await_text\u2192extract`,
+Workflows: navigate\u2192await_element\u2192extract | navigate\u2192type\u2192type(\\n)\u2192await_text`,
   UseBrowserParams,
   {
     readOnlyHint: false,
