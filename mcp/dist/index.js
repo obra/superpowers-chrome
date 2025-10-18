@@ -13872,12 +13872,13 @@ var StdioServerTransport = class {
 };
 
 // src/index.ts
-import { spawn } from "child_process";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
+import { createRequire } from "module";
 var __filename = fileURLToPath(import.meta.url);
 var __dirname = dirname(__filename);
-var CHROME_WS_PATH = join(__dirname, "../../skills/browsing/chrome-ws");
+var require2 = createRequire(import.meta.url);
+var chromeLib = require2(join(__dirname, "../../skills/browsing/chrome-ws-lib.js"));
 var chromeStarted = false;
 var BrowserAction = /* @__PURE__ */ ((BrowserAction2) => {
   BrowserAction2["NAVIGATE"] = "navigate";
@@ -13902,64 +13903,37 @@ var UseBrowserParams = {
   payload: external_exports.union([external_exports.string(), external_exports.array(external_exports.string())]).nullable().default(null).describe("Action-specific data: URL string for navigate, text for type (append \\n to submit form), 'markdown'|'text'|'html' for extract, filepath for screenshot, JavaScript code for eval, option value(s) for select (string or array), attribute name for attr, text to find for await_text."),
   timeout: external_exports.number().int().min(0).max(6e4).default(5e3).describe("Timeout in milliseconds for await_element and await_text actions only (default: 5000, max: 60000). Other actions have no timeout.")
 };
-async function executeChromeWs(args) {
-  return new Promise((resolve, reject) => {
-    const proc = spawn(CHROME_WS_PATH, args, {
-      stdio: ["ignore", "pipe", "pipe"]
-    });
-    let stdout = "";
-    let stderr = "";
-    proc.stdout.on("data", (data) => {
-      stdout += data.toString();
-    });
-    proc.stderr.on("data", (data) => {
-      stderr += data.toString();
-    });
-    proc.on("close", (code) => {
-      if (code !== 0) {
-        reject(new Error(stderr || `chrome-ws exited with code ${code}`));
-      } else {
-        resolve(stdout);
-      }
-    });
-    proc.on("error", (err) => {
-      reject(err);
-    });
-  });
-}
 async function ensureChromeRunning() {
   if (chromeStarted) {
     return;
   }
   try {
-    await executeChromeWs(["tabs"]);
+    await chromeLib.getTabs();
     chromeStarted = true;
   } catch (error) {
     try {
-      await executeChromeWs(["start"]);
-      await new Promise((resolve) => setTimeout(resolve, 1e3));
+      await chromeLib.startChrome();
       chromeStarted = true;
     } catch (startError) {
       throw new Error(`Failed to auto-start Chrome: ${startError instanceof Error ? startError.message : String(startError)}`);
     }
   }
 }
-function buildChromeWsArgs(params) {
-  const args = [];
-  const tabIndex = String(params.tab_index);
+async function executeBrowserAction(params) {
+  const tabIndex = params.tab_index;
   switch (params.action) {
     case "navigate" /* NAVIGATE */:
       if (!params.payload || typeof params.payload !== "string") {
         throw new Error("navigate requires payload with URL");
       }
-      args.push("navigate", tabIndex, params.payload);
-      break;
+      await chromeLib.navigate(tabIndex, params.payload);
+      return `Navigated to ${params.payload}`;
     case "click" /* CLICK */:
       if (!params.selector) {
         throw new Error("click requires selector");
       }
-      args.push("click", tabIndex, params.selector);
-      break;
+      await chromeLib.click(tabIndex, params.selector);
+      return `Clicked: ${params.selector}`;
     case "type" /* TYPE */:
       if (!params.selector) {
         throw new Error("type requires selector");
@@ -13967,45 +13941,66 @@ function buildChromeWsArgs(params) {
       if (!params.payload || typeof params.payload !== "string") {
         throw new Error("type requires payload with text");
       }
-      args.push("type", tabIndex, params.selector, params.payload);
-      break;
+      await chromeLib.fill(tabIndex, params.selector, params.payload);
+      return `Typed into: ${params.selector}`;
     case "extract" /* EXTRACT */:
-      const format = params.payload || "markdown";
+      const format = params.payload || "text";
       if (typeof format !== "string") {
         throw new Error("extract payload must be a string format");
       }
       if (params.selector) {
-        args.push("extract", tabIndex, format, params.selector);
+        if (format === "text") {
+          return await chromeLib.extractText(tabIndex, params.selector);
+        } else if (format === "html") {
+          return await chromeLib.getHtml(tabIndex, params.selector);
+        } else {
+          throw new Error("selector-based extraction only supports 'text' or 'html' format");
+        }
       } else {
-        args.push("extract", tabIndex, format);
+        if (format === "text") {
+          return await chromeLib.evaluate(tabIndex, "document.body.innerText");
+        } else if (format === "html") {
+          return await chromeLib.getHtml(tabIndex);
+        } else if (format === "markdown") {
+          return await chromeLib.evaluate(tabIndex, `
+            Array.from(document.querySelectorAll('h1, h2, h3, h4, h5, h6, p, a, li, pre, code'))
+              .map(el => {
+                const tag = el.tagName.toLowerCase();
+                const text = el.textContent.trim();
+                if (tag.startsWith('h')) return '#'.repeat(parseInt(tag[1])) + ' ' + text;
+                if (tag === 'a') return '[' + text + '](' + el.href + ')';
+                if (tag === 'li') return '- ' + text;
+                if (tag === 'pre' || tag === 'code') return '\\\`\\\`\\\`\\n' + text + '\\n\\\`\\\`\\\`';
+                return text;
+              })
+              .filter(x => x)
+              .join('\\n\\n')
+          `.replace(/\s+/g, " ").trim());
+        } else {
+          throw new Error("extract format must be 'text', 'html', or 'markdown'");
+        }
       }
-      break;
     case "screenshot" /* SCREENSHOT */:
       if (!params.payload || typeof params.payload !== "string") {
         throw new Error("screenshot requires payload with filename");
       }
-      if (params.selector) {
-        args.push("screenshot", tabIndex, params.payload, params.selector);
-      } else {
-        args.push("screenshot", tabIndex, params.payload);
-      }
-      break;
+      const filepath = await chromeLib.screenshot(tabIndex, params.payload, params.selector || void 0);
+      return `Screenshot saved to ${filepath}`;
     case "eval" /* EVAL */:
       if (!params.payload || typeof params.payload !== "string") {
         throw new Error("eval requires payload with JavaScript code");
       }
-      args.push("eval", tabIndex, params.payload);
-      break;
+      const result = await chromeLib.evaluate(tabIndex, params.payload);
+      return String(result);
     case "select" /* SELECT */:
       if (!params.selector) {
         throw new Error("select requires selector");
       }
-      if (!params.payload) {
-        throw new Error("select requires payload with option value(s)");
+      if (!params.payload || typeof params.payload !== "string") {
+        throw new Error("select requires payload with option value");
       }
-      const values = Array.isArray(params.payload) ? params.payload : [params.payload];
-      args.push("select", tabIndex, params.selector, ...values);
-      break;
+      await chromeLib.selectOption(tabIndex, params.selector, params.payload);
+      return `Selected: ${params.payload}`;
     case "attr" /* ATTR */:
       if (!params.selector) {
         throw new Error("attr requires selector");
@@ -14013,33 +14008,38 @@ function buildChromeWsArgs(params) {
       if (!params.payload || typeof params.payload !== "string") {
         throw new Error("attr requires payload with attribute name");
       }
-      args.push("attr", tabIndex, params.selector, params.payload);
-      break;
+      const attrValue = await chromeLib.getAttribute(tabIndex, params.selector, params.payload);
+      return String(attrValue);
     case "await_element" /* AWAIT_ELEMENT */:
       if (!params.selector) {
         throw new Error("await_element requires selector");
       }
-      args.push("wait-for", tabIndex, "element", params.selector, String(params.timeout));
-      break;
+      await chromeLib.waitForElement(tabIndex, params.selector, params.timeout);
+      return `Element found: ${params.selector}`;
     case "await_text" /* AWAIT_TEXT */:
       if (!params.payload || typeof params.payload !== "string") {
         throw new Error("await_text requires payload with text to wait for");
       }
-      args.push("wait-for", tabIndex, "text", params.payload, String(params.timeout));
-      break;
+      await chromeLib.waitForText(tabIndex, params.payload, params.timeout);
+      return `Text found: ${params.payload}`;
     case "new_tab" /* NEW_TAB */:
-      args.push("new");
-      break;
+      const newTab = await chromeLib.newTab();
+      return `New tab created: ${newTab.id}`;
     case "close_tab" /* CLOSE_TAB */:
-      args.push("close", tabIndex);
-      break;
+      await chromeLib.closeTab(tabIndex);
+      return `Closed tab ${tabIndex}`;
     case "list_tabs" /* LIST_TABS */:
-      args.push("tabs");
-      break;
+      const tabs = await chromeLib.getTabs();
+      return JSON.stringify(tabs.map((tab, idx) => ({
+        index: idx,
+        id: tab.id,
+        title: tab.title,
+        url: tab.url,
+        type: tab.type
+      })), null, 2);
     default:
       throw new Error(`Unknown action: ${params.action}`);
   }
-  return args;
 }
 var server = new McpServer({
   name: "chrome-mcp-server",
@@ -14076,12 +14076,11 @@ WORKFLOWS: Scrape: navigate\u2192await_element\u2192extract | Form: navigate\u21
     try {
       const params = external_exports.object(UseBrowserParams).parse(args);
       await ensureChromeRunning();
-      const chromeArgs = buildChromeWsArgs(params);
-      const result = await executeChromeWs(chromeArgs);
+      const result = await executeBrowserAction(params);
       return {
         content: [{
           type: "text",
-          text: result.trim()
+          text: result
         }]
       };
     } catch (error) {

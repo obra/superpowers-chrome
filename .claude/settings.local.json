@@ -1,7 +1,9 @@
 {
   "permissions": {
     "allow": [
-      "Bash(npm run build)"
+      "Bash(npm run build)",
+      "Bash(../skills/browsing/chrome-ws tabs)",
+      "Bash(../skills/browsing/chrome-ws extract 0 text)"
     ],
     "deny": [],
     "ask": []
