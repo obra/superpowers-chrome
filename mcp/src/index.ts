@@ -38,32 +38,32 @@ enum BrowserAction {
   LIST_TABS = "list_tabs"
 }
 
-// Zod schema for use_browser input
-const UseBrowserSchema = z.object({
+// Zod schema for use_browser tool parameters
+const UseBrowserParams = {
   action: z.nativeEnum(BrowserAction)
-    .describe("Browser action to perform"),
+    .describe("Browser action to perform. Navigate goes to URL, click/type interact with elements (CSS selectors only, NOT XPath), extract gets page content, eval runs JavaScript, await_element/await_text wait for content."),
   tab_index: z.number()
     .int()
     .min(0)
     .default(0)
-    .describe("Tab index to operate on (default: 0)"),
+    .describe("Tab index to operate on (default: 0). WARNING: Indices shift when tabs close - tab 2 becomes tab 1 after closing tab 1."),
   selector: z.string()
     .nullable()
     .default(null)
-    .describe("CSS selector for element operations (required for click, type, select, attr, await_element)"),
+    .describe("CSS selector for element operations. Required for: click, type, select, attr, await_element. Use 'input[name=\"email\"]' NOT '//input[@name=\"email\"]'."),
   payload: z.union([z.string(), z.array(z.string())])
     .nullable()
     .default(null)
-    .describe("Action payload: URL for navigate, text for type (append \\n to submit), format for extract, filename for screenshot, code for eval, value(s) for select, attribute name for attr, text for await_text"),
+    .describe("Action-specific data: URL string for navigate, text for type (append \\n to submit form), 'markdown'|'text'|'html' for extract, filepath for screenshot, JavaScript code for eval, option value(s) for select (string or array), attribute name for attr, text to find for await_text."),
   timeout: z.number()
     .int()
     .min(0)
     .max(60000)
     .default(5000)
-    .describe("Timeout in milliseconds for await operations (default: 5000)")
-});
+    .describe("Timeout in milliseconds for await_element and await_text actions only (default: 5000, max: 60000). Other actions have no timeout.")
+};
 
-type UseBrowserInput = z.infer<typeof UseBrowserSchema>;
+type UseBrowserInput = z.infer<ReturnType<typeof z.object<typeof UseBrowserParams>>>;
 
 /**
  * Execute chrome-ws command and return output
@@ -246,58 +246,38 @@ const server = new McpServer({
   version: "1.0.0"
 });
 
-// Register the single use_browser tool
-server.registerTool(
+// Register the use_browser tool
+server.tool(
   "use_browser",
-  {
-    title: "Use Browser",
-    description: `Control persistent Chrome browser. State persists between calls - tabs, navigation, page content all remain.
+  `Control persistent Chrome browser. State persists between calls.
 
-CRITICAL:
-- Selectors are CSS only (NOT XPath). Use "input[name='x']" not "//input[@name='x']"
-- Append \\n to text in 'type' to submit forms: {action:"type", selector:"#search", payload:"query\\n"}
-- Chrome auto-starts on first call and stays running
-- Tab indices shift when tabs close (tab 2 becomes tab 1 after closing tab 1)
+CRITICAL: CSS selectors only (NOT XPath). Append \\n to text in 'type' to submit forms. Chrome auto-starts on first call.
 
 ACTIONS:
-navigate: Go to URL. Auto-waits for page load. {action:"navigate", payload:"https://example.com"}
+navigate: Go to URL, waits for load. {action:"navigate", payload:"https://example.com"}
 click: Click element. {action:"click", selector:"button.submit"}
-type: Type into input. Append \\n to submit. {action:"type", selector:"#email", payload:"user@example.com\\n"}
-extract: Get page content. {action:"extract", payload:"markdown|text|html"}. Optional selector for element-only extraction
-screenshot: Capture page or element. {action:"screenshot", payload:"/tmp/page.png"}. Optional selector
-eval: Run JavaScript in page context. {action:"eval", payload:"document.title"}
-select: Choose dropdown option(s). {action:"select", selector:"select[name='country']", payload:"US"} or payload:["US","CA"]
-attr: Get element attribute. {action:"attr", selector:"a.download", payload:"href"}
-await_element: Wait for element in DOM. {action:"await_element", selector:".loaded", timeout:10000}
-await_text: Wait for text on page. {action:"await_text", payload:"Success!", timeout:10000}
-list_tabs: Show all tabs with indices. {action:"list_tabs"}
-new_tab: Open blank tab. {action:"new_tab"}
-close_tab: Close tab by index. {action:"close_tab", tab_index:1}
+type: Type into input. {action:"type", selector:"#email", payload:"user@example.com\\n"}
+extract: Get page content. {action:"extract", payload:"markdown|text|html"}
+screenshot: Capture page/element. {action:"screenshot", payload:"/tmp/page.png"}
+eval: Run JavaScript. {action:"eval", payload:"document.title"}
+select: Choose dropdown. {action:"select", selector:"select", payload:"US"}
+attr: Get attribute. {action:"attr", selector:"a", payload:"href"}
+await_element: Wait for element. {action:"await_element", selector:".loaded", timeout:10000}
+await_text: Wait for text. {action:"await_text", payload:"Success!", timeout:10000}
+list_tabs/new_tab/close_tab: Manage tabs
 
-PARAMETERS:
-- action (required): Action name from list above
-- tab_index (optional): Which tab (default: 0)
-- selector (varies): CSS selector for element operations
-- payload (varies): URL, text, format, filename, code, or option value(s)
-- timeout (optional): ms for await actions (default: 5000, max: 60000)
-
-TYPICAL WORKFLOWS:
-Scrape: navigate → await_element → extract
-Form: navigate → type → type (with \\n) → await_text → extract
-Data: navigate → await_element → eval or attr
-Debug: screenshot or extract with payload:"html"`,
-    inputSchema: UseBrowserSchema.shape,
-    annotations: {
-      readOnlyHint: false,
-      destructiveHint: false,
-      idempotentHint: false,
-      openWorldHint: true
-    }
+WORKFLOWS: Scrape: navigate→await_element→extract | Form: navigate→type→type(\\n)→await_text→extract`,
+  UseBrowserParams,
+  {
+    readOnlyHint: false,
+    destructiveHint: false,
+    idempotentHint: false,
+    openWorldHint: true
   },
-  async (args: any) => {
+  async (args) => {
     try {
       // Parse and validate input with Zod
-      const params = UseBrowserSchema.parse(args) as UseBrowserInput;
+      const params = z.object(UseBrowserParams).parse(args) as UseBrowserInput;
 
       // Ensure Chrome is running
       await ensureChromeRunning();
