@@ -1,6 +1,9 @@
 # Using Chrome Directly - Claude Code Plugin
 
-Direct browser control without MCP overhead. Control Chrome via DevTools Protocol using the lightweight `chrome-ws` CLI tool.
+Direct browser control via Chrome DevTools Protocol. Two modes available:
+
+1. **Skill Mode** - CLI tool for Claude Code agents
+2. **MCP Mode** - Ultra-lightweight MCP server for any MCP client
 
 ## Features
 
@@ -38,16 +41,51 @@ cd ~/.claude/plugins/cache/using-chrome-directly/skills/using-chrome-directly
 - **Export**: `screenshot`, `markdown`
 - **Raw protocol**: `raw` (full CDP access)
 
+## MCP Server Mode
+
+Ultra-lightweight MCP server with a single `use_browser` tool. Perfect for minimal context usage.
+
+### Installation
+
+Add to Claude Desktop config:
+
+```json
+{
+  "mcpServers": {
+    "chrome": {
+      "command": "node",
+      "args": [
+        "/path/to/using-chrome-directly/mcp/dist/index.js"
+      ]
+    }
+  }
+}
+```
+
+### Usage
+
+```json
+{
+  "action": "navigate",
+  "payload": "https://example.com"
+}
+```
+
+See [mcp/README.md](mcp/README.md) for complete documentation.
+
 ## When to Use
 
-**Use this skill when:**
-- Controlling existing authenticated browser sessions
-- Managing multiple tabs in running browser
-- Playwright MCP unavailable or excessive
+**Use Skill Mode when:**
+- Working with Claude Code agents
+- Need full CLI control with 17 commands
+
+**Use MCP Mode when:**
+- Using Claude Desktop or other MCP clients
+- Want minimal context usage (single tool)
 
 **Use Playwright MCP when:**
 - Need fresh browser instances
-- Complex automation requiring screenshots/PDFs
+- Complex automation with screenshots/PDFs
 - Prefer higher-level abstractions
 
 ## Documentation

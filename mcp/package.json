@@ -1,0 +1,36 @@
+{
+  "name": "chrome-mcp-server",
+  "version": "1.0.0",
+  "description": "Ultra-lightweight MCP server for Chrome DevTools Protocol via chrome-ws",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "chrome-mcp-server": "dist/index.js"
+  },
+  "scripts": {
+    "start": "node dist/index.js",
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc",
+    "clean": "rm -rf dist"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.6.1",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  },
+  "keywords": [
+    "mcp",
+    "chrome",
+    "browser",
+    "automation",
+    "devtools"
+  ],
+  "license": "MIT"
+}
