@@ -251,64 +251,42 @@ server.registerTool(
   "use_browser",
   {
     title: "Use Browser",
-    description: `Control Chrome browser via DevTools Protocol with a single unified interface.
+    description: `Control persistent Chrome browser. State persists between calls - tabs, navigation, page content all remain.
 
-This tool provides browser automation through multiple actions. Chrome auto-starts on first use.
-All operations default to tab 0. Append \\n to text in 'type' action to submit forms.
+CRITICAL:
+- Selectors are CSS only (NOT XPath). Use "input[name='x']" not "//input[@name='x']"
+- Append \\n to text in 'type' to submit forms: {action:"type", selector:"#search", payload:"query\\n"}
+- Chrome auto-starts on first call and stays running
+- Tab indices shift when tabs close (tab 2 becomes tab 1 after closing tab 1)
 
-Actions:
-  - navigate: Navigate to URL (payload=url)
-  - click: Click element (selector required)
-  - type: Type text into input (selector + payload=text, append \\n to submit)
-  - extract: Extract page content (payload=format: 'markdown'|'text'|'html', optional selector)
-  - screenshot: Take screenshot (payload=filename, optional selector for element screenshot)
-  - eval: Execute JavaScript (payload=code)
-  - select: Select dropdown option (selector + payload=value or array of values)
-  - attr: Get element attribute (selector + payload=attribute name)
-  - await_element: Wait for element to appear (selector required, uses timeout)
-  - await_text: Wait for text to appear (payload=text, uses timeout)
-  - new_tab: Create new tab
-  - close_tab: Close tab at tab_index
-  - list_tabs: List all open tabs
+ACTIONS:
+navigate: Go to URL. Auto-waits for page load. {action:"navigate", payload:"https://example.com"}
+click: Click element. {action:"click", selector:"button.submit"}
+type: Type into input. Append \\n to submit. {action:"type", selector:"#email", payload:"user@example.com\\n"}
+extract: Get page content. {action:"extract", payload:"markdown|text|html"}. Optional selector for element-only extraction
+screenshot: Capture page or element. {action:"screenshot", payload:"/tmp/page.png"}. Optional selector
+eval: Run JavaScript in page context. {action:"eval", payload:"document.title"}
+select: Choose dropdown option(s). {action:"select", selector:"select[name='country']", payload:"US"} or payload:["US","CA"]
+attr: Get element attribute. {action:"attr", selector:"a.download", payload:"href"}
+await_element: Wait for element in DOM. {action:"await_element", selector:".loaded", timeout:10000}
+await_text: Wait for text on page. {action:"await_text", payload:"Success!", timeout:10000}
+list_tabs: Show all tabs with indices. {action:"list_tabs"}
+new_tab: Open blank tab. {action:"new_tab"}
+close_tab: Close tab by index. {action:"close_tab", tab_index:1}
 
-Args:
-  - action (string): Action to perform (see enum above)
-  - tab_index (number): Tab index to operate on (default: 0)
-  - selector (string|null): CSS selector for element operations (default: null)
-  - payload (string|array|null): Action-specific data (default: null)
-  - timeout (number): Timeout in ms for await operations (default: 5000, max: 60000)
+PARAMETERS:
+- action (required): Action name from list above
+- tab_index (optional): Which tab (default: 0)
+- selector (varies): CSS selector for element operations
+- payload (varies): URL, text, format, filename, code, or option value(s)
+- timeout (optional): ms for await actions (default: 5000, max: 60000)
 
-Returns:
-  Text output from chrome-ws command, which varies by action:
-  - navigate: Success message with final URL
-  - click: Confirmation message
-  - type: Confirmation message
-  - extract: Page content in requested format
-  - screenshot: Path to saved screenshot file
-  - eval: JavaScript evaluation result (stringified)
-  - select: Confirmation message
-  - attr: Attribute value
-  - await_element: Success message when element appears
-  - await_text: Success message when text appears
-  - new_tab: New tab info
-  - close_tab: Confirmation message
-  - list_tabs: JSON array of tab objects with index, id, title, url, type
-
-Examples:
-  - Navigate: {action: "navigate", payload: "https://example.com"}
-  - Click button: {action: "click", selector: "button.submit"}
-  - Fill and submit form: {action: "type", selector: "#email", payload: "user@example.com\\n"}
-  - Extract as markdown: {action: "extract", payload: "markdown"}
-  - Screenshot: {action: "screenshot", payload: "/tmp/page.png"}
-  - Wait for element: {action: "await_element", selector: ".loaded", timeout: 10000}
-  - Get attribute: {action: "attr", selector: "a.link", payload: "href"}
-
-Error Handling:
-  - Auto-starts Chrome if not running (first call only)
-  - Returns clear error messages for invalid parameters
-  - Timeout errors for await operations that exceed timeout parameter
-  - Element not found errors for invalid selectors`,
-    inputSchema: UseBrowserSchema as any,
+TYPICAL WORKFLOWS:
+Scrape: navigate → await_element → extract
+Form: navigate → type → type (with \\n) → await_text → extract
+Data: navigate → await_element → eval or attr
+Debug: screenshot or extract with payload:"html"`,
+    inputSchema: UseBrowserSchema.shape,
     annotations: {
       readOnlyHint: false,
       destructiveHint: false,
