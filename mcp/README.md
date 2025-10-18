@@ -130,12 +130,16 @@ mcp/
 ├── src/
 │   └── index.ts       # MCP server with use_browser tool
 ├── dist/
-│   └── index.js       # Compiled server
+│   └── index.js       # Compiled server (bundled with chrome-ws-lib)
 ├── package.json
 └── tsconfig.json
 ```
 
-The server spawns the `chrome-ws` executable (located at `../skills/using-chrome-directly/chrome-ws`) to communicate with Chrome via DevTools Protocol.
+The server imports `chrome-ws-lib.js` (located at `../skills/browsing/chrome-ws-lib.js`) as a library and calls CDP functions directly, providing fast browser automation without subprocess overhead.
+
+## Credits
+
+The implementation is based on an idea and prototype by Dan Grigsby.
 
 ## License
 
