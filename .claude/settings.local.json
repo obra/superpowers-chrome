@@ -1,9 +1,7 @@
 {
   "permissions": {
     "allow": [
-      "Bash(npm run build)",
-      "Bash(../skills/browsing/chrome-ws tabs)",
-      "Bash(../skills/browsing/chrome-ws extract 0 text)"
+      "Bash(node -e \"\nconst lib = require(''../skills/browsing/chrome-ws-lib.js'');\n\n(async () => {\n  try {\n    const text = await lib.evaluate(1, ''document.body.innerText'');\n    console.log(''Text length:'', text.length);\n    console.log(''First 500 chars:'');\n    console.log(text.substring(0, 500));\n  } catch (e) {\n    console.error(''Error:'', e.message);\n  }\n})();\n\")"
     ],
     "deny": [],
     "ask": []

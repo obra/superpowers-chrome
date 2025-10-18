@@ -190,12 +190,15 @@ async function resolveWsUrl(wsUrlOrIndex) {
   throw new Error(`Invalid tab specifier: ${wsUrlOrIndex}`);
 }
 
+// Message ID counter (simple incrementing counter)
+let messageIdCounter = 1;
+
 // Send CDP command and wait for response
 async function sendCdpCommand(wsUrl, method, params = {}) {
   const ws = new WebSocketClient(wsUrl);
 
   return new Promise((resolve, reject) => {
-    const id = Date.now();
+    const id = messageIdCounter++;
     let resolved = false;
 
     ws.on('message', (msg) => {
