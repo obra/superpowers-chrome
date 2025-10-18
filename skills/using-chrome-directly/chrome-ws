@@ -1,0 +1,855 @@
+#!/usr/bin/env node
+
+const process = require('process');
+
+const [,, command, wsUrlOrIndex, ...args] = process.argv;
+
+// Minimal WebSocket client implementation (dependency-free)
+class WebSocketClient {
+  constructor(url) {
+    this.url = new URL(url);
+    this.callbacks = {};
+    this.socket = null;
+    this.buffer = Buffer.alloc(0);
+  }
+
+  on(event, callback) {
+    this.callbacks[event] = callback;
+  }
+
+  connect() {
+    return new Promise((resolve, reject) => {
+      const http = require('http');
+      const crypto = require('crypto');
+
+      const key = crypto.randomBytes(16).toString('base64');
+
+      const options = {
+        hostname: this.url.hostname,
+        port: this.url.port || 80,
+        path: this.url.pathname + this.url.search,
+        headers: {
+          'Upgrade': 'websocket',
+          'Connection': 'Upgrade',
+          'Sec-WebSocket-Key': key,
+          'Sec-WebSocket-Version': '13'
+        }
+      };
+
+      const req = http.request(options);
+
+      req.on('upgrade', (res, socket) => {
+        this.socket = socket;
+
+        socket.on('data', (data) => {
+          this.buffer = Buffer.concat([this.buffer, data]);
+          this.processFrames();
+        });
+
+        socket.on('error', (err) => {
+          if (this.callbacks.error) this.callbacks.error(err);
+        });
+
+        if (this.callbacks.open) this.callbacks.open();
+        resolve();
+      });
+
+      req.on('error', reject);
+      req.end();
+    });
+  }
+
+  processFrames() {
+    while (this.buffer.length >= 2) {
+      const firstByte = this.buffer[0];
+      const secondByte = this.buffer[1];
+
+      const fin = (firstByte & 0x80) !== 0;
+      const opcode = firstByte & 0x0F;
+      const masked = (secondByte & 0x80) !== 0;
+      let payloadLen = secondByte & 0x7F;
+
+      let offset = 2;
+
+      if (payloadLen === 126) {
+        if (this.buffer.length < 4) return;
+        payloadLen = this.buffer.readUInt16BE(2);
+        offset = 4;
+      } else if (payloadLen === 127) {
+        if (this.buffer.length < 10) return;
+        payloadLen = Number(this.buffer.readBigUInt64BE(2));
+        offset = 10;
+      }
+
+      if (this.buffer.length < offset + payloadLen) return;
+
+      let payload = this.buffer.slice(offset, offset + payloadLen);
+      this.buffer = this.buffer.slice(offset + payloadLen);
+
+      if (opcode === 0x1 && this.callbacks.message) {
+        this.callbacks.message(payload.toString('utf8'));
+      }
+    }
+  }
+
+  send(data) {
+    const payload = Buffer.from(data, 'utf8');
+    const payloadLen = payload.length;
+
+    let frame;
+    let offset = 2;
+
+    if (payloadLen < 126) {
+      frame = Buffer.alloc(payloadLen + 6);
+      frame[1] = payloadLen | 0x80;
+    } else if (payloadLen < 65536) {
+      frame = Buffer.alloc(payloadLen + 8);
+      frame[1] = 126 | 0x80;
+      frame.writeUInt16BE(payloadLen, 2);
+      offset = 4;
+    } else {
+      frame = Buffer.alloc(payloadLen + 14);
+      frame[1] = 127 | 0x80;
+      frame.writeBigUInt64BE(BigInt(payloadLen), 2);
+      offset = 10;
+    }
+
+    frame[0] = 0x81; // FIN + text frame
+
+    const mask = Buffer.alloc(4);
+    require('crypto').randomFillSync(mask);
+    mask.copy(frame, offset);
+    offset += 4;
+
+    for (let i = 0; i < payloadLen; i++) {
+      frame[offset + i] = payload[i] ^ mask[i % 4];
+    }
+
+    this.socket.write(frame);
+  }
+
+  close() {
+    if (this.socket) {
+      this.socket.end();
+      this.socket = null;
+    }
+  }
+}
+
+// Helper to resolve tab index or ws URL to actual ws URL
+async function resolveWsUrl(wsUrlOrIndex) {
+  // If it's already a WebSocket URL, return it
+  if (wsUrlOrIndex && wsUrlOrIndex.startsWith('ws://')) {
+    return wsUrlOrIndex;
+  }
+
+  // If it's a number (tab index), resolve it
+  const index = parseInt(wsUrlOrIndex);
+  if (!isNaN(index)) {
+    const tabs = await chromeHttp('/json');
+    const pageTabs = tabs.filter(t => t.type === 'page');
+    if (index < 0 || index >= pageTabs.length) {
+      throw new Error(`Tab index ${index} out of range (0-${pageTabs.length - 1})`);
+    }
+    return pageTabs[index].webSocketDebuggerUrl;
+  }
+
+  throw new Error(`Invalid tab specifier: ${wsUrlOrIndex}`);
+}
+
+// Helper to make HTTP requests to Chrome
+async function chromeHttp(path, method = 'GET') {
+  const http = require('http');
+  const url = new URL(`http://localhost:9222${path}`);
+
+  return new Promise((resolve, reject) => {
+    const options = {
+      hostname: url.hostname,
+      port: url.port,
+      path: url.pathname + url.search,
+      method: method
+    };
+
+    const req = http.request(options, (res) => {
+      let data = '';
+      res.on('data', chunk => data += chunk);
+      res.on('end', () => {
+        if (!data) {
+          resolve({});
+          return;
+        }
+        try {
+          resolve(JSON.parse(data));
+        } catch (e) {
+          // Some endpoints return plain text (e.g., "Target is closing")
+          resolve({ message: data });
+        }
+      });
+    });
+
+    req.on('error', reject);
+    req.end();
+  });
+}
+
+// Command: start - launch Chrome with remote debugging
+if (command === 'start') {
+  const { spawn } = require('child_process');
+  const { existsSync } = require('fs');
+  const os = require('os');
+
+  // Platform-specific Chrome paths
+  const chromePaths = {
+    darwin: [
+      '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+      '/Applications/Chromium.app/Contents/MacOS/Chromium'
+    ],
+    linux: [
+      '/usr/bin/google-chrome',
+      '/usr/bin/google-chrome-stable',
+      '/usr/bin/chromium',
+      '/usr/bin/chromium-browser'
+    ],
+    win32: [
+      'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+      'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe'
+    ]
+  };
+
+  const platform = os.platform();
+  const paths = chromePaths[platform];
+
+  if (!paths) {
+    console.error(`Unsupported platform: ${platform}`);
+    process.exit(1);
+  }
+
+  // Find Chrome executable
+  const chromePath = paths.find(p => existsSync(p));
+
+  if (!chromePath) {
+    console.error('Chrome not found. Searched:');
+    paths.forEach(p => console.error(`  ${p}`));
+    process.exit(1);
+  }
+
+  // Launch Chrome
+  const userDataDir = platform === 'win32'
+    ? 'C:\\temp\\chrome-debug'
+    : '/tmp/chrome-debug';
+
+  const chromeArgs = [
+    '--remote-debugging-port=9222',
+    `--user-data-dir=${userDataDir}`
+  ];
+
+  console.log(`Starting Chrome: ${chromePath}`);
+  const chrome = spawn(chromePath, chromeArgs, {
+    detached: true,
+    stdio: 'ignore'
+  });
+  chrome.unref();
+
+  // Wait and verify
+  setTimeout(async () => {
+    try {
+      const version = await chromeHttp('/json/version');
+      console.log(`Chrome started: ${version.Browser}`);
+      console.log(`Remote debugging: http://localhost:9222`);
+    } catch (e) {
+      console.error('Chrome started but remote debugging not accessible');
+      console.error('Try: curl http://localhost:9222/json/version');
+      process.exit(1);
+    }
+  }, 2000);
+
+  return;
+}
+
+// Command: tabs - list all tabs
+if (command === 'tabs') {
+  (async () => {
+    try {
+      const tabs = await chromeHttp('/json');
+      tabs.forEach(tab => {
+        if (tab.type === 'page') {
+          console.log(`${tab.id}\t${tab.url}\t${tab.title}`);
+        }
+      });
+    } catch (e) {
+      console.error('Failed to list tabs:', e.message);
+      process.exit(1);
+    }
+  })();
+  return;
+}
+
+// Command: new - create new tab
+if (command === 'new') {
+  // For this command, wsUrlOrIndex variable contains the URL parameter
+  if (!wsUrlOrIndex) {
+    console.error('Usage: chrome-ws new <url>');
+    process.exit(1);
+  }
+  const url = wsUrlOrIndex;
+  (async () => {
+    try {
+      const tab = await chromeHttp(`/json/new?${encodeURIComponent(url)}`, 'PUT');
+      console.log(tab.webSocketDebuggerUrl);
+    } catch (e) {
+      console.error('Failed to create tab:', e.message);
+      process.exit(1);
+    }
+  })();
+  return;
+}
+
+// Command: close - close tab by ws URL
+if (command === 'close') {
+  // For this command, wsUrlOrIndex variable contains the ws URL parameter
+  if (!wsUrlOrIndex) {
+    console.error('Usage: chrome-ws close <ws-url>');
+    process.exit(1);
+  }
+  const tabWsUrl = wsUrlOrIndex;
+  (async () => {
+    try {
+      // Extract tab ID from ws URL
+      const match = tabWsUrl.match(/\/devtools\/page\/([A-F0-9-]+)/i);
+      if (!match) {
+        console.error('Invalid WebSocket URL');
+        process.exit(1);
+      }
+      await chromeHttp(`/json/close/${match[1]}`);
+      console.log('Tab closed');
+    } catch (e) {
+      console.error('Failed to close tab:', e.message);
+      process.exit(1);
+    }
+  })();
+  return;
+}
+
+// Helper to send CDP command via WebSocket
+async function sendCdpCommand(wsUrl, method, params = {}) {
+  return new Promise(async (resolve, reject) => {
+    const ws = new WebSocketClient(wsUrl);
+    const id = Math.floor(Math.random() * 1000000);
+
+    const timeout = setTimeout(() => {
+      ws.close();
+      reject(new Error('Timeout after 30s'));
+    }, 30000);
+
+    ws.on('message', (data) => {
+      const response = JSON.parse(data);
+      if (response.id === id) {
+        clearTimeout(timeout);
+        if (response.error) {
+          ws.close();
+          reject(new Error(response.error.message));
+        } else {
+          ws.close();
+          resolve(response.result);
+        }
+      }
+    });
+
+    ws.on('error', (err) => {
+      clearTimeout(timeout);
+      reject(err);
+    });
+
+    try {
+      await ws.connect();
+      ws.send(JSON.stringify({ id, method, params }));
+    } catch (err) {
+      clearTimeout(timeout);
+      reject(err);
+    }
+  });
+}
+
+// Command: navigate
+if (command === 'navigate') {
+  const [url] = args;
+  if (!wsUrlOrIndex || !url) {
+    console.error('Usage: chrome-ws navigate <tab-index-or-ws-url> <url>');
+    process.exit(1);
+  }
+  (async () => {
+    try {
+      const wsUrl = await resolveWsUrl(wsUrlOrIndex);
+      await sendCdpCommand(wsUrl, 'Page.navigate', { url });
+      console.log(`Navigated to ${url}`);
+    } catch (e) {
+      console.error('Navigation failed:', e.message);
+      process.exit(1);
+    }
+  })();
+  return;
+}
+
+// Command: wait-for - wait for selector to appear
+if (command === 'wait-for') {
+  const [selector] = args;
+  if (!wsUrlOrIndex || !selector) {
+    console.error('Usage: chrome-ws wait-for <tab-index-or-ws-url> <selector>');
+    process.exit(1);
+  }
+  (async () => {
+    try {
+      const wsUrl = await resolveWsUrl(wsUrlOrIndex);
+      const js = `
+        new Promise(resolve => {
+          const check = () => {
+            if (document.querySelector(${JSON.stringify(selector)})) {
+              resolve(true);
+            } else {
+              setTimeout(check, 100);
+            }
+          };
+          check();
+        });
+      `;
+      await sendCdpCommand(wsUrl, 'Runtime.evaluate', {
+        expression: js,
+        awaitPromise: true
+      });
+      console.log(`Element found: ${selector}`);
+    } catch (e) {
+      console.error('Wait failed:', e.message);
+      process.exit(1);
+    }
+  })();
+  return;
+}
+
+// Command: click
+if (command === 'click') {
+  const [selector] = args;
+  if (!wsUrlOrIndex || !selector) {
+    console.error('Usage: chrome-ws click <tab-index-or-ws-url> <selector>');
+    process.exit(1);
+  }
+  (async () => {
+    try {
+      const wsUrl = await resolveWsUrl(wsUrlOrIndex);
+      const js = `document.querySelector(${JSON.stringify(selector)}).click()`;
+      await sendCdpCommand(wsUrl, 'Runtime.evaluate', { expression: js });
+      console.log(`Clicked: ${selector}`);
+    } catch (e) {
+      console.error('Click failed:', e.message);
+      process.exit(1);
+    }
+  })();
+  return;
+}
+
+// Command: fill
+if (command === 'fill') {
+  const [selector, value] = args;
+  if (!wsUrlOrIndex || !selector || !value) {
+    console.error('Usage: chrome-ws fill <tab-index-or-ws-url> <selector> <value>');
+    process.exit(1);
+  }
+  (async () => {
+    try {
+      const wsUrl = await resolveWsUrl(wsUrlOrIndex);
+      const js = `
+        (() => {
+          const el = document.querySelector(${JSON.stringify(selector)});
+          el.value = ${JSON.stringify(value)};
+          el.dispatchEvent(new Event('input', { bubbles: true }));
+          el.dispatchEvent(new Event('change', { bubbles: true }));
+        })()
+      `;
+      await sendCdpCommand(wsUrl, 'Runtime.evaluate', { expression: js });
+      console.log(`Filled: ${selector}`);
+    } catch (e) {
+      console.error('Fill failed:', e.message);
+      process.exit(1);
+    }
+  })();
+  return;
+}
+
+// Command: select - select dropdown option
+if (command === 'select') {
+  const [selector, value] = args;
+  if (!wsUrlOrIndex || !selector || !value) {
+    console.error('Usage: chrome-ws select <tab-index-or-ws-url> <selector> <value>');
+    process.exit(1);
+  }
+  (async () => {
+    try {
+      const wsUrl = await resolveWsUrl(wsUrlOrIndex);
+      const js = `
+        (() => {
+          const el = document.querySelector(${JSON.stringify(selector)});
+          el.value = ${JSON.stringify(value)};
+          el.dispatchEvent(new Event('change', { bubbles: true }));
+        })()
+      `;
+      await sendCdpCommand(wsUrl, 'Runtime.evaluate', { expression: js });
+      console.log(`Selected: ${selector} = ${value}`);
+    } catch (e) {
+      console.error('Select failed:', e.message);
+      process.exit(1);
+    }
+  })();
+  return;
+}
+
+// Command: eval - evaluate JavaScript
+if (command === 'eval') {
+  const expression = args.join(' ');
+  if (!wsUrlOrIndex || !expression) {
+    console.error('Usage: chrome-ws eval <tab-index-or-ws-url> <js-expression>');
+    process.exit(1);
+  }
+  (async () => {
+    try {
+      const wsUrl = await resolveWsUrl(wsUrlOrIndex);
+      const result = await sendCdpCommand(wsUrl, 'Runtime.evaluate', {
+        expression,
+        returnByValue: true
+      });
+      if (result.exceptionDetails) {
+        console.error('JavaScript error:', result.exceptionDetails.exception.description);
+        process.exit(1);
+      }
+      console.log(JSON.stringify(result.result.value, null, 2));
+    } catch (e) {
+      console.error('Eval failed:', e.message);
+      process.exit(1);
+    }
+  })();
+  return;
+}
+
+// Command: extract - get element text content
+if (command === 'extract') {
+  const [selector] = args;
+  if (!wsUrlOrIndex || !selector) {
+    console.error('Usage: chrome-ws extract <tab-index-or-ws-url> <selector>');
+    process.exit(1);
+  }
+  (async () => {
+    try {
+      const wsUrl = await resolveWsUrl(wsUrlOrIndex);
+      const js = `document.querySelector(${JSON.stringify(selector)})?.textContent`;
+      const result = await sendCdpCommand(wsUrl, 'Runtime.evaluate', {
+        expression: js,
+        returnByValue: true
+      });
+      console.log(result.result.value);
+    } catch (e) {
+      console.error('Extract failed:', e.message);
+      process.exit(1);
+    }
+  })();
+  return;
+}
+
+// Command: attr - get element attribute
+if (command === 'attr') {
+  const [selector, attrName] = args;
+  if (!wsUrlOrIndex || !selector || !attrName) {
+    console.error('Usage: chrome-ws attr <tab-index-or-ws-url> <selector> <attribute>');
+    process.exit(1);
+  }
+  (async () => {
+    try {
+      const wsUrl = await resolveWsUrl(wsUrlOrIndex);
+      const js = `document.querySelector(${JSON.stringify(selector)})?.getAttribute(${JSON.stringify(attrName)})`;
+      const result = await sendCdpCommand(wsUrl, 'Runtime.evaluate', {
+        expression: js,
+        returnByValue: true
+      });
+      console.log(result.result.value);
+    } catch (e) {
+      console.error('Attr failed:', e.message);
+      process.exit(1);
+    }
+  })();
+  return;
+}
+
+// Command: html - get HTML content
+if (command === 'html') {
+  const [selector] = args;
+  if (!wsUrlOrIndex) {
+    console.error('Usage: chrome-ws html <tab-index-or-ws-url> [selector]');
+    process.exit(1);
+  }
+  (async () => {
+    try {
+      const wsUrl = await resolveWsUrl(wsUrlOrIndex);
+      const js = selector
+        ? `document.querySelector(${JSON.stringify(selector)})?.innerHTML`
+        : 'document.documentElement.outerHTML';
+      const result = await sendCdpCommand(wsUrl, 'Runtime.evaluate', {
+        expression: js,
+        returnByValue: true
+      });
+      console.log(result.result.value);
+    } catch (e) {
+      console.error('HTML failed:', e.message);
+      process.exit(1);
+    }
+  })();
+  return;
+}
+
+// Command: wait-text - wait for text to appear
+if (command === 'wait-text') {
+  const text = args.join(' ');
+  if (!wsUrlOrIndex || !text) {
+    console.error('Usage: chrome-ws wait-text <tab-index-or-ws-url> <text>');
+    process.exit(1);
+  }
+  (async () => {
+    try {
+      const wsUrl = await resolveWsUrl(wsUrlOrIndex);
+      const js = `
+        new Promise(resolve => {
+          const check = () => {
+            if (document.body.textContent.includes(${JSON.stringify(text)})) {
+              resolve(true);
+            } else {
+              setTimeout(check, 100);
+            }
+          };
+          check();
+        });
+      `;
+      await sendCdpCommand(wsUrl, 'Runtime.evaluate', {
+        expression: js,
+        awaitPromise: true
+      });
+      console.log(`Text found: ${text}`);
+    } catch (e) {
+      console.error('Wait failed:', e.message);
+      process.exit(1);
+    }
+  })();
+  return;
+}
+
+// Command: screenshot - capture screenshot
+if (command === 'screenshot') {
+  const [filename] = args;
+  if (!wsUrlOrIndex || !filename) {
+    console.error('Usage: chrome-ws screenshot <tab-index-or-ws-url> <filename.png>');
+    process.exit(1);
+  }
+  (async () => {
+    try {
+      const wsUrl = await resolveWsUrl(wsUrlOrIndex);
+      const result = await sendCdpCommand(wsUrl, 'Page.captureScreenshot', {
+        format: 'png'
+      });
+      const fs = require('fs');
+      const buffer = Buffer.from(result.data, 'base64');
+      fs.writeFileSync(filename, buffer);
+      console.log(`Screenshot saved to ${filename}`);
+    } catch (e) {
+      console.error('Screenshot failed:', e.message);
+      process.exit(1);
+    }
+  })();
+  return;
+}
+
+// Command: markdown - save page as markdown
+if (command === 'markdown') {
+  const [filename] = args;
+  if (!wsUrlOrIndex || !filename) {
+    console.error('Usage: chrome-ws markdown <tab-index-or-ws-url> <filename.md>');
+    process.exit(1);
+  }
+  (async () => {
+    try {
+      const wsUrl = await resolveWsUrl(wsUrlOrIndex);
+
+      // Extract page content intelligently
+      const js = `
+        (() => {
+          const title = document.title;
+          const url = window.location.href;
+
+          // Get main content (try article, main, or body)
+          let content = document.querySelector('article') ||
+                       document.querySelector('main') ||
+                       document.body;
+
+          // Convert to markdown-ish text
+          function nodeToMarkdown(node, level = 0) {
+            let md = '';
+
+            if (node.nodeType === Node.TEXT_NODE) {
+              const text = node.textContent.trim();
+              return text ? text + ' ' : '';
+            }
+
+            if (node.nodeType !== Node.ELEMENT_NODE) return '';
+
+            const tag = node.tagName.toLowerCase();
+
+            // Headers
+            if (/^h[1-6]$/.test(tag)) {
+              const hLevel = parseInt(tag[1]);
+              md += '\\n' + '#'.repeat(hLevel) + ' ' + node.textContent.trim() + '\\n\\n';
+              return md;
+            }
+
+            // Paragraphs
+            if (tag === 'p') {
+              md += node.textContent.trim() + '\\n\\n';
+              return md;
+            }
+
+            // Links
+            if (tag === 'a') {
+              const href = node.getAttribute('href') || '';
+              const text = node.textContent.trim();
+              return \`[\${text}](\${href}) \`;
+            }
+
+            // Lists
+            if (tag === 'li') {
+              return '- ' + node.textContent.trim() + '\\n';
+            }
+
+            // Code
+            if (tag === 'code' || tag === 'pre') {
+              return '\`' + node.textContent.trim() + '\` ';
+            }
+
+            // Recurse for other elements
+            for (const child of node.childNodes) {
+              md += nodeToMarkdown(child, level + 1);
+            }
+
+            if (tag === 'div' || tag === 'section') md += '\\n';
+
+            return md;
+          }
+
+          const markdown = nodeToMarkdown(content);
+
+          return \`# \${title}\\n\\nSource: \${url}\\n\\n\${markdown}\`;
+        })()
+      `;
+
+      const result = await sendCdpCommand(wsUrl, 'Runtime.evaluate', {
+        expression: js,
+        returnByValue: true
+      });
+
+      const fs = require('fs');
+      fs.writeFileSync(filename, result.result.value);
+      console.log(`Markdown saved to ${filename}`);
+    } catch (e) {
+      console.error('Markdown conversion failed:', e.message);
+      process.exit(1);
+    }
+  })();
+  return;
+}
+
+// Command: har - save network traffic as HAR
+if (command === 'har') {
+  const [filename] = args;
+  if (!wsUrlOrIndex || !filename) {
+    console.error('Usage: chrome-ws har <tab-index-or-ws-url> <filename.har>');
+    console.error('Note: Start recording with "chrome-ws har-start <tab>" first');
+    process.exit(1);
+  }
+  (async () => {
+    try {
+      const wsUrl = await resolveWsUrl(wsUrlOrIndex);
+
+      // Get HAR data
+      const js = `window.__chrome_ws_har__ || []`;
+      const result = await sendCdpCommand(wsUrl, 'Runtime.evaluate', {
+        expression: js,
+        returnByValue: true
+      });
+
+      const har = {
+        log: {
+          version: '1.2',
+          creator: { name: 'chrome-ws', version: '1.0.0' },
+          entries: result.result.value || []
+        }
+      };
+
+      const fs = require('fs');
+      fs.writeFileSync(filename, JSON.stringify(har, null, 2));
+      console.log(`HAR saved to ${filename} (${har.log.entries.length} entries)`);
+    } catch (e) {
+      console.error('HAR export failed:', e.message);
+      process.exit(1);
+    }
+  })();
+  return;
+}
+
+if (command !== 'raw' || !wsUrlOrIndex || args.length === 0) {
+  console.error('Usage: chrome-ws raw <tab-index-or-ws-url> <json-rpc-payload>');
+  process.exit(1);
+}
+
+const payload = args.join(' ');
+let message;
+try {
+  message = JSON.parse(payload);
+} catch (e) {
+  console.error('Invalid JSON payload:', e.message);
+  process.exit(1);
+}
+
+// For raw command, wsUrlOrIndex must be a full WebSocket URL (not an index)
+// since this is the low-level escape hatch
+if (!wsUrlOrIndex.startsWith('ws://')) {
+  console.error('raw command requires full WebSocket URL, not tab index');
+  console.error('Use: chrome-ws tabs  # to get WebSocket URLs');
+  process.exit(1);
+}
+
+(async () => {
+  const ws = new WebSocketClient(wsUrlOrIndex);
+
+  const timeout = setTimeout(() => {
+    console.error('Timeout after 30s');
+    ws.close();
+    process.exit(1);
+  }, 30000);
+
+  ws.on('message', (data) => {
+    const response = JSON.parse(data);
+    if (response.id === message.id) {
+      clearTimeout(timeout);
+      console.log(JSON.stringify(response, null, 2));
+      ws.close();
+      process.exit(0);
+    }
+  });
+
+  ws.on('error', (error) => {
+    clearTimeout(timeout);
+    console.error('WebSocket error:', error.message);
+    process.exit(1);
+  });
+
+  try {
+    await ws.connect();
+    ws.send(JSON.stringify(message));
+  } catch (err) {
+    clearTimeout(timeout);
+    console.error('Connection failed:', err.message);
+    process.exit(1);
+  }
+})();

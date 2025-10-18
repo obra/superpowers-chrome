@@ -1,0 +1,6 @@
+node_modules/
+package-lock.json
+IMPLEMENTATION_SUMMARY.md
+TEST_RESULTS.md
+test-*.png
+test-*.md

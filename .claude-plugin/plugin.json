@@ -1,0 +1,12 @@
+{
+  "name": "using-chrome-directly",
+  "version": "1.0.0",
+  "description": "Direct browser control without MCP - Chrome DevTools Protocol access via lightweight chrome-ws tool",
+  "author": "Jesse Vincent",
+  "repository": "https://github.com/obra/superpower-using-chrome-directly",
+  "license": "MIT",
+  "keywords": ["chrome", "browser", "automation", "devtools", "cdp", "websocket"],
+  "skills": {
+    "using-chrome-directly": "skills/using-chrome-directly/SKILL.md"
+  }
+}
