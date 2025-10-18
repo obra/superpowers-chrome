@@ -1,7 +1,7 @@
 {
   "name": "using-chrome-directly",
-  "version": "1.0.0",
-  "description": "BETA: VERY LIGHTLY TESTED - Direct browser control without MCP - Chrome DevTools Protocol access via lightweight chrome-ws tool",
+  "version": "1.1.0",
+  "description": "BETA: VERY LIGHTLY TESTED - Direct Chrome DevTools Protocol access. Skill mode (17 CLI commands) + MCP mode (single use_browser tool). Zero dependencies, auto-starts Chrome.",
   "author": {
     "name": "Jesse Vincent",
     "email": "jesse@fsck.com"
