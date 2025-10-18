@@ -2,7 +2,7 @@
 
 All notable changes to the Chrome MCP Server will be documented in this file.
 
-## [1.2.0] - 2025-10-18
+## [1.3.0] - 2025-10-18
 
 ### Added
 - XPath selector support - selectors now support both CSS and XPath (auto-detected by / or // prefix)
