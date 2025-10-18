@@ -13899,8 +13899,8 @@ var BrowserAction = /* @__PURE__ */ ((BrowserAction2) => {
 var UseBrowserParams = {
   action: external_exports.nativeEnum(BrowserAction).describe("Browser action to perform. Navigate goes to URL, click/type interact with elements (CSS selectors only, NOT XPath), extract gets page content, eval runs JavaScript, await_element/await_text wait for content."),
   tab_index: external_exports.number().int().min(0).default(0).describe("Tab index to operate on (default: 0). WARNING: Indices shift when tabs close - tab 2 becomes tab 1 after closing tab 1."),
-  selector: external_exports.string().nullable().default(null).describe(`CSS selector for element operations. Required for: click, type, select, attr, await_element. Use 'input[name="email"]' NOT '//input[@name="email"]'.`),
-  payload: external_exports.union([external_exports.string(), external_exports.array(external_exports.string())]).nullable().default(null).describe("Action-specific data: URL string for navigate, text for type (append \\n to submit form), 'markdown'|'text'|'html' for extract, filepath for screenshot, JavaScript code for eval, option value(s) for select (string or array), attribute name for attr, text to find for await_text."),
+  selector: external_exports.string().optional().describe(`CSS selector for element operations. Required for: click, type, select, attr, await_element. Use 'input[name="email"]' NOT '//input[@name="email"]'.`),
+  payload: external_exports.string().optional().describe("Action-specific data: URL string for navigate, text for type (append \\n to submit form), 'markdown'|'text'|'html' for extract, filepath for screenshot, JavaScript code for eval, option value for select, attribute name for attr, text to find for await_text."),
   timeout: external_exports.number().int().min(0).max(6e4).default(5e3).describe("Timeout in milliseconds for await_element and await_text actions only (default: 5000, max: 60000). Other actions have no timeout.")
 };
 async function ensureChromeRunning() {

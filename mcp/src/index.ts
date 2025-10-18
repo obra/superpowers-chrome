@@ -49,13 +49,11 @@ const UseBrowserParams = {
     .default(0)
     .describe("Tab index to operate on (default: 0). WARNING: Indices shift when tabs close - tab 2 becomes tab 1 after closing tab 1."),
   selector: z.string()
-    .nullable()
-    .default(null)
+    .optional()
     .describe("CSS selector for element operations. Required for: click, type, select, attr, await_element. Use 'input[name=\"email\"]' NOT '//input[@name=\"email\"]'."),
-  payload: z.union([z.string(), z.array(z.string())])
-    .nullable()
-    .default(null)
-    .describe("Action-specific data: URL string for navigate, text for type (append \\n to submit form), 'markdown'|'text'|'html' for extract, filepath for screenshot, JavaScript code for eval, option value(s) for select (string or array), attribute name for attr, text to find for await_text."),
+  payload: z.string()
+    .optional()
+    .describe("Action-specific data: URL string for navigate, text for type (append \\n to submit form), 'markdown'|'text'|'html' for extract, filepath for screenshot, JavaScript code for eval, option value for select, attribute name for attr, text to find for await_text."),
   timeout: z.number()
     .int()
     .min(0)
