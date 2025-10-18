@@ -9,5 +9,11 @@
   "homepage": "https://github.com/obra/superpower-using-chrome-directly",
   "repository": "https://github.com/obra/superpower-using-chrome-directly",
   "license": "MIT",
-  "keywords": ["chrome", "browser", "automation", "devtools", "cdp", "websocket"]
+  "keywords": ["chrome", "browser", "automation", "devtools", "cdp", "websocket"],
+  "mcpServers": {
+    "chrome": {
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/mcp/dist/index.js"]
+    }
+  }
 }
