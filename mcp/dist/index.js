@@ -14047,9 +14047,9 @@ var server = new McpServer({
 });
 server.tool(
   "use_browser",
-  `Control persistent Chrome browser. State persists between calls.
+  `Control persistent Chrome browser. State persists between calls - tabs, navigation, page content all remain.
 
-CRITICAL: CSS selectors only (NOT XPath). Append \\n to text in 'type' to submit forms. Chrome auto-starts on first call.
+CRITICAL: CSS selectors only (NOT XPath). Append \\n to text in 'type' to submit forms. Chrome auto-starts on first call. Tab indices shift when tabs close.
 
 ACTIONS:
 navigate: Go to URL, waits for load. {action:"navigate", payload:"https://example.com"}
