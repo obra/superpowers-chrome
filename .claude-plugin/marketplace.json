@@ -1,0 +1,20 @@
+{
+  "name": "superpowers-chrome-dev",
+  "description": "Development marketplace for Chrome DevTools Protocol plugin",
+  "owner": {
+    "name": "Jesse Vincent",
+    "email": "jesse@fsck.com"
+  },
+  "plugins": [
+    {
+      "name": "superpowers-chrome",
+      "description": "Direct Chrome DevTools Protocol access. Control Chrome via MCP tool or CLI skill. Auto-starts browser, zero dependencies.",
+      "version": "1.2.0",
+      "source": "./",
+      "author": {
+        "name": "Jesse Vincent",
+        "email": "jesse@fsck.com"
+      }
+    }
+  ]
+}
