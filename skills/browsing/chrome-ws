@@ -148,6 +148,13 @@ async function resolveWsUrl(wsUrlOrIndex) {
   if (!isNaN(index)) {
     const tabs = await chromeHttp('/json');
     const pageTabs = tabs.filter(t => t.type === 'page');
+
+    // Auto-create tab if none exist (similar to auto-start Chrome behavior)
+    if (pageTabs.length === 0) {
+      const newTabInfo = await chromeHttp('/json/new?about:blank', 'PUT');
+      return newTabInfo.webSocketDebuggerUrl;
+    }
+
     if (index < 0 || index >= pageTabs.length) {
       throw new Error(`Tab index ${index} out of range (0-${pageTabs.length - 1})`);
     }
