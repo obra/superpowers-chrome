@@ -13900,7 +13900,7 @@ var UseBrowserParams = {
   action: external_exports.nativeEnum(BrowserAction).describe("Action to perform"),
   tab_index: external_exports.number().int().min(0).default(0).describe("Which tab. Indices shift when tabs close."),
   selector: external_exports.string().optional().describe("CSS or XPath selector. XPath must start with / or //."),
-  payload: external_exports.string().optional().describe("Action-specific data"),
+  payload: external_exports.string().optional().describe("Action-specific data: navigate=URL | type=text (append \\n to submit) | extract=format (text|html|markdown) | screenshot=filename | eval=JavaScript | select=option value | attr=attribute name | await_text=text to wait for"),
   timeout: external_exports.number().int().min(0).max(6e4).default(5e3).describe("Timeout in ms. Only for await actions.")
 };
 async function ensureChromeRunning() {

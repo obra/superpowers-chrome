@@ -53,7 +53,7 @@ const UseBrowserParams = {
     .describe("CSS or XPath selector. XPath must start with / or //."),
   payload: z.string()
     .optional()
-    .describe("Action-specific data"),
+    .describe("Action-specific data: navigate=URL | type=text (append \\n to submit) | extract=format (text|html|markdown) | screenshot=filename | eval=JavaScript | select=option value | attr=attribute name | await_text=text to wait for"),
   timeout: z.number()
     .int()
     .min(0)
