@@ -2,7 +2,7 @@
 
 const process = require('process');
 
-const [,, command, wsUrlOrIndex, ...args] = process.argv;
+const [, , command, wsUrlOrIndex, ...args] = process.argv;
 
 // Minimal WebSocket client implementation (dependency-free)
 class WebSocketClient {
@@ -65,9 +65,9 @@ class WebSocketClient {
       const secondByte = this.buffer[1];
 
       const fin = (firstByte & 0x80) !== 0;
-      const opcode = firstByte & 0x0F;
+      const opcode = firstByte & 0x0f;
       const masked = (secondByte & 0x80) !== 0;
-      let payloadLen = secondByte & 0x7F;
+      let payloadLen = secondByte & 0x7f;
 
       let offset = 2;
 
@@ -147,7 +147,7 @@ async function resolveWsUrl(wsUrlOrIndex) {
   const index = parseInt(wsUrlOrIndex);
   if (!isNaN(index)) {
     const tabs = await chromeHttp('/json');
-    const pageTabs = tabs.filter(t => t.type === 'page');
+    const pageTabs = tabs.filter((t) => t.type === 'page');
 
     // Auto-create tab if none exist (similar to auto-start Chrome behavior)
     if (pageTabs.length === 0) {
@@ -156,7 +156,9 @@ async function resolveWsUrl(wsUrlOrIndex) {
     }
 
     if (index < 0 || index >= pageTabs.length) {
-      throw new Error(`Tab index ${index} out of range (0-${pageTabs.length - 1})`);
+      throw new Error(
+        `Tab index ${index} out of range (0-${pageTabs.length - 1})`
+      );
     }
     return pageTabs[index].webSocketDebuggerUrl;
   }
@@ -179,7 +181,7 @@ async function chromeHttp(path, method = 'GET') {
 
     const req = http.request(options, (res) => {
       let data = '';
-      res.on('data', chunk => data += chunk);
+      res.on('data', (chunk) => (data += chunk));
       res.on('end', () => {
         if (!data) {
           resolve({});
@@ -204,6 +206,9 @@ if (command === 'start') {
   const { spawn } = require('child_process');
   const { existsSync } = require('fs');
   const os = require('os');
+
+  // Check for --headless flag (default is headed mode)
+  const headlessMode = process.argv.includes('--headless');
 
   // Platform-specific Chrome paths
   const chromePaths = {
@@ -232,25 +237,33 @@ if (command === 'start') {
   }
 
   // Find Chrome executable
-  const chromePath = paths.find(p => existsSync(p));
+  const chromePath = paths.find((p) => existsSync(p));
 
   if (!chromePath) {
     console.error('Chrome not found. Searched:');
-    paths.forEach(p => console.error(`  ${p}`));
+    paths.forEach((p) => console.error(`  ${p}`));
     process.exit(1);
   }
 
   // Launch Chrome
-  const userDataDir = platform === 'win32'
-    ? 'C:\\temp\\chrome-debug'
-    : '/tmp/chrome-debug';
+  const userDataDir =
+    platform === 'win32' ? 'C:\\temp\\chrome-debug' : '/tmp/chrome-debug';
 
   const chromeArgs = [
     '--remote-debugging-port=9222',
     `--user-data-dir=${userDataDir}`
   ];
 
-  console.log(`Starting Chrome: ${chromePath}`);
+  // Add headless flag only if requested (default is headed mode)
+  if (headlessMode) {
+    chromeArgs.push('--headless=new');
+  }
+
+  console.log(
+    `Starting Chrome: ${chromePath} ${
+      headlessMode ? '(headless mode)' : '(headed mode)'
+    }`
+  );
   const chrome = spawn(chromePath, chromeArgs, {
     detached: true,
     stdio: 'ignore'
@@ -273,12 +286,52 @@ if (command === 'start') {
   return;
 }
 
+// Command: stop - kill Chrome process
+if (command === 'stop') {
+  const { exec } = require('child_process');
+  const os = require('os');
+  const platform = os.platform();
+
+  console.log('Stopping Chrome...');
+
+  let killCommand;
+  if (platform === 'win32') {
+    // Windows: Find PID using netstat and kill it
+    killCommand =
+      'for /f "tokens=5" %a in (\'netstat -ano ^| findstr :9222\') do taskkill /F /PID %a';
+  } else {
+    // macOS/Linux: Find PID using lsof and kill it
+    killCommand = 'lsof -ti:9222 | xargs kill -9 2>/dev/null || true';
+  }
+
+  exec(killCommand, (error, stdout, stderr) => {
+    if (error && !error.message.includes('No such process')) {
+      console.error('Failed to stop Chrome. It may not be running.');
+      process.exit(1);
+    }
+
+    // Wait a moment and verify Chrome is stopped
+    setTimeout(async () => {
+      try {
+        await chromeHttp('/json/version');
+        console.error('Chrome is still running on port 9222');
+        process.exit(1);
+      } catch (e) {
+        console.log('Chrome stopped successfully');
+        process.exit(0);
+      }
+    }, 1000);
+  });
+
+  return;
+}
+
 // Command: tabs - list all tabs
 if (command === 'tabs') {
   (async () => {
     try {
       const tabs = await chromeHttp('/json');
-      tabs.forEach(tab => {
+      tabs.forEach((tab) => {
         if (tab.type === 'page') {
           console.log(`${tab.id}\t${tab.url}\t${tab.title}`);
         }
@@ -301,7 +354,10 @@ if (command === 'new') {
   const url = wsUrlOrIndex;
   (async () => {
     try {
-      const tab = await chromeHttp(`/json/new?${encodeURIComponent(url)}`, 'PUT');
+      const tab = await chromeHttp(
+        `/json/new?${encodeURIComponent(url)}`,
+        'PUT'
+      );
       console.log(tab.webSocketDebuggerUrl);
     } catch (e) {
       console.error('Failed to create tab:', e.message);
@@ -457,7 +513,9 @@ if (command === 'click') {
 if (command === 'fill') {
   const [selector, value] = args;
   if (!wsUrlOrIndex || !selector || !value) {
-    console.error('Usage: chrome-ws fill <tab-index-or-ws-url> <selector> <value>');
+    console.error(
+      'Usage: chrome-ws fill <tab-index-or-ws-url> <selector> <value>'
+    );
     process.exit(1);
   }
   (async () => {
@@ -485,7 +543,9 @@ if (command === 'fill') {
 if (command === 'select') {
   const [selector, value] = args;
   if (!wsUrlOrIndex || !selector || !value) {
-    console.error('Usage: chrome-ws select <tab-index-or-ws-url> <selector> <value>');
+    console.error(
+      'Usage: chrome-ws select <tab-index-or-ws-url> <selector> <value>'
+    );
     process.exit(1);
   }
   (async () => {
@@ -512,7 +572,9 @@ if (command === 'select') {
 if (command === 'eval') {
   const expression = args.join(' ');
   if (!wsUrlOrIndex || !expression) {
-    console.error('Usage: chrome-ws eval <tab-index-or-ws-url> <js-expression>');
+    console.error(
+      'Usage: chrome-ws eval <tab-index-or-ws-url> <js-expression>'
+    );
     process.exit(1);
   }
   (async () => {
@@ -523,7 +585,10 @@ if (command === 'eval') {
         returnByValue: true
       });
       if (result.exceptionDetails) {
-        console.error('JavaScript error:', result.exceptionDetails.exception.description);
+        console.error(
+          'JavaScript error:',
+          result.exceptionDetails.exception.description
+        );
         process.exit(1);
       }
       console.log(JSON.stringify(result.result.value, null, 2));
@@ -545,7 +610,9 @@ if (command === 'extract') {
   (async () => {
     try {
       const wsUrl = await resolveWsUrl(wsUrlOrIndex);
-      const js = `document.querySelector(${JSON.stringify(selector)})?.textContent`;
+      const js = `document.querySelector(${JSON.stringify(
+        selector
+      )})?.textContent`;
       const result = await sendCdpCommand(wsUrl, 'Runtime.evaluate', {
         expression: js,
         returnByValue: true
@@ -563,13 +630,17 @@ if (command === 'extract') {
 if (command === 'attr') {
   const [selector, attrName] = args;
   if (!wsUrlOrIndex || !selector || !attrName) {
-    console.error('Usage: chrome-ws attr <tab-index-or-ws-url> <selector> <attribute>');
+    console.error(
+      'Usage: chrome-ws attr <tab-index-or-ws-url> <selector> <attribute>'
+    );
     process.exit(1);
   }
   (async () => {
     try {
       const wsUrl = await resolveWsUrl(wsUrlOrIndex);
-      const js = `document.querySelector(${JSON.stringify(selector)})?.getAttribute(${JSON.stringify(attrName)})`;
+      const js = `document.querySelector(${JSON.stringify(
+        selector
+      )})?.getAttribute(${JSON.stringify(attrName)})`;
       const result = await sendCdpCommand(wsUrl, 'Runtime.evaluate', {
         expression: js,
         returnByValue: true
@@ -648,7 +719,9 @@ if (command === 'wait-text') {
 if (command === 'screenshot') {
   const [filename] = args;
   if (!wsUrlOrIndex || !filename) {
-    console.error('Usage: chrome-ws screenshot <tab-index-or-ws-url> <filename.png>');
+    console.error(
+      'Usage: chrome-ws screenshot <tab-index-or-ws-url> <filename.png>'
+    );
     process.exit(1);
   }
   (async () => {
@@ -673,7 +746,9 @@ if (command === 'screenshot') {
 if (command === 'markdown') {
   const [filename] = args;
   if (!wsUrlOrIndex || !filename) {
-    console.error('Usage: chrome-ws markdown <tab-index-or-ws-url> <filename.md>');
+    console.error(
+      'Usage: chrome-ws markdown <tab-index-or-ws-url> <filename.md>'
+    );
     process.exit(1);
   }
   (async () => {
@@ -771,7 +846,9 @@ if (command === 'har') {
   const [filename] = args;
   if (!wsUrlOrIndex || !filename) {
     console.error('Usage: chrome-ws har <tab-index-or-ws-url> <filename.har>');
-    console.error('Note: Start recording with "chrome-ws har-start <tab>" first');
+    console.error(
+      'Note: Start recording with "chrome-ws har-start <tab>" first'
+    );
     process.exit(1);
   }
   (async () => {
@@ -795,7 +872,9 @@ if (command === 'har') {
 
       const fs = require('fs');
       fs.writeFileSync(filename, JSON.stringify(har, null, 2));
-      console.log(`HAR saved to ${filename} (${har.log.entries.length} entries)`);
+      console.log(
+        `HAR saved to ${filename} (${har.log.entries.length} entries)`
+      );
     } catch (e) {
       console.error('HAR export failed:', e.message);
       process.exit(1);
@@ -805,7 +884,9 @@ if (command === 'har') {
 }
 
 if (command !== 'raw' || !wsUrlOrIndex || args.length === 0) {
-  console.error('Usage: chrome-ws raw <tab-index-or-ws-url> <json-rpc-payload>');
+  console.error(
+    'Usage: chrome-ws raw <tab-index-or-ws-url> <json-rpc-payload>'
+  );
   process.exit(1);
 }
 
