@@ -34,6 +34,10 @@ chmod +x chrome-ws
 ./test-e2e.sh       # End-to-end workflow
 ```
 
+```bash
+./run-headless-tests.sh     # Run all tests in headless mode
+```
+
 ## Requirements
 
 - Node.js 16+

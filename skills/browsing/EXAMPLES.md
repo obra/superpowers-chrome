@@ -565,6 +565,25 @@ For complex data extraction, use JavaScript evaluation:
 
 ---
 
+## Headless Mode
+
+Any workflow can run in headless mode (Chrome runs without visible windows):
+
+```
+./chrome-ws start --headless
+
+# Run any examples here - navigation, forms, scraping, etc.
+{action: "navigate", payload: "https://example.com"}
+{action: "await_element", selector: "h1"}
+{action: "extract", payload: "text", selector: "h1"}
+
+./chrome-ws stop
+```
+
+All examples in this guide work in headless mode by wrapping them with `start --headless` and `stop`.
+
+---
+
 ## Reference
 
 - [SKILL.md](SKILL.md) - Complete tool reference

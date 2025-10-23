@@ -18,11 +18,19 @@ Chrome starts with `--remote-debugging-port=9222` and separate profile in `/tmp/
 ## Command Reference
 
 **Setup:**
+
 ```bash
 chrome-ws start                 # Launch Chrome (auto-detects platform)
 ```
 
+or
+
+```bash
+chrome-ws start --headless      # Launch Chrome in headless mode
+```
+
 **Tab Management:**
+
 ```bash
 chrome-ws tabs                  # List tabs
 chrome-ws new <url>            # Create tab
@@ -30,6 +38,7 @@ chrome-ws close <ws-url>       # Close tab
 ```
 
 **Navigation:**
+
 ```bash
 chrome-ws navigate <tab> <url>        # Navigate
 chrome-ws wait-for <tab> <selector>   # Wait for element
@@ -37,6 +46,7 @@ chrome-ws wait-text <tab> <text>      # Wait for text
 ```
 
 **Interaction:**
+
 ```bash
 chrome-ws click <tab> <selector>              # Click
 chrome-ws fill <tab> <selector> <value>       # Fill input
@@ -44,6 +54,7 @@ chrome-ws select <tab> <selector> <value>     # Select dropdown
 ```
 
 **Extraction:**
+
 ```bash
 chrome-ws eval <tab> <js>               # Execute JavaScript
 chrome-ws extract <tab> <selector>      # Get text content
@@ -52,14 +63,22 @@ chrome-ws html <tab> [selector]         # Get HTML
 ```
 
 **Export:**
+
 ```bash
 chrome-ws screenshot <tab> <file.png>   # Capture screenshot
 chrome-ws markdown <tab> <file.md>      # Save as markdown
 ```
 
 **Raw Protocol:**
+
 ```bash
 chrome-ws raw <ws-url> <json-rpc>       # Direct CDP access
+```
+
+**Stop:**
+
+```bash
+chrome-ws stop                          # Kill Chrome
 ```
 
 `<tab>` accepts either tab index (0, 1, 2) or full WebSocket URL.
@@ -69,6 +88,7 @@ chrome-ws raw <ws-url> <json-rpc>       # Direct CDP access
 ### Basic Operations
 
 **Extract page content:**
+
 ```bash
 chrome-ws navigate 0 "https://example.com"
 chrome-ws wait-for 0 "h1"
@@ -84,6 +104,7 @@ LINK=$(chrome-ws attr 0 "a" "href")
 ```
 
 **Get all links:**
+
 ```bash
 chrome-ws navigate 0 "https://example.com"
 LINKS=$(chrome-ws eval 0 "Array.from(document.querySelectorAll('a')).map(a => ({
@@ -94,6 +115,7 @@ echo "$LINKS"
 ```
 
 **Extract table data:**
+
 ```bash
 chrome-ws navigate 0 "https://example.com/data"
 chrome-ws wait-for 0 "table"
@@ -109,6 +131,7 @@ TABLE=$(chrome-ws eval 0 "
 ### Form Automation
 
 **Simple login:**
+
 ```bash
 chrome-ws navigate 0 "https://app.example.com/login"
 chrome-ws wait-for 0 "input[name=email]"
@@ -123,6 +146,7 @@ chrome-ws wait-text 0 "Dashboard"
 ```
 
 **Multi-step form:**
+
 ```bash
 chrome-ws navigate 0 "https://example.com/register"
 
@@ -145,6 +169,7 @@ chrome-ws wait-text 0 "Registration complete"
 ```
 
 **Search with filters:**
+
 ```bash
 chrome-ws navigate 0 "https://library.example.com/search"
 chrome-ws wait-for 0 "form"
@@ -167,6 +192,7 @@ echo "Found $RESULTS results"
 ### Web Scraping
 
 **Article content:**
+
 ```bash
 chrome-ws navigate 0 "https://blog.example.com/article"
 chrome-ws wait-for 0 "article"
@@ -188,6 +214,7 @@ EOF
 ```
 
 **Product information:**
+
 ```bash
 chrome-ws navigate 0 "https://shop.example.com/product/123"
 chrome-ws wait-for 0 ".product-details"
@@ -209,6 +236,7 @@ EOF
 ```
 
 **Batch process URLs:**
+
 ```bash
 URLS=("page1" "page2" "page3")
 
@@ -223,6 +251,7 @@ done
 ### Multi-Tab Workflows
 
 **Email extraction:**
+
 ```bash
 # List all tabs
 chrome-ws tabs
@@ -242,6 +271,7 @@ echo "Donation: $AMOUNT"
 ```
 
 **Price comparison:**
+
 ```bash
 chrome-ws navigate 0 "https://store1.com/product"
 chrome-ws new "https://store2.com/product"
@@ -258,6 +288,7 @@ echo "Store 3: $PRICE3"
 ```
 
 **Cross-reference between sites:**
+
 ```bash
 # Get phone number from company site
 chrome-ws navigate 0 "https://company.com/contact"
@@ -275,6 +306,7 @@ chrome-ws extract 1 ".verification-status"
 ### Dynamic Content
 
 **Wait for AJAX to complete:**
+
 ```bash
 chrome-ws navigate 0 "https://app.com/dashboard"
 
@@ -295,6 +327,7 @@ chrome-ws extract 0 ".dashboard-data"
 ```
 
 **Infinite scroll:**
+
 ```bash
 chrome-ws navigate 0 "https://example.com/feed"
 chrome-ws wait-for 0 ".feed-item"
@@ -310,6 +343,7 @@ chrome-ws eval 0 "document.querySelectorAll('.feed-item').length"
 ```
 
 **Monitor for changes:**
+
 ```bash
 chrome-ws navigate 0 "https://example.com/status"
 END=$(($(date +%s) + 300))
@@ -330,6 +364,7 @@ done
 ### Advanced Patterns
 
 **Multi-step workflow:**
+
 ```bash
 chrome-ws navigate 0 "https://booking.example.com"
 
@@ -363,6 +398,7 @@ echo "$HOTEL: $TOTAL"
 ```
 
 **Cookies and localStorage:**
+
 ```bash
 # Get cookies
 chrome-ws eval 0 "document.cookie"
@@ -378,6 +414,7 @@ chrome-ws eval 0 "localStorage.setItem('lastVisit', new Date().toISOString())"
 ```
 
 **Handle modals:**
+
 ```bash
 chrome-ws click 0 "button.open-modal"
 chrome-ws wait-for 0 ".modal.visible"
@@ -400,6 +437,7 @@ chrome-ws eval 0 "new Promise(resolve => {
 ```
 
 **Network monitoring with raw CDP:**
+
 ```bash
 # Enable network monitoring
 chrome-ws raw 0 '{"id":1,"method":"Network.enable","params":{}}'
@@ -412,6 +450,7 @@ chrome-ws raw 0 '{"id":2,"method":"Performance.getMetrics","params":{}}'
 ```
 
 **Screenshots and PDF:**
+
 ```bash
 # Capture screenshot
 chrome-ws screenshot 0 "page.png"
@@ -430,6 +469,7 @@ echo "$SCREENSHOT" | node -pe "JSON.parse(require('fs').readFileSync(0)).result.
 ## Error Handling
 
 **Check element exists:**
+
 ```bash
 # Verify button exists
 EXISTS=$(chrome-ws eval 0 "!!document.querySelector('.important-button')")
@@ -442,6 +482,7 @@ fi
 ```
 
 **Verify command success:**
+
 ```bash
 if ! chrome-ws navigate 0 "https://example.com"; then
   echo "Navigation failed - Chrome not running?"
@@ -450,6 +491,7 @@ fi
 ```
 
 **Retry pattern:**
+
 ```bash
 for attempt in {1..3}; do
   if chrome-ws click 0 ".submit-button"; then
@@ -464,6 +506,7 @@ done
 ## Best Practices
 
 **Always wait before interaction:**
+
 ```bash
 # BAD - might fail if page slow to load
 chrome-ws navigate 0 "https://example.com"
@@ -476,6 +519,7 @@ chrome-ws click 0 "button"
 ```
 
 **Use specific selectors:**
+
 ```bash
 # BAD - matches first button on page
 chrome-ws click 0 "button"
@@ -487,6 +531,7 @@ chrome-ws click 0 "#submit-form"
 ```
 
 **Test selectors with html command:**
+
 ```bash
 # Check page structure
 chrome-ws html 0 | grep "submit"
@@ -496,6 +541,7 @@ chrome-ws html 0 "form"
 ```
 
 **Escape special characters:**
+
 ```bash
 # Use double quotes for variables
 chrome-ws fill 0 "input[name=search]" "$SEARCH_TERM"
@@ -507,6 +553,7 @@ chrome-ws eval 0 'document.querySelector(".item").textContent'
 ## Common Pitfalls
 
 **Don't cache tab indices** - they change when tabs close:
+
 ```bash
 # BAD - index might be stale
 TAB=2
@@ -519,6 +566,7 @@ chrome-ws click 2 "button"
 ```
 
 **Don't forget to wait for dynamic content:**
+
 ```bash
 # BAD - tries to extract before content loads
 chrome-ws navigate 0 "https://app.com"
@@ -531,6 +579,7 @@ chrome-ws extract 0 ".user-name"
 ```
 
 **Handle element state:**
+
 ```bash
 # Check if button is disabled
 DISABLED=$(chrome-ws eval 0 "document.querySelector('button.submit').disabled")
@@ -557,6 +606,7 @@ fi
 Full CDP documentation: https://chromedevtools.github.io/devtools-protocol/
 
 Common methods via `raw` command:
+
 - `Page.navigate`
 - `Runtime.evaluate`
 - `Network.enable`

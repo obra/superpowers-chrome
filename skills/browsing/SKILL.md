@@ -15,20 +15,50 @@ Control Chrome via DevTools Protocol using the `use_browser` MCP tool. Single un
 ## When to Use
 
 **Use this when:**
+
 - Controlling authenticated sessions
 - Managing multiple tabs in running browser
 - Playwright MCP unavailable or excessive
 
 **Use Playwright MCP when:**
+
 - Need fresh browser instances
 - Generating screenshots/PDFs
 - Prefer higher-level abstractions
+
+## Headless Mode
+
+Any workflow can run in headless mode (Chrome runs without visible windows):
+
+```
+~/${CLAUDE_PLUGIN_ROOT}/skills/browsing/chrome-ws start --headless
+
+# Run any examples here - navigation, forms, scraping, etc.
+{action: "navigate", payload: "https://example.com"}
+{action: "await_element", selector: "h1"}
+{action: "extract", payload: "text", selector: "h1"}
+
+~/${CLAUDE_PLUGIN_ROOT}/skills/browsing/chrome-ws stop
+```
+
+All examples in this guide work in headless mode by wrapping them with `start --headless` and `stop`.
+
+**Use the tool normally** - all actions work in headless mode.
+
+**Stop Chrome when finished:**
+
+```bash
+~/${CLAUDE_PLUGIN_ROOT}/skills/browsing/chrome-ws stop
+```
+
+**Important:** Chrome won't exit automatically in headless mode - always call `stop` when done.
 
 ## The use_browser Tool
 
 Single MCP tool with action-based interface. Chrome auto-starts on first use.
 
 **Parameters:**
+
 - `action` (required): Operation to perform
 - `tab_index` (optional): Tab to operate on (default: 0)
 - `selector` (optional): CSS selector for element operations
@@ -38,11 +68,14 @@ Single MCP tool with action-based interface. Chrome auto-starts on first use.
 ## Actions Reference
 
 ### Navigation
+
 - **navigate**: Navigate to URL
+
   - `payload`: URL string
   - Example: `{action: "navigate", payload: "https://example.com"}`
 
 - **await_element**: Wait for element to appear
+
   - `selector`: CSS selector
   - `timeout`: Max wait time in ms
   - Example: `{action: "await_element", selector: ".loaded", timeout: 10000}`
@@ -52,11 +85,14 @@ Single MCP tool with action-based interface. Chrome auto-starts on first use.
   - Example: `{action: "await_text", payload: "Welcome"}`
 
 ### Interaction
+
 - **click**: Click element
+
   - `selector`: CSS selector
   - Example: `{action: "click", selector: "button.submit"}`
 
 - **type**: Type text into input (append `\n` to submit)
+
   - `selector`: CSS selector
   - `payload`: Text to type
   - Example: `{action: "type", selector: "#email", payload: "user@example.com\n"}`
@@ -67,13 +103,16 @@ Single MCP tool with action-based interface. Chrome auto-starts on first use.
   - Example: `{action: "select", selector: "select[name=state]", payload: "CA"}`
 
 ### Extraction
+
 - **extract**: Get page content
+
   - `payload`: Format ('markdown'|'text'|'html')
   - `selector`: Optional - limit to element
   - Example: `{action: "extract", payload: "markdown"}`
   - Example: `{action: "extract", payload: "text", selector: "h1"}`
 
 - **attr**: Get element attribute
+
   - `selector`: CSS selector
   - `payload`: Attribute name
   - Example: `{action: "attr", selector: "a.download", payload: "href"}`
@@ -83,16 +122,20 @@ Single MCP tool with action-based interface. Chrome auto-starts on first use.
   - Example: `{action: "eval", payload: "document.title"}`
 
 ### Export
+
 - **screenshot**: Capture screenshot
   - `payload`: Filename
   - `selector`: Optional - screenshot specific element
   - Example: `{action: "screenshot", payload: "/tmp/page.png"}`
 
 ### Tab Management
+
 - **list_tabs**: List all open tabs
+
   - Example: `{action: "list_tabs"}`
 
 - **new_tab**: Create new tab
+
   - Example: `{action: "new_tab"}`
 
 - **close_tab**: Close tab
@@ -111,6 +154,7 @@ Navigate and extract:
 ## Common Patterns
 
 ### Fill and Submit Form
+
 ```
 {action: "navigate", payload: "https://example.com/login"}
 {action: "await_element", selector: "input[name=email]"}
@@ -122,6 +166,7 @@ Navigate and extract:
 The `\n` at the end of the password submits the form.
 
 ### Multi-Tab Workflow
+
 ```
 {action: "list_tabs"}
 {action: "click", tab_index: 2, selector: "a.email"}
@@ -130,6 +175,7 @@ The `\n` at the end of the password submits the form.
 ```
 
 ### Dynamic Content
+
 ```
 {action: "navigate", payload: "https://example.com"}
 {action: "type", selector: "input[name=q]", payload: "query"}
@@ -139,6 +185,7 @@ The `\n` at the end of the password submits the form.
 ```
 
 ### Get Link Attribute
+
 ```
 {action: "navigate", payload: "https://example.com"}
 {action: "await_element", selector: "a.download"}
@@ -146,6 +193,7 @@ The `\n` at the end of the password submits the form.
 ```
 
 ### Execute JavaScript
+
 ```
 {action: "eval", payload: "document.querySelectorAll('a').length"}
 {action: "eval", payload: "Array.from(document.querySelectorAll('a')).map(a => a.href)"}
@@ -196,14 +244,17 @@ Extract page content to verify selectors before building workflow.
 ## Troubleshooting
 
 **Element not found:**
+
 - Use `await_element` before interaction
 - Verify selector with `extract` action using 'html' format
 
 **Timeout errors:**
+
 - Increase timeout: `{timeout: 30000}` for slow pages
 - Wait for specific element instead of text
 
 **Tab index out of range:**
+
 - Use `list_tabs` to get current indices
 - Tab indices change when tabs close
 
