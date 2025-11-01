@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Manual test: requires Chrome running with --remote-debugging-port=9222
 
 # Get first tab's WebSocket URL
