@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Test extraction commands
 
 echo "=== Navigate to example.com ==="

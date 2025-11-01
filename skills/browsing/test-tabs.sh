@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Test tab management commands
 
 echo "=== Listing tabs ==="
