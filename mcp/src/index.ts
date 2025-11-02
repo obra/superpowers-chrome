@@ -328,8 +328,8 @@ type: {"action": "type", "selector": "input", "payload": "text\\n"} → Form sta
 select: {"action": "select", "selector": "select", "payload": "option_value"} → Selection saved
 eval: {"action": "eval", "payload": "JavaScript_code"} → Result + page state saved
 
-## Content & Export (Manual)
-extract: {"action": "extract", "payload": "markdown|text|html", "selector": "optional"} → Use only for specific elements
+## Content & Export (Manual) - CHECK AUTO-CAPTURED FILES FIRST
+extract: {"action": "extract", "payload": "markdown|text|html", "selector": "required"} → ONLY for specific elements/changed content
 attr: {"action": "attr", "selector": "element", "payload": "attribute_name"} → Get single attribute
 screenshot: {"action": "screenshot", "payload": "filename", "selector": "optional"} → Custom screenshot
 
@@ -357,15 +357,16 @@ CSS: "button.submit", "#email", ".form input[name=password]"
 XPath: "//button[@type='submit']", "//input[@name='email']"
 
 ## Essential Patterns
-Login flow (auto-captured):
-{"action": "navigate", "payload": "https://site.com/login"} → page.md available
+Login flow (auto-captured - CHECK page.md FIRST):
+{"action": "navigate", "payload": "https://site.com/login"} → page.md available, check it first!
 {"action": "await_element", "selector": "#email"}
 {"action": "type", "selector": "#email", "payload": "user@test.com"} → form state saved
-{"action": "type", "selector": "#password", "payload": "pass123\\n"} → success page saved
+{"action": "type", "selector": "#password", "payload": "pass123\\n"} → success page saved to page.md
 
-Get specific content only:
-{"action": "navigate", "payload": "https://example.com"} → Full page auto-saved
-{"action": "extract", "payload": "text", "selector": ".price"} → Get one element only
+Extract specific content ONLY when auto-capture insufficient:
+{"action": "navigate", "payload": "https://example.com"} → Full page auto-saved to page.md
+// CHECK page.md first! Only extract if you need specific element:
+{"action": "extract", "payload": "text", "selector": ".price"} → ONLY if price not in page.md
 
 Multi-tab workflow:
 {"action": "list_tabs"}
@@ -373,7 +374,7 @@ Multi-tab workflow:
 {"action": "navigate", "tab_index": 1, "payload": "https://example.com"} → Auto-captured
 
 ## Troubleshooting
-Element not found → Use await_element first, verify with extract action
+Element not found → Use await_element first, check auto-captured page.html for correct selectors
 Timeout errors → Increase timeout parameter or wait for specific elements
 Tab errors → Use list_tabs to get current indices
 
@@ -393,15 +394,17 @@ const server = new McpServer({
 // Register the use_browser tool
 server.tool(
   "use_browser",
-  `Control persistent Chrome browser with automatic page capture. DOM actions (navigate, click, type, select, eval) save page content to disk automatically - no extract needed.
+  `Control persistent Chrome browser with automatic page capture. DOM actions (navigate, click, type, select, eval) save page content to disk automatically - CHECK AUTO-CAPTURED FILES FIRST.
 
-CRITICAL: Selectors support CSS or XPath (XPath must start with / or //). Append \\n to payload in 'type' action to submit forms. State persists across calls.
+🚨 CRITICAL: Navigation auto-captures page.md (markdown), page.html, screenshot.png. Check these BEFORE running extract!
 
-AUTO-SAVE: Each DOM action saves page.html, page.md, screenshot.png to temp directory. Files immediately available.
+EXTRACT ONLY WHEN: You need specific elements, different format, or content changed since navigation.
 
-Examples: {action:"click", selector:"//button[@type='submit']"} | {action:"extract", payload:"text", selector:"//h2"}
+Selectors: CSS or XPath (XPath starts with / or //). Append \\n to payload in 'type' to submit forms.
 
-Workflows: navigate→files_auto_saved | click→files_auto_saved | type→files_auto_saved`,
+Examples: {action:"navigate", payload:"https://site.com"} → page.md auto-captured | {action:"extract", payload:"text", selector:".price"} → only for specific elements
+
+Workflows: navigate→check_page.md_first | extract→only_if_auto_capture_insufficient`,
   UseBrowserParams,
   {
     readOnlyHint: false,

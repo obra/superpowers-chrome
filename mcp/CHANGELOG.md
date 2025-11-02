@@ -2,6 +2,31 @@
 
 All notable changes to the Chrome MCP Server will be documented in this file.
 
+## [1.5.0] - 2025-11-02
+
+### Changed
+- **Major UX Improvement**: Enhanced tool description to prevent unnecessary extract calls after navigation
+- Tool description now emphasizes auto-captured content (page.md, page.html, screenshot.png) is available immediately after navigation
+- Updated workflow examples to show extract only when actually needed (specific elements, changed content)
+- Added prominent warnings: "CHECK AUTO-CAPTURED FILES FIRST" and "EXTRACT ONLY WHEN" guidelines
+- Revised help documentation to clarify when extract is truly necessary vs. using auto-captured files
+
+### Fixed
+- Reduced inefficient pattern where Claude would automatically run extract after every navigation
+- Tool description examples no longer suggest extract as a standard follow-up to navigation
+- Clarified that auto-captured page.md often contains exactly what extract with markdown format would provide
+
+### Technical Details
+- Updated tool description from "navigate→await_element→extract" pattern to "navigate→check_page.md_first"
+- Added 🚨 warning emojis in tool description to draw attention to auto-capture behavior
+- Modified workflow examples to show extract only with specific selectors or justified use cases
+- Enhanced troubleshooting section to reference auto-captured page.html instead of manual extract
+
+### Documentation
+- Updated superpowers-chrome:browsing skill with comprehensive auto-capture guidance
+- Added "When to Use Extract" section with clear do/don't guidelines
+- Revised all workflow examples to avoid unnecessary extract pattern
+
 ## [1.3.0] - 2025-10-18
 
 ### Added

@@ -14120,8 +14120,8 @@ type: {"action": "type", "selector": "input", "payload": "text\\n"} \u2192 Form 
 select: {"action": "select", "selector": "select", "payload": "option_value"} \u2192 Selection saved
 eval: {"action": "eval", "payload": "JavaScript_code"} \u2192 Result + page state saved
 
-## Content & Export (Manual)
-extract: {"action": "extract", "payload": "markdown|text|html", "selector": "optional"} \u2192 Use only for specific elements
+## Content & Export (Manual) - CHECK AUTO-CAPTURED FILES FIRST
+extract: {"action": "extract", "payload": "markdown|text|html", "selector": "required"} \u2192 ONLY for specific elements/changed content
 attr: {"action": "attr", "selector": "element", "payload": "attribute_name"} \u2192 Get single attribute
 screenshot: {"action": "screenshot", "payload": "filename", "selector": "optional"} \u2192 Custom screenshot
 
@@ -14149,15 +14149,16 @@ CSS: "button.submit", "#email", ".form input[name=password]"
 XPath: "//button[@type='submit']", "//input[@name='email']"
 
 ## Essential Patterns
-Login flow (auto-captured):
-{"action": "navigate", "payload": "https://site.com/login"} \u2192 page.md available
+Login flow (auto-captured - CHECK page.md FIRST):
+{"action": "navigate", "payload": "https://site.com/login"} \u2192 page.md available, check it first!
 {"action": "await_element", "selector": "#email"}
 {"action": "type", "selector": "#email", "payload": "user@test.com"} \u2192 form state saved
-{"action": "type", "selector": "#password", "payload": "pass123\\n"} \u2192 success page saved
+{"action": "type", "selector": "#password", "payload": "pass123\\n"} \u2192 success page saved to page.md
 
-Get specific content only:
-{"action": "navigate", "payload": "https://example.com"} \u2192 Full page auto-saved
-{"action": "extract", "payload": "text", "selector": ".price"} \u2192 Get one element only
+Extract specific content ONLY when auto-capture insufficient:
+{"action": "navigate", "payload": "https://example.com"} \u2192 Full page auto-saved to page.md
+// CHECK page.md first! Only extract if you need specific element:
+{"action": "extract", "payload": "text", "selector": ".price"} \u2192 ONLY if price not in page.md
 
 Multi-tab workflow:
 {"action": "list_tabs"}
@@ -14165,7 +14166,7 @@ Multi-tab workflow:
 {"action": "navigate", "tab_index": 1, "payload": "https://example.com"} \u2192 Auto-captured
 
 ## Troubleshooting
-Element not found \u2192 Use await_element first, verify with extract action
+Element not found \u2192 Use await_element first, check auto-captured page.html for correct selectors
 Timeout errors \u2192 Increase timeout parameter or wait for specific elements
 Tab errors \u2192 Use list_tabs to get current indices
 
@@ -14180,15 +14181,17 @@ var server = new McpServer({
 });
 server.tool(
   "use_browser",
-  `Control persistent Chrome browser with automatic page capture. DOM actions (navigate, click, type, select, eval) save page content to disk automatically - no extract needed.
+  `Control persistent Chrome browser with automatic page capture. DOM actions (navigate, click, type, select, eval) save page content to disk automatically - CHECK AUTO-CAPTURED FILES FIRST.
 
-CRITICAL: Selectors support CSS or XPath (XPath must start with / or //). Append \\n to payload in 'type' action to submit forms. State persists across calls.
+\u{1F6A8} CRITICAL: Navigation auto-captures page.md (markdown), page.html, screenshot.png. Check these BEFORE running extract!
 
-AUTO-SAVE: Each DOM action saves page.html, page.md, screenshot.png to temp directory. Files immediately available.
+EXTRACT ONLY WHEN: You need specific elements, different format, or content changed since navigation.
 
-Examples: {action:"click", selector:"//button[@type='submit']"} | {action:"extract", payload:"text", selector:"//h2"}
+Selectors: CSS or XPath (XPath starts with / or //). Append \\n to payload in 'type' to submit forms.
 
-Workflows: navigate\u2192files_auto_saved | click\u2192files_auto_saved | type\u2192files_auto_saved`,
+Examples: {action:"navigate", payload:"https://site.com"} \u2192 page.md auto-captured | {action:"extract", payload:"text", selector:".price"} \u2192 only for specific elements
+
+Workflows: navigate\u2192check_page.md_first | extract\u2192only_if_auto_capture_insufficient`,
   UseBrowserParams,
   {
     readOnlyHint: false,
