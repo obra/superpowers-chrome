@@ -61,6 +61,21 @@ Ultra-lightweight MCP server with a single `use_browser` tool. Perfect for minim
 }
 ```
 
+**Option 1b: NPX with Headless Mode**
+```json
+{
+  "mcpServers": {
+    "chrome": {
+      "command": "npx",
+      "args": [
+        "github:obra/superpowers/superpowers-chrome/mcp",
+        "--headless"
+      ]
+    }
+  }
+}
+```
+
 **Option 2: Local Path**
 ```json
 {

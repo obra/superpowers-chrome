@@ -556,7 +556,7 @@ async function screenshot(tabIndexOrWsUrl, filename, selector = null) {
   return filename;
 }
 
-async function startChrome() {
+async function startChrome(headless = false) {
   const { spawn } = require('child_process');
   const { existsSync } = require('fs');
   const os = require('os');
@@ -595,7 +595,7 @@ async function startChrome() {
 
   const userDataDir = require('path').join(os.tmpdir(), `chrome-remote-${Date.now()}`);
 
-  const proc = spawn(chromePath, [
+  const chromeArgs = [
     `--remote-debugging-port=9222`,
     `--user-data-dir=${userDataDir}`,
     '--no-first-run',
@@ -620,7 +620,14 @@ async function startChrome() {
     '--no-sandbox',
     '--safebrowsing-disable-auto-update',
     '--disable-blink-features=AutomationControlled'
-  ], {
+  ];
+
+  // Add headless flag if requested
+  if (headless) {
+    chromeArgs.push('--headless=new');
+  }
+
+  const proc = spawn(chromePath, chromeArgs, {
     detached: true,
     stdio: 'ignore'
   });

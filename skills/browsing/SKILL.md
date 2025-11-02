@@ -207,6 +207,52 @@ Extract page content to verify selectors before building workflow.
 - Use `list_tabs` to get current indices
 - Tab indices change when tabs close
 
+**eval returns `[object Object]`:**
+- Use `JSON.stringify()` for complex objects: `{action: "eval", payload: "JSON.stringify({name: 'test'})"}`
+- For async functions: `{action: "eval", payload: "JSON.stringify(await yourAsyncFunction())"}`
+
+## Test Automation (Advanced)
+
+<details>
+<summary>Click to expand test automation guidance</summary>
+
+When building test automation, you have two approaches:
+
+### Approach 1: use_browser MCP (Simple Tests)
+Best for: Single-step tests, direct Claude control during conversation
+
+```json
+{"action": "navigate", "payload": "https://app.com"}
+{"action": "click", "selector": "#test-button"}
+{"action": "eval", "payload": "JSON.stringify({passed: document.querySelector('.success') !== null})"}
+```
+
+### Approach 2: chrome-ws CLI (Complex Tests)
+Best for: Multi-step test suites, standalone automation scripts
+
+**Key insight**: `chrome-ws` is the reference implementation showing proper Chrome DevTools Protocol usage. When `use_browser` doesn't work as expected, examine how `chrome-ws` handles the same operation.
+
+```bash
+# Example: Automated form testing
+./chrome-ws navigate 0 "https://app.com/form"
+./chrome-ws fill 0 "#email" "test@example.com"
+./chrome-ws click 0 "button[type=submit]"
+./chrome-ws wait-text 0 "Success"
+```
+
+### When use_browser Fails
+1. **Check chrome-ws source code** - It shows the correct CDP pattern
+2. **Use chrome-ws to verify** - Test the same operation via CLI
+3. **Adapt the pattern** - Apply the working CDP approach to use_browser
+
+### Common Test Automation Patterns
+- **Form validation**: Fill forms, check error states
+- **UI state testing**: Click elements, verify DOM changes
+- **Performance testing**: Measure load times, capture metrics
+- **Screenshot comparison**: Capture before/after states
+
+</details>
+
 ## Advanced Usage
 
 For command-line usage outside Claude Code, see [COMMANDLINE-USAGE.md](COMMANDLINE-USAGE.md).

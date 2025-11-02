@@ -22,6 +22,9 @@ const chromeLib = require(join(__dirname, "../../skills/browsing/chrome-ws-lib.j
 // Track if Chrome has been started
 let chromeStarted = false;
 
+// Parse command line arguments for headless mode
+const headlessMode = process.argv.includes('--headless');
+
 // Action enum for use_browser tool
 enum BrowserAction {
   NAVIGATE = "navigate",
@@ -80,7 +83,7 @@ async function ensureChromeRunning(): Promise<void> {
   } catch (error) {
     // Chrome not running, start it
     try {
-      await chromeLib.startChrome();
+      await chromeLib.startChrome(headlessMode);
       chromeStarted = true;
     } catch (startError) {
       throw new Error(`Failed to auto-start Chrome: ${startError instanceof Error ? startError.message : String(startError)}`);
@@ -432,7 +435,7 @@ async function main() {
   // Connect server to transport
   await server.connect(transport);
 
-  console.error("Chrome MCP server running via stdio");
+  console.error(`Chrome MCP server running via stdio${headlessMode ? ' (headless mode)' : ''}`);
 }
 
 // Run the server
