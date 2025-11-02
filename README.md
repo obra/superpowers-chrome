@@ -43,12 +43,25 @@ cd ~/.claude/plugins/cache/superpowers-chrome/skills/browsing
 
 ## MCP Server Mode
 
-Ultra-lightweight MCP server with a single `use_browser` tool. Perfect for minimal context usage.
+Ultra-lightweight MCP server with a single `use_browser` tool. Perfect for minimal context usage with automatic page captures.
 
-### Installation
+### Installation Options
 
-Add to Claude Desktop config:
+**Option 1: NPX (Recommended)**
+```json
+{
+  "mcpServers": {
+    "chrome": {
+      "command": "npx",
+      "args": [
+        "github:obra/superpowers/superpowers-chrome/mcp"
+      ]
+    }
+  }
+}
+```
 
+**Option 2: Local Path**
 ```json
 {
   "mcpServers": {
@@ -62,6 +75,32 @@ Add to Claude Desktop config:
 }
 ```
 
+**Option 3: Direct NPX Command**
+```bash
+npx github:obra/superpowers/superpowers-chrome/mcp
+```
+
+### Auto-Capture Features
+
+DOM-changing actions (navigate, click, type, select, eval) automatically capture:
+- **Page HTML**: Full rendered DOM state
+- **Page Markdown**: Structured content extraction
+- **Screenshot**: Visual page state
+- **DOM Summary**: Token-efficient page structure
+- **Session Organization**: Time-ordered captures in temp directory
+
+Response format:
+```
+→ https://example.com (capture #001)
+Size: 1200×765
+Snapshot: /tmp/chrome-session-123/001-navigate-456/
+Resources: page.html, page.md, screenshot.png, console-log.txt
+DOM:
+  Example Domain
+  Interactive: 0 buttons, 0 inputs, 1 links
+  Layout: body
+```
+
 ### Usage
 
 ```json
@@ -70,6 +109,8 @@ Add to Claude Desktop config:
   "payload": "https://example.com"
 }
 ```
+
+Get help: `{"action": "help"}` - Returns complete documentation
 
 See [mcp/README.md](mcp/README.md) for complete documentation.
 

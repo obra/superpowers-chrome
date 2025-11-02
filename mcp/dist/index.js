@@ -13894,6 +13894,7 @@ var BrowserAction = /* @__PURE__ */ ((BrowserAction2) => {
   BrowserAction2["NEW_TAB"] = "new_tab";
   BrowserAction2["CLOSE_TAB"] = "close_tab";
   BrowserAction2["LIST_TABS"] = "list_tabs";
+  BrowserAction2["HELP"] = "help";
   return BrowserAction2;
 })(BrowserAction || {});
 var UseBrowserParams = {
@@ -13919,6 +13920,32 @@ async function ensureChromeRunning() {
     }
   }
 }
+function formatActionResponse(actionResult, actionDescription) {
+  const captureNum = actionResult.captureDir?.split("/").pop()?.split("-")[0] || "?";
+  const response = [
+    `${actionDescription} \u2192 capture #${captureNum}`,
+    `Size: ${actionResult.pageSize?.width}\xD7${actionResult.pageSize?.height}`,
+    `Snapshot: ${actionResult.captureDir}/`,
+    `Resources: page.html, page.md, screenshot.png, console-log.txt`
+  ];
+  if (actionResult.consoleLog && actionResult.consoleLog.length > 0) {
+    response.push(`Console: ${actionResult.consoleLog.length} messages`);
+    actionResult.consoleLog.slice(0, 3).forEach((msg) => {
+      response.push(`  ${msg.level}: ${msg.text}`);
+    });
+    if (actionResult.consoleLog.length > 3) {
+      response.push(`  ... +${actionResult.consoleLog.length - 3} more`);
+    }
+  }
+  if (actionResult.domSummary) {
+    const lines = actionResult.domSummary.split("\n").slice(0, 8);
+    response.push("DOM:", ...lines.map((l) => `  ${l}`));
+    if (actionResult.domSummary.split("\n").length > 8) {
+      response.push("  ...");
+    }
+  }
+  return response.join("\n");
+}
 async function executeBrowserAction(params) {
   const tabIndex = params.tab_index;
   switch (params.action) {
@@ -13926,14 +13953,44 @@ async function executeBrowserAction(params) {
       if (!params.payload || typeof params.payload !== "string") {
         throw new Error("navigate requires payload with URL");
       }
-      await chromeLib.navigate(tabIndex, params.payload);
-      return `Navigated to ${params.payload}`;
+      const navResult = await chromeLib.navigate(tabIndex, params.payload, true);
+      if (typeof navResult === "object" && navResult.url) {
+        const captureNum = navResult.captureDir?.split("/").pop()?.split("-")[0] || "?";
+        const response = [
+          `\u2192 ${navResult.url} (capture #${captureNum})`,
+          `Size: ${navResult.pageSize?.width}\xD7${navResult.pageSize?.height}`,
+          `Snapshot: ${navResult.captureDir}/`,
+          `Resources: page.html, page.md, screenshot.png, console-log.txt`
+        ];
+        if (navResult.error) {
+          response.push(`\u26A0\uFE0F ${navResult.error}`);
+        }
+        if (navResult.consoleLog && navResult.consoleLog.length > 0) {
+          response.push(`Console: ${navResult.consoleLog.length} messages`);
+          navResult.consoleLog.slice(0, 3).forEach((msg) => {
+            response.push(`  ${msg.level}: ${msg.text}`);
+          });
+          if (navResult.consoleLog.length > 3) {
+            response.push(`  ... +${navResult.consoleLog.length - 3} more`);
+          }
+        }
+        if (navResult.domSummary) {
+          const lines = navResult.domSummary.split("\n").slice(0, 8);
+          response.push("DOM:", ...lines.map((l) => `  ${l}`));
+          if (navResult.domSummary.split("\n").length > 8) {
+            response.push("  ...");
+          }
+        }
+        return response.join("\n");
+      } else {
+        return `Navigated to ${params.payload}`;
+      }
     case "click" /* CLICK */:
       if (!params.selector) {
         throw new Error("click requires selector");
       }
-      await chromeLib.click(tabIndex, params.selector);
-      return `Clicked: ${params.selector}`;
+      const clickResult = await chromeLib.clickWithCapture(tabIndex, params.selector);
+      return formatActionResponse(clickResult, `Clicked: ${params.selector}`);
     case "type" /* TYPE */:
       if (!params.selector) {
         throw new Error("type requires selector");
@@ -13941,8 +13998,8 @@ async function executeBrowserAction(params) {
       if (!params.payload || typeof params.payload !== "string") {
         throw new Error("type requires payload with text");
       }
-      await chromeLib.fill(tabIndex, params.selector, params.payload);
-      return `Typed into: ${params.selector}`;
+      const typeResult = await chromeLib.fillWithCapture(tabIndex, params.selector, params.payload);
+      return formatActionResponse(typeResult, `Typed "${params.payload}" into: ${params.selector}`);
     case "extract" /* EXTRACT */:
       const format = params.payload || "text";
       if (typeof format !== "string") {
@@ -13986,12 +14043,6 @@ async function executeBrowserAction(params) {
       }
       const filepath = await chromeLib.screenshot(tabIndex, params.payload, params.selector || void 0);
       return `Screenshot saved to ${filepath}`;
-    case "eval" /* EVAL */:
-      if (!params.payload || typeof params.payload !== "string") {
-        throw new Error("eval requires payload with JavaScript code");
-      }
-      const result = await chromeLib.evaluate(tabIndex, params.payload);
-      return String(result);
     case "select" /* SELECT */:
       if (!params.selector) {
         throw new Error("select requires selector");
@@ -13999,8 +14050,15 @@ async function executeBrowserAction(params) {
       if (!params.payload || typeof params.payload !== "string") {
         throw new Error("select requires payload with option value");
       }
-      await chromeLib.selectOption(tabIndex, params.selector, params.payload);
-      return `Selected: ${params.payload}`;
+      const selectResult = await chromeLib.selectOptionWithCapture(tabIndex, params.selector, params.payload);
+      return formatActionResponse(selectResult, `Selected "${params.payload}" in: ${params.selector}`);
+    case "eval" /* EVAL */:
+      if (!params.payload || typeof params.payload !== "string") {
+        throw new Error("eval requires payload with JavaScript code");
+      }
+      const evalResult = await chromeLib.evaluateWithCapture(tabIndex, params.payload);
+      return formatActionResponse(evalResult, `Evaluated: ${params.payload}
+Result: ${evalResult.result}`);
     case "attr" /* ATTR */:
       if (!params.selector) {
         throw new Error("attr requires selector");
@@ -14037,6 +14095,68 @@ async function executeBrowserAction(params) {
         url: tab.url,
         type: tab.type
       })), null, 2);
+    case "help" /* HELP */:
+      return `# Chrome Browser Control
+
+Auto-starting Chrome with automatic page captures for every DOM action.
+
+## Actions Overview
+navigate, click, type, select, eval \u2192 Capture page state (HTML, markdown, screenshot, DOM summary)
+extract, attr, screenshot \u2192 Get content/visuals
+await_element, await_text \u2192 Wait for page changes
+list_tabs, new_tab, close_tab \u2192 Tab management
+
+## Navigation & Interaction
+navigate: {"action": "navigate", "payload": "URL"} \u2192 Captures full page state
+click: {"action": "click", "selector": "CSS_or_XPath"} \u2192 Captures post-click state
+type: {"action": "type", "selector": "input", "payload": "text\\n"} \u2192 \\n submits form
+select: {"action": "select", "selector": "select", "payload": "option_value"}
+eval: {"action": "eval", "payload": "JavaScript_code"} \u2192 Execute JS, capture result
+
+## Content & Export
+extract: {"action": "extract", "payload": "markdown|text|html", "selector": "optional"}
+attr: {"action": "attr", "selector": "element", "payload": "attribute_name"}
+screenshot: {"action": "screenshot", "payload": "filename", "selector": "optional"}
+
+## Waiting & Timing
+await_element: {"action": "await_element", "selector": "CSS_or_XPath", "timeout": 5000}
+await_text: {"action": "await_text", "payload": "text_to_wait_for", "timeout": 5000}
+
+## Tab Management
+list_tabs: {"action": "list_tabs"} \u2192 Shows all tabs with indices
+new_tab: {"action": "new_tab"}
+close_tab: {"action": "close_tab", "tab_index": 1}
+
+## Auto-Capture System
+DOM actions automatically save to temp directory:
+- page.html (full rendered DOM)
+- page.md (structured content)
+- screenshot.png (visual state)
+- console-log.txt (browser messages)
+Each capture gets numbered directory: 001-navigate-timestamp/, 002-click-timestamp/
+
+## Selectors
+CSS: "button.submit", "#email", ".form input[name=password]"
+XPath: "//button[@type='submit']", "//input[@name='email']"
+
+## Essential Patterns
+Login flow:
+{"action": "navigate", "payload": "https://site.com/login"}
+{"action": "await_element", "selector": "#email"}
+{"action": "type", "selector": "#email", "payload": "user@test.com"}
+{"action": "type", "selector": "#password", "payload": "pass123\\n"}
+
+Multi-tab workflow:
+{"action": "list_tabs"}
+{"action": "new_tab"}
+{"action": "navigate", "tab_index": 1, "payload": "https://example.com"}
+
+## Troubleshooting
+Element not found \u2192 Use await_element first, verify with extract action
+Timeout errors \u2192 Increase timeout parameter or wait for specific elements
+Tab errors \u2192 Use list_tabs to get current indices
+
+Chrome auto-starts. All DOM actions provide rich context via automatic captures.`;
     default:
       throw new Error(`Unknown action: ${params.action}`);
   }
@@ -14084,6 +14204,7 @@ Workflows: navigate\u2192await_element\u2192extract | navigate\u2192type(payload
   }
 );
 async function main() {
+  chromeLib.initializeSession();
   const transport = new StdioServerTransport();
   await server.connect(transport);
   console.error("Chrome MCP server running via stdio");
