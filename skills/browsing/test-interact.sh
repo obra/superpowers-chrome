@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Test interaction commands
 
 echo "=== Navigate to search page ==="

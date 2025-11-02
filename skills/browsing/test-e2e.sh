@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # End-to-end test: Navigate, extract, and verify multi-step workflow
 
 echo "=== End-to-End Workflow Test ==="

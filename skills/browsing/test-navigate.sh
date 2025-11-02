@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Test navigation commands
 
 echo "=== Navigate to google.com ==="
