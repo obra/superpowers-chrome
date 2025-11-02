@@ -1,0 +1,42 @@
+{
+  "name": "superpowers-chrome-mcp",
+  "version": "1.4.0",
+  "description": "Ultra-lightweight Chrome DevTools Protocol MCP server with auto-capture",
+  "type": "module",
+  "main": "mcp/dist/index.js",
+  "bin": {
+    "superpowers-chrome-mcp": "mcp/dist/index.js"
+  },
+  "scripts": {
+    "build": "cd mcp && npm install && npm run build",
+    "prepare": "npm run build",
+    "start": "node mcp/dist/index.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "files": [
+    "mcp/dist/",
+    "skills/browsing/chrome-ws-lib.js",
+    "README.md",
+    "CHANGELOG.md"
+  ],
+  "keywords": [
+    "mcp",
+    "chrome",
+    "browser",
+    "automation",
+    "devtools",
+    "claude",
+    "ai"
+  ],
+  "author": {
+    "name": "Jesse Vincent",
+    "email": "jesse@fsck.com"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/obra/superpowers-chrome.git"
+  },
+  "license": "MIT"
+}
