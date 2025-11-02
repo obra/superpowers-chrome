@@ -1,6 +1,6 @@
 {
   "name": "superpowers-chrome",
-  "version": "1.4.2",
+  "version": "1.5.0",
   "description": "BETA: VERY LIGHTLY TESTED - Direct Chrome DevTools Protocol access via 'browsing' skill. Skill mode (17 CLI commands) + MCP mode (single use_browser tool). Zero dependencies, auto-starts Chrome.",
   "author": {
     "name": "Jesse Vincent",
