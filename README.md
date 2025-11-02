@@ -47,14 +47,14 @@ Ultra-lightweight MCP server with a single `use_browser` tool. Perfect for minim
 
 ### Installation Options
 
-**Option 1: NPX (Recommended)**
+**Option 1: NPX (When Published)**
 ```json
 {
   "mcpServers": {
     "chrome": {
       "command": "npx",
       "args": [
-        "github:obra/superpowers/superpowers-chrome/mcp"
+        "chrome-mcp-server"
       ]
     }
   }
@@ -68,7 +68,7 @@ Ultra-lightweight MCP server with a single `use_browser` tool. Perfect for minim
     "chrome": {
       "command": "npx",
       "args": [
-        "github:obra/superpowers/superpowers-chrome/mcp",
+        "chrome-mcp-server",
         "--headless"
       ]
     }
@@ -76,7 +76,11 @@ Ultra-lightweight MCP server with a single `use_browser` tool. Perfect for minim
 }
 ```
 
-**Option 2: Local Path**
+**Option 2: Git Clone + Local Path (Current)**
+```bash
+git clone https://github.com/obra/superpowers-chrome.git
+cd superpowers-chrome/mcp && npm install && npm run build
+```
 ```json
 {
   "mcpServers": {
@@ -90,10 +94,6 @@ Ultra-lightweight MCP server with a single `use_browser` tool. Perfect for minim
 }
 ```
 
-**Option 3: Direct NPX Command**
-```bash
-npx github:obra/superpowers/superpowers-chrome/mcp
-```
 
 ### Auto-Capture Features
 
