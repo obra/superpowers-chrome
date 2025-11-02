@@ -1,6 +1,6 @@
 {
   "name": "chrome-mcp-server",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "Ultra-lightweight MCP server for Chrome DevTools Protocol via chrome-ws",
   "type": "module",
   "main": "dist/index.js",
