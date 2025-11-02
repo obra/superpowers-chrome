@@ -315,17 +315,17 @@ extract, attr, screenshot → Get content/visuals
 await_element, await_text → Wait for page changes
 list_tabs, new_tab, close_tab → Tab management
 
-## Navigation & Interaction
-navigate: {"action": "navigate", "payload": "URL"} → Captures full page state
-click: {"action": "click", "selector": "CSS_or_XPath"} → Captures post-click state
-type: {"action": "type", "selector": "input", "payload": "text\\n"} → \\n submits form
-select: {"action": "select", "selector": "select", "payload": "option_value"}
-eval: {"action": "eval", "payload": "JavaScript_code"} → Execute JS, capture result
+## Navigation & Interaction (Auto-Capture Enabled)
+navigate: {"action": "navigate", "payload": "URL"} → Files saved to disk automatically
+click: {"action": "click", "selector": "CSS_or_XPath"} → Post-click files saved
+type: {"action": "type", "selector": "input", "payload": "text\\n"} → Form state saved
+select: {"action": "select", "selector": "select", "payload": "option_value"} → Selection saved
+eval: {"action": "eval", "payload": "JavaScript_code"} → Result + page state saved
 
-## Content & Export
-extract: {"action": "extract", "payload": "markdown|text|html", "selector": "optional"}
-attr: {"action": "attr", "selector": "element", "payload": "attribute_name"}
-screenshot: {"action": "screenshot", "payload": "filename", "selector": "optional"}
+## Content & Export (Manual)
+extract: {"action": "extract", "payload": "markdown|text|html", "selector": "optional"} → Use only for specific elements
+attr: {"action": "attr", "selector": "element", "payload": "attribute_name"} → Get single attribute
+screenshot: {"action": "screenshot", "payload": "filename", "selector": "optional"} → Custom screenshot
 
 ## Waiting & Timing
 await_element: {"action": "await_element", "selector": "CSS_or_XPath", "timeout": 5000}
@@ -337,28 +337,34 @@ new_tab: {"action": "new_tab"}
 close_tab: {"action": "close_tab", "tab_index": 1}
 
 ## Auto-Capture System
-DOM actions automatically save to temp directory:
-- page.html (full rendered DOM)
-- page.md (structured content)
-- screenshot.png (visual state)
+DOM actions automatically save content to disk - NO EXTRACT NEEDED:
+- page.html (full rendered DOM) → Use instead of extract with "html"
+- page.md (structured content) → Use instead of extract with "markdown"
+- screenshot.png (visual state) → Use instead of screenshot action
 - console-log.txt (browser messages)
 Each capture gets numbered directory: 001-navigate-timestamp/, 002-click-timestamp/
+
+The files are immediately available after navigate/click/type/select/eval actions.
 
 ## Selectors
 CSS: "button.submit", "#email", ".form input[name=password]"
 XPath: "//button[@type='submit']", "//input[@name='email']"
 
 ## Essential Patterns
-Login flow:
-{"action": "navigate", "payload": "https://site.com/login"}
+Login flow (auto-captured):
+{"action": "navigate", "payload": "https://site.com/login"} → page.md available
 {"action": "await_element", "selector": "#email"}
-{"action": "type", "selector": "#email", "payload": "user@test.com"}
-{"action": "type", "selector": "#password", "payload": "pass123\\n"}
+{"action": "type", "selector": "#email", "payload": "user@test.com"} → form state saved
+{"action": "type", "selector": "#password", "payload": "pass123\\n"} → success page saved
+
+Get specific content only:
+{"action": "navigate", "payload": "https://example.com"} → Full page auto-saved
+{"action": "extract", "payload": "text", "selector": ".price"} → Get one element only
 
 Multi-tab workflow:
 {"action": "list_tabs"}
 {"action": "new_tab"}
-{"action": "navigate", "tab_index": 1, "payload": "https://example.com"}
+{"action": "navigate", "tab_index": 1, "payload": "https://example.com"} → Auto-captured
 
 ## Troubleshooting
 Element not found → Use await_element first, verify with extract action
