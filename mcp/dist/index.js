@@ -14180,13 +14180,15 @@ var server = new McpServer({
 });
 server.tool(
   "use_browser",
-  `Control persistent Chrome browser via DevTools Protocol. Use the superpowers-chrome:browsing skill for detailed guidance.
+  `Control persistent Chrome browser with automatic page capture. DOM actions (navigate, click, type, select, eval) save page content to disk automatically - no extract needed.
 
 CRITICAL: Selectors support CSS or XPath (XPath must start with / or //). Append \\n to payload in 'type' action to submit forms. State persists across calls.
 
+AUTO-SAVE: Each DOM action saves page.html, page.md, screenshot.png to temp directory. Files immediately available.
+
 Examples: {action:"click", selector:"//button[@type='submit']"} | {action:"extract", payload:"text", selector:"//h2"}
 
-Workflows: navigate\u2192await_element\u2192extract | navigate\u2192type(payload:"text\\n")\u2192await_text`,
+Workflows: navigate\u2192files_auto_saved | click\u2192files_auto_saved | type\u2192files_auto_saved`,
   UseBrowserParams,
   {
     readOnlyHint: false,

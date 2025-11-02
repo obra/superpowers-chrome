@@ -2,6 +2,48 @@
 
 All notable changes to the superpowers-chrome MCP project.
 
+## [1.4.2] - 2025-11-02 - Auto-Capture Documentation and Response Clarity
+
+### Changed
+- **MCP tool description**: Added clear auto-capture messaging in tool description
+  - "DOM actions save page content to disk automatically - no extract needed"
+  - "AUTO-SAVE: Each DOM action saves page.html, page.md, screenshot.png to temp directory"
+  - Updated workflow examples to show auto-saved files instead of manual extract
+
+- **Response format improvements**: Made file availability crystal clear
+  - "Current URL:" shows exact page location
+  - "Output dir:" clearly indicates capture directory
+  - "Full webpage content: page.html, page.md" explicitly states complete page capture
+  - "Screenshot: screenshot.png" and "JS console: console-log.txt" clearly labeled
+
+- **Enhanced action functions**: All capture-enabled actions now include current URL in response
+
+### Benefits
+- **Eliminates confusion**: Claude clearly understands files are automatically available
+- **Reduces redundant calls**: Prevents unnecessary extract actions after navigation
+- **Improves UX**: Clear file categorization and location information
+- **Better workflows**: Updated examples show proper auto-capture usage patterns
+
+---
+
+## [1.4.1] - 2025-11-02 - NPX Installation and GitHub Issues Resolution
+
+### Added
+- **NPX GitHub installation**: Direct installation via `npx github:obra/superpowers-chrome`
+- **Headless mode support**: `--headless` CLI flag for server environments
+- **Root package.json**: Enables proper NPX distribution from GitHub repository
+
+### Fixed
+- **GitHub Issue #1**: Installation problems resolved with NPX alternative
+- **GitHub Issue #4**: Added progressive disclosure test automation guidance to skill
+- **GitHub PR #5**: Merged bash shebang portability improvements
+
+### Changed
+- **Documentation clarity**: Enhanced auto-capture guidance in help action
+- **Skill enhancements**: Added collapsible test automation section with troubleshooting
+
+---
+
 ## [1.4.0] - 2025-11-02 - Session-Based Auto-Capture Enhancement
 
 ### Added
