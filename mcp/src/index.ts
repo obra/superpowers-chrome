@@ -98,10 +98,13 @@ function formatActionResponse(actionResult: any, actionDescription: string): str
   const captureNum = actionResult.captureDir?.split('/').pop()?.split('-')[0] || '?';
 
   const response = [
-    `${actionDescription} → capture #${captureNum}`,
+    `${actionDescription} (capture #${captureNum})`,
+    `Current URL: ${actionResult.url || 'unknown'}`,
     `Size: ${actionResult.pageSize?.width}×${actionResult.pageSize?.height}`,
-    `Snapshot: ${actionResult.captureDir}/`,
-    `Resources: page.html, page.md, screenshot.png, console-log.txt`
+    `Output dir: ${actionResult.captureDir}/`,
+    `Full webpage content: page.html, page.md`,
+    `Screenshot: screenshot.png`,
+    `JS console: console-log.txt`
   ];
 
   // Add console messages if any
@@ -144,10 +147,13 @@ async function executeBrowserAction(params: UseBrowserInput): Promise<string> {
       if (typeof navResult === 'object' && navResult.url) {
         const captureNum = navResult.captureDir?.split('/').pop()?.split('-')[0] || '?';
         const response = [
-          `→ ${navResult.url} (capture #${captureNum})`,
+          `Navigated to ${navResult.url} (capture #${captureNum})`,
+          `Current URL: ${navResult.url}`,
           `Size: ${navResult.pageSize?.width}×${navResult.pageSize?.height}`,
-          `Snapshot: ${navResult.captureDir}/`,
-          `Resources: page.html, page.md, screenshot.png, console-log.txt`
+          `Output dir: ${navResult.captureDir}/`,
+          `Full webpage content: page.html, page.md`,
+          `Screenshot: screenshot.png`,
+          `JS console: console-log.txt`
         ];
 
         if (navResult.error) {

@@ -956,9 +956,14 @@ async function capturePageArtifacts(tabIndexOrWsUrl, actionType = 'navigate') {
 async function clickWithCapture(tabIndexOrWsUrl, selector) {
   await click(tabIndexOrWsUrl, selector);
   const artifacts = await capturePageArtifacts(tabIndexOrWsUrl, 'click');
+
+  // Get current URL
+  const currentUrl = await evaluate(tabIndexOrWsUrl, 'window.location.href');
+
   return {
     action: 'click',
     selector,
+    url: currentUrl,
     pageSize: artifacts.pageSize,
     captureDir: artifacts.captureDir,
     sessionDir: artifacts.sessionDir,
@@ -971,10 +976,13 @@ async function clickWithCapture(tabIndexOrWsUrl, selector) {
 async function fillWithCapture(tabIndexOrWsUrl, selector, value) {
   await fill(tabIndexOrWsUrl, selector, value);
   const artifacts = await capturePageArtifacts(tabIndexOrWsUrl, 'type');
+  const currentUrl = await evaluate(tabIndexOrWsUrl, 'window.location.href');
+
   return {
     action: 'type',
     selector,
     value,
+    url: currentUrl,
     pageSize: artifacts.pageSize,
     captureDir: artifacts.captureDir,
     sessionDir: artifacts.sessionDir,
@@ -987,10 +995,13 @@ async function fillWithCapture(tabIndexOrWsUrl, selector, value) {
 async function selectOptionWithCapture(tabIndexOrWsUrl, selector, value) {
   await selectOption(tabIndexOrWsUrl, selector, value);
   const artifacts = await capturePageArtifacts(tabIndexOrWsUrl, 'select');
+  const currentUrl = await evaluate(tabIndexOrWsUrl, 'window.location.href');
+
   return {
     action: 'select',
     selector,
     value,
+    url: currentUrl,
     pageSize: artifacts.pageSize,
     captureDir: artifacts.captureDir,
     sessionDir: artifacts.sessionDir,
@@ -1003,10 +1014,13 @@ async function selectOptionWithCapture(tabIndexOrWsUrl, selector, value) {
 async function evaluateWithCapture(tabIndexOrWsUrl, expression) {
   const result = await evaluate(tabIndexOrWsUrl, expression);
   const artifacts = await capturePageArtifacts(tabIndexOrWsUrl, 'eval');
+  const currentUrl = await evaluate(tabIndexOrWsUrl, 'window.location.href');
+
   return {
     action: 'eval',
     expression,
     result,
+    url: currentUrl,
     pageSize: artifacts.pageSize,
     captureDir: artifacts.captureDir,
     sessionDir: artifacts.sessionDir,

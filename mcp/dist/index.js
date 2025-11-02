@@ -13924,10 +13924,13 @@ async function ensureChromeRunning() {
 function formatActionResponse(actionResult, actionDescription) {
   const captureNum = actionResult.captureDir?.split("/").pop()?.split("-")[0] || "?";
   const response = [
-    `${actionDescription} \u2192 capture #${captureNum}`,
+    `${actionDescription} (capture #${captureNum})`,
+    `Current URL: ${actionResult.url || "unknown"}`,
     `Size: ${actionResult.pageSize?.width}\xD7${actionResult.pageSize?.height}`,
-    `Snapshot: ${actionResult.captureDir}/`,
-    `Resources: page.html, page.md, screenshot.png, console-log.txt`
+    `Output dir: ${actionResult.captureDir}/`,
+    `Full webpage content: page.html, page.md`,
+    `Screenshot: screenshot.png`,
+    `JS console: console-log.txt`
   ];
   if (actionResult.consoleLog && actionResult.consoleLog.length > 0) {
     response.push(`Console: ${actionResult.consoleLog.length} messages`);
@@ -13958,10 +13961,13 @@ async function executeBrowserAction(params) {
       if (typeof navResult === "object" && navResult.url) {
         const captureNum = navResult.captureDir?.split("/").pop()?.split("-")[0] || "?";
         const response = [
-          `\u2192 ${navResult.url} (capture #${captureNum})`,
+          `Navigated to ${navResult.url} (capture #${captureNum})`,
+          `Current URL: ${navResult.url}`,
           `Size: ${navResult.pageSize?.width}\xD7${navResult.pageSize?.height}`,
-          `Snapshot: ${navResult.captureDir}/`,
-          `Resources: page.html, page.md, screenshot.png, console-log.txt`
+          `Output dir: ${navResult.captureDir}/`,
+          `Full webpage content: page.html, page.md`,
+          `Screenshot: screenshot.png`,
+          `JS console: console-log.txt`
         ];
         if (navResult.error) {
           response.push(`\u26A0\uFE0F ${navResult.error}`);
