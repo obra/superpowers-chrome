@@ -2,7 +2,7 @@
 
 All notable changes to the superpowers-chrome MCP project.
 
-## [Unreleased] - Session-Based Auto-Capture Enhancement
+## [1.4.0] - 2025-11-02 - Session-Based Auto-Capture Enhancement
 
 ### Added
 
@@ -47,6 +47,18 @@ All notable changes to the superpowers-chrome MCP project.
 - **Embedded guidance**: All actions, parameters, examples, and troubleshooting included
 - **Auto-capture explanation**: Documents the new capture system within the MCP
 
+#### NPX GitHub Installation
+- **Root package.json**: Enables `npx github:obra/superpowers-chrome` installation
+- **Prepare script**: Automatically builds MCP during NPX installation
+- **File distribution**: Proper files array for NPX packaging
+- **Binary configuration**: Correct bin path for direct execution
+
+#### Headless Mode Support
+- **CLI flag support**: `--headless` flag for NPX MCP server
+- **Enhanced startChrome()**: Accepts headless parameter for server environments
+- **Auto-detection**: Headless mode logged in server startup message
+- **CI/CD ready**: Perfect for automated testing and server deployments
+
 ### Changed
 
 #### MCP Response Format Overhaul
@@ -80,6 +92,12 @@ All notable changes to the superpowers-chrome MCP project.
 - **Element counting approach**: `document.querySelectorAll()` for precise counts
 - **Layout detection**: Semantic element identification (nav, main, forms)
 - **Text formatting improvements**: Quoted headings, readable spacing, truncation indicators
+
+#### Documentation and User Experience
+- **Auto-capture clarity**: Updated help to emphasize files are automatically saved
+- **Extract usage guidance**: Clarified when extract is needed vs when files are already available
+- **Progressive disclosure**: Added collapsible test automation section to skill
+- **Troubleshooting**: Enhanced with JSON.stringify patterns and chrome-ws reference guidance
 
 ### Technical Implementation Details
 
