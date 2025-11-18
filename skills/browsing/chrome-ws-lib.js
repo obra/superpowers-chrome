@@ -6,6 +6,13 @@
 const http = require('http');
 const crypto = require('crypto');
 
+const {
+  CHROME_DEBUG_HOST,
+  CHROME_DEBUG_PORT,
+  rewriteWsUrl,
+  WS_OVERRIDE_ENABLED
+} = require('./host-override');
+
 // Minimal WebSocket client implementation (dependency-free)
 class WebSocketClient {
   constructor(url) {
@@ -137,13 +144,11 @@ class WebSocketClient {
 
 // Helper to make HTTP requests to Chrome
 async function chromeHttp(path, method = 'GET') {
-  const url = new URL(`http://localhost:9222${path}`);
-
   return new Promise((resolve, reject) => {
     const options = {
-      hostname: url.hostname,
-      port: url.port,
-      path: url.pathname + url.search,
+      hostname: CHROME_DEBUG_HOST,
+      port: CHROME_DEBUG_PORT,
+      path,
       method: method
     };
 
@@ -169,13 +174,6 @@ async function chromeHttp(path, method = 'GET') {
   });
 }
 
-// Console message storage per tab
-const consoleMessages = new Map();
-
-// Session management
-let sessionDir = null;
-let captureCounter = 0;
-
 // Helper to resolve tab index or ws URL to actual ws URL
 async function resolveWsUrl(wsUrlOrIndex) {
   // If it's already a WebSocket URL, return it
@@ -186,8 +184,7 @@ async function resolveWsUrl(wsUrlOrIndex) {
   // If it's a number (tab index), resolve it
   const index = typeof wsUrlOrIndex === 'number' ? wsUrlOrIndex : parseInt(wsUrlOrIndex);
   if (!isNaN(index)) {
-    const tabs = await chromeHttp('/json');
-    const pageTabs = tabs.filter(t => t.type === 'page');
+    const pageTabs = await getTabs();
 
     // Auto-create tab if none exist (similar to auto-start Chrome behavior)
     if (pageTabs.length === 0) {
@@ -265,127 +262,58 @@ async function sendCdpCommand(wsUrl, method, params = {}) {
 
 async function getTabs() {
   const tabs = await chromeHttp('/json');
-  return tabs.filter(tab => tab.type === 'page');
+  if (!Array.isArray(tabs)) {
+    return [];
+  }
+  return tabs
+    .filter(tab => tab.type === 'page')
+    .map(tab => WS_OVERRIDE_ENABLED
+      ? { ...tab, webSocketDebuggerUrl: rewriteWsUrl(tab.webSocketDebuggerUrl) }
+      : tab
+    );
 }
 
 async function newTab(url = 'about:blank') {
-  return await chromeHttp(`/json/new?${url}`, 'PUT');
+  const encoded = encodeURIComponent(url);
+  const tab = await chromeHttp(`/json/new?${encoded}`, 'PUT');
+  if (tab && typeof tab === 'object') {
+    tab.webSocketDebuggerUrl = WS_OVERRIDE_ENABLED ? rewriteWsUrl(tab.webSocketDebuggerUrl) : tab.webSocketDebuggerUrl;
+  }
+  return tab;
 }
 
 async function closeTab(tabIndexOrWsUrl) {
   const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
-  const tabs = await chromeHttp('/json');
+  const tabs = await getTabs();
   const tab = tabs.find(t => t.webSocketDebuggerUrl === wsUrl);
   if (tab) {
     await chromeHttp(`/json/close/${tab.id}`, 'GET');
   }
 }
 
-async function navigate(tabIndexOrWsUrl, url, autoCapture = false) {
+async function navigate(tabIndexOrWsUrl, url) {
   const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
-
-  // Clear previous console messages if auto-capture is on
-  const startTime = new Date();
-  if (autoCapture) {
-    await clearConsoleMessages(tabIndexOrWsUrl);
-  }
-
   const result = await sendCdpCommand(wsUrl, 'Page.navigate', { url });
 
-  // Wait for page load with console logging enabled if needed
+  // Wait for page load
   await new Promise((resolve) => {
     const ws = new WebSocketClient(wsUrl);
-    let pageLoaded = false;
-
     ws.on('message', (msg) => {
       const data = JSON.parse(msg);
-
-      if (data.method === 'Page.loadEventFired' && !pageLoaded) {
-        pageLoaded = true;
-        // Keep connection alive a bit longer for console messages if auto-capture is on
-        if (autoCapture) {
-          setTimeout(() => {
-            ws.close();
-            resolve();
-          }, 1000); // Wait 1 second for console messages
-        } else {
-          ws.close();
-          resolve();
-        }
-      }
-
-      // Capture console messages during navigation if auto-capture is on
-      if (autoCapture && data.method === 'Runtime.consoleAPICalled') {
-        const entry = data.params;
-        const timestamp = new Date().toISOString();
-        const level = entry.type || 'log';
-        const args = entry.args || [];
-
-        // Extract text from arguments
-        const text = args.map(arg => {
-          if (arg.type === 'string') return arg.value;
-          if (arg.type === 'number') return String(arg.value);
-          if (arg.type === 'boolean') return String(arg.value);
-          if (arg.type === 'object') return arg.description || '[Object]';
-          return String(arg.value || arg.description || arg.type);
-        }).join(' ');
-
-        const messages = consoleMessages.get(wsUrl) || [];
-        messages.push({
-          timestamp,
-          level,
-          text
-        });
-        consoleMessages.set(wsUrl, messages);
-      }
-    });
-
-    ws.connect().then(() => {
-      // Enable both Page and Runtime domains
-      sendCdpCommand(wsUrl, 'Page.enable');
-      if (autoCapture) {
-        sendCdpCommand(wsUrl, 'Runtime.enable');
-      }
-    });
-
-    // Timeout after 30s
-    setTimeout(() => {
-      if (!pageLoaded) {
+      if (data.method === 'Page.loadEventFired') {
         ws.close();
         resolve();
       }
+    });
+    ws.connect().then(() => {
+      sendCdpCommand(wsUrl, 'Page.enable');
+    });
+    // Timeout after 30s
+    setTimeout(() => {
+      ws.close();
+      resolve();
     }, 30000);
   });
-
-  // Auto-capture if requested
-  if (autoCapture) {
-    try {
-      const artifacts = await capturePageArtifacts(tabIndexOrWsUrl, 'navigate');
-
-      // TODO: Fix console logging - currently returns empty array
-      // The console logging needs a persistent WebSocket connection which
-      // conflicts with the current single-use connection pattern
-      const consoleLog = []; // Placeholder for now
-
-      return {
-        frameId: result.frameId,
-        url,
-        pageSize: artifacts.pageSize,
-        captureDir: artifacts.captureDir,
-        sessionDir: artifacts.sessionDir,
-        files: artifacts.files,
-        domSummary: artifacts.domSummary,
-        consoleLog
-      };
-    } catch (error) {
-      // If auto-capture fails, still return success but with error note
-      return {
-        frameId: result.frameId,
-        url,
-        error: `Auto-capture failed: ${error.message}`
-      };
-    }
-  }
 
   return result.frameId;
 }
@@ -556,7 +484,7 @@ async function screenshot(tabIndexOrWsUrl, filename, selector = null) {
   return filename;
 }
 
-async function startChrome(headless = false) {
+async function startChrome() {
   const { spawn } = require('child_process');
   const { existsSync } = require('fs');
   const os = require('os');
@@ -574,7 +502,9 @@ async function startChrome(headless = false) {
     ],
     win32: [
       'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
-      'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe'
+      'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+      'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
+      'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe'
     ]
   };
 
@@ -595,8 +525,8 @@ async function startChrome(headless = false) {
 
   const userDataDir = require('path').join(os.tmpdir(), `chrome-remote-${Date.now()}`);
 
-  const chromeArgs = [
-    `--remote-debugging-port=9222`,
+  const proc = spawn(chromePath, [
+    `--remote-debugging-port=${CHROME_DEBUG_PORT}`,
     `--user-data-dir=${userDataDir}`,
     '--no-first-run',
     '--no-default-browser-check',
@@ -620,14 +550,7 @@ async function startChrome(headless = false) {
     '--no-sandbox',
     '--safebrowsing-disable-auto-update',
     '--disable-blink-features=AutomationControlled'
-  ];
-
-  // Add headless flag if requested
-  if (headless) {
-    chromeArgs.push('--headless=new');
-  }
-
-  const proc = spawn(chromePath, chromeArgs, {
+  ], {
     detached: true,
     stdio: 'ignore'
   });
@@ -636,398 +559,6 @@ async function startChrome(headless = false) {
 
   // Wait for Chrome to be ready
   await new Promise(resolve => setTimeout(resolve, 2000));
-}
-
-// Console logging utilities
-async function enableConsoleLogging(tabIndexOrWsUrl) {
-  const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
-
-  // Initialize console messages array for this tab
-  if (!consoleMessages.has(wsUrl)) {
-    consoleMessages.set(wsUrl, []);
-  }
-
-  // Start persistent WebSocket connection for console logging
-  const ws = new WebSocketClient(wsUrl);
-
-  return new Promise((resolve, reject) => {
-    let enabledRuntime = false;
-
-    ws.on('message', (msg) => {
-      const data = JSON.parse(msg);
-
-      // Handle Runtime.enable response
-      if (data.id === 999999 && !enabledRuntime) {
-        enabledRuntime = true;
-        // Don't close the WebSocket - keep it open for console messages
-        resolve();
-        return;
-      }
-
-      // Capture console messages
-      if (data.method === 'Runtime.consoleAPICalled') {
-        const entry = data.params;
-        const timestamp = new Date().toISOString();
-        const level = entry.type || 'log';
-        const args = entry.args || [];
-
-        // Extract text from arguments
-        const text = args.map(arg => {
-          if (arg.type === 'string') return arg.value;
-          if (arg.type === 'number') return String(arg.value);
-          if (arg.type === 'boolean') return String(arg.value);
-          if (arg.type === 'object') return arg.description || '[Object]';
-          return String(arg.value || arg.description || arg.type);
-        }).join(' ');
-
-        const messages = consoleMessages.get(wsUrl) || [];
-        messages.push({
-          timestamp,
-          level,
-          text
-        });
-        consoleMessages.set(wsUrl, messages);
-      }
-    });
-
-    ws.on('error', (err) => {
-      if (!enabledRuntime) {
-        reject(err);
-      }
-    });
-
-    ws.connect()
-      .then(() => {
-        // Enable Runtime domain to receive console messages
-        ws.send(JSON.stringify({
-          id: 999999, // Use fixed ID to identify this response
-          method: 'Runtime.enable'
-        }));
-      })
-      .catch(reject);
-
-    // Timeout after 5s
-    setTimeout(() => {
-      if (!enabledRuntime) {
-        ws.close();
-        reject(new Error('Console logging enable timeout'));
-      }
-    }, 5000);
-  });
-}
-
-async function getConsoleMessages(tabIndexOrWsUrl, sinceTime = null) {
-  const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
-  const messages = consoleMessages.get(wsUrl) || [];
-
-  if (!sinceTime) {
-    return messages;
-  }
-
-  // Filter messages since the specified time
-  return messages.filter(msg => new Date(msg.timestamp) > sinceTime);
-}
-
-async function clearConsoleMessages(tabIndexOrWsUrl) {
-  const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
-  consoleMessages.set(wsUrl, []);
-}
-
-// Session and directory management
-function initializeSession() {
-  if (!sessionDir) {
-    const fs = require('fs');
-    const path = require('path');
-    const os = require('os');
-
-    sessionDir = path.join(os.tmpdir(), `chrome-session-${Date.now()}`);
-    fs.mkdirSync(sessionDir, { recursive: true });
-    captureCounter = 0;
-
-    // Register cleanup on process exit
-    process.on('exit', cleanupSession);
-    process.on('SIGINT', () => {
-      cleanupSession();
-      process.exit(0);
-    });
-    process.on('SIGTERM', () => {
-      cleanupSession();
-      process.exit(0);
-    });
-  }
-  return sessionDir;
-}
-
-function cleanupSession() {
-  if (sessionDir) {
-    try {
-      const fs = require('fs');
-      fs.rmSync(sessionDir, { recursive: true, force: true });
-      console.error(`Cleaned up session directory: ${sessionDir}`);
-    } catch (error) {
-      console.error(`Failed to cleanup session directory: ${error.message}`);
-    }
-    sessionDir = null;
-  }
-}
-
-async function createCaptureDir(actionType = 'navigate') {
-  const fs = require('fs');
-  const path = require('path');
-
-  // Ensure session is initialized
-  initializeSession();
-
-  // Create time-ordered capture directory
-  captureCounter++;
-  const timestamp = Date.now();
-  const captureDir = path.join(sessionDir, `${String(captureCounter).padStart(3, '0')}-${actionType}-${timestamp}`);
-
-  fs.mkdirSync(captureDir, { recursive: true });
-  return captureDir;
-}
-
-async function generateDomSummary(tabIndexOrWsUrl) {
-  const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
-
-  // Smart, token-efficient DOM summary
-  const js = `
-    (() => {
-      // Count interactive elements
-      const buttons = document.querySelectorAll('button, input[type="button"], input[type="submit"]').length;
-      const inputs = document.querySelectorAll('input:not([type="button"]):not([type="submit"]), textarea, select').length;
-      const links = document.querySelectorAll('a[href]').length;
-
-      // Get page structure
-      const title = document.title.slice(0, 60);
-      const allH1s = Array.from(document.querySelectorAll('h1')).map(h => h.textContent.trim().slice(0, 40)).filter(Boolean);
-      const h1s = allH1s.slice(0, 3);
-      const h1Extra = allH1s.length > 3 ? allH1s.length - 3 : 0;
-
-      // Find main content area
-      const main = document.querySelector('main, [role="main"], .main, #main, .content, #content');
-      const mainTag = main ? main.tagName.toLowerCase() + (main.id ? '#' + main.id : main.className ? '.' + main.className.split(' ')[0] : '') : 'body';
-
-      // Check for forms
-      const forms = document.querySelectorAll('form');
-      const formInfo = forms.length > 0 ? \`\${forms.length} form\${forms.length > 1 ? 's' : ''}\` : '';
-
-      // Navigation elements
-      const nav = document.querySelector('nav, [role="navigation"], .nav, #nav') ? 'nav' : '';
-
-      return [
-        \`\${title}\`,
-        \`Interactive: \${buttons} buttons, \${inputs} inputs, \${links} links\`,
-        h1s.length > 0 ? \`Headings: \${h1s.map(h => '"' + h + '"').join(', ')}\${h1Extra > 0 ? ', and ' + h1Extra + ' more' : ''}\` : '',
-        \`Layout: \${nav ? 'nav + ' : ''}\${mainTag}\${formInfo ? ' + ' + formInfo : ''}\`
-      ].filter(Boolean).join('\\n');
-    })()
-  `;
-
-  const result = await sendCdpCommand(wsUrl, 'Runtime.evaluate', {
-    expression: js,
-    returnByValue: true
-  });
-  return result.result.value;
-}
-
-async function getPageSize(tabIndexOrWsUrl) {
-  const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
-
-  const js = `({
-    width: window.innerWidth,
-    height: window.innerHeight,
-    documentWidth: document.documentElement.scrollWidth,
-    documentHeight: document.documentElement.scrollHeight
-  })`;
-
-  const result = await sendCdpCommand(wsUrl, 'Runtime.evaluate', {
-    expression: js,
-    returnByValue: true
-  });
-  return result.result.value;
-}
-
-async function generateMarkdown(tabIndexOrWsUrl) {
-  const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
-
-  // Enhanced markdown extraction
-  const js = `
-    (() => {
-      const results = [];
-
-      // Extract title
-      const title = document.title;
-      if (title) results.push(\`# \${title}\\n\`);
-
-      // Extract main content elements
-      const elements = document.querySelectorAll('h1, h2, h3, h4, h5, h6, p, a, li, pre, code, blockquote, table');
-
-      for (const el of elements) {
-        const tag = el.tagName.toLowerCase();
-        const text = el.textContent.trim();
-        if (!text) continue;
-
-        if (tag.startsWith('h')) {
-          const level = parseInt(tag[1]);
-          results.push(\`\${'#'.repeat(level)} \${text}\\n\`);
-        } else if (tag === 'p') {
-          results.push(\`\${text}\\n\`);
-        } else if (tag === 'a') {
-          const href = el.href;
-          results.push(\`[\${text}](\${href})\`);
-        } else if (tag === 'li') {
-          results.push(\`- \${text}\`);
-        } else if (tag === 'pre' || tag === 'code') {
-          results.push(\`\\\`\\\`\\\`\\n\${text}\\n\\\`\\\`\\\`\\n\`);
-        } else if (tag === 'blockquote') {
-          results.push(\`> \${text}\\n\`);
-        } else if (tag === 'table') {
-          // Simple table extraction
-          const rows = el.querySelectorAll('tr');
-          if (rows.length > 0) {
-            results.push('\\n| Table Content |\\n|---|');
-            for (let i = 0; i < Math.min(rows.length, 10); i++) {
-              const cells = rows[i].querySelectorAll('td, th');
-              const cellTexts = Array.from(cells).map(cell => cell.textContent.trim()).slice(0, 3);
-              if (cellTexts.length > 0) {
-                results.push(\`| \${cellTexts.join(' | ')} |\`);
-              }
-            }
-            results.push('\\n');
-          }
-        }
-      }
-
-      return results.join('\\n').slice(0, 50000); // Limit size
-    })()
-  `;
-
-  const result = await sendCdpCommand(wsUrl, 'Runtime.evaluate', {
-    expression: js,
-    returnByValue: true
-  });
-  return result.result.value;
-}
-
-async function capturePageArtifacts(tabIndexOrWsUrl, actionType = 'navigate') {
-  const captureDir = await createCaptureDir(actionType);
-  const fs = require('fs');
-  const path = require('path');
-
-  // Capture all artifacts in parallel
-  const [html, markdown, pageSize, domSummary] = await Promise.all([
-    getHtml(tabIndexOrWsUrl),
-    generateMarkdown(tabIndexOrWsUrl),
-    getPageSize(tabIndexOrWsUrl),
-    generateDomSummary(tabIndexOrWsUrl)
-  ]);
-
-  // Save files
-  const htmlPath = path.join(captureDir, 'page.html');
-  const markdownPath = path.join(captureDir, 'page.md');
-  const screenshotPath = path.join(captureDir, 'screenshot.png');
-  const consoleLogPath = path.join(captureDir, 'console-log.txt');
-
-  fs.writeFileSync(htmlPath, html || '');
-  fs.writeFileSync(markdownPath, markdown || '');
-
-  // Create console log file (placeholder for now)
-  fs.writeFileSync(consoleLogPath, '# Console Log\n# TODO: Console logging not yet implemented\n');
-
-  // Take screenshot
-  await screenshot(tabIndexOrWsUrl, screenshotPath);
-
-  return {
-    captureDir,
-    sessionDir: initializeSession(),
-    files: {
-      html: htmlPath,
-      markdown: markdownPath,
-      screenshot: screenshotPath,
-      consoleLog: consoleLogPath
-    },
-    pageSize,
-    domSummary
-  };
-}
-
-// Enhanced DOM actions with auto-capture
-async function clickWithCapture(tabIndexOrWsUrl, selector) {
-  await click(tabIndexOrWsUrl, selector);
-  const artifacts = await capturePageArtifacts(tabIndexOrWsUrl, 'click');
-
-  // Get current URL
-  const currentUrl = await evaluate(tabIndexOrWsUrl, 'window.location.href');
-
-  return {
-    action: 'click',
-    selector,
-    url: currentUrl,
-    pageSize: artifacts.pageSize,
-    captureDir: artifacts.captureDir,
-    sessionDir: artifacts.sessionDir,
-    files: artifacts.files,
-    domSummary: artifacts.domSummary,
-    consoleLog: [] // Placeholder
-  };
-}
-
-async function fillWithCapture(tabIndexOrWsUrl, selector, value) {
-  await fill(tabIndexOrWsUrl, selector, value);
-  const artifacts = await capturePageArtifacts(tabIndexOrWsUrl, 'type');
-  const currentUrl = await evaluate(tabIndexOrWsUrl, 'window.location.href');
-
-  return {
-    action: 'type',
-    selector,
-    value,
-    url: currentUrl,
-    pageSize: artifacts.pageSize,
-    captureDir: artifacts.captureDir,
-    sessionDir: artifacts.sessionDir,
-    files: artifacts.files,
-    domSummary: artifacts.domSummary,
-    consoleLog: [] // Placeholder
-  };
-}
-
-async function selectOptionWithCapture(tabIndexOrWsUrl, selector, value) {
-  await selectOption(tabIndexOrWsUrl, selector, value);
-  const artifacts = await capturePageArtifacts(tabIndexOrWsUrl, 'select');
-  const currentUrl = await evaluate(tabIndexOrWsUrl, 'window.location.href');
-
-  return {
-    action: 'select',
-    selector,
-    value,
-    url: currentUrl,
-    pageSize: artifacts.pageSize,
-    captureDir: artifacts.captureDir,
-    sessionDir: artifacts.sessionDir,
-    files: artifacts.files,
-    domSummary: artifacts.domSummary,
-    consoleLog: [] // Placeholder
-  };
-}
-
-async function evaluateWithCapture(tabIndexOrWsUrl, expression) {
-  const result = await evaluate(tabIndexOrWsUrl, expression);
-  const artifacts = await capturePageArtifacts(tabIndexOrWsUrl, 'eval');
-  const currentUrl = await evaluate(tabIndexOrWsUrl, 'window.location.href');
-
-  return {
-    action: 'eval',
-    expression,
-    result,
-    url: currentUrl,
-    pageSize: artifacts.pageSize,
-    captureDir: artifacts.captureDir,
-    sessionDir: artifacts.sessionDir,
-    files: artifacts.files,
-    domSummary: artifacts.domSummary,
-    consoleLog: [] // Placeholder
-  };
 }
 
 module.exports = {
@@ -1045,23 +576,5 @@ module.exports = {
   waitForElement,
   waitForText,
   screenshot,
-  startChrome,
-  // Console logging utilities
-  enableConsoleLogging,
-  getConsoleMessages,
-  clearConsoleMessages,
-  // Session management
-  initializeSession,
-  cleanupSession,
-  createCaptureDir,
-  // Auto-capture utilities
-  generateDomSummary,
-  getPageSize,
-  generateMarkdown,
-  capturePageArtifacts,
-  // Enhanced DOM actions
-  clickWithCapture,
-  fillWithCapture,
-  selectOptionWithCapture,
-  evaluateWithCapture
+  startChrome
 };

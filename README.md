@@ -31,6 +31,14 @@ cd ~/.claude/plugins/cache/superpowers-chrome/skills/browsing
 ./chrome-ws click 0 "button[name=btnK]"
 ```
 
+**Windows tip:** The tooling defaults to `127.0.0.1:9222` for DevTools traffic. Override via `CHROME_WS_HOST` / `CHROME_WS_PORT` if you forward Chrome elsewhere.
+
+## Windows Verification (November 7, 2025)
+
+- `node skills/browsing/chrome-ws start` launched Chrome with remote debugging enabled on a fresh Windows 11 Pro install.
+- `node skills/browsing/chrome-ws tabs` and `node skills/browsing/chrome-ws navigate 0 https://example.com` confirmed CLI control with the IPv4 default binding.
+- `codex exec -c "mcp_servers.superpowers-chrome.enabled=true" "List Chrome tabs via MCP to verify the Windows override patch."` listed the Example Domain tab through the MCP server, demonstrating that the overrides also work through Codex.
+
 ## Commands
 
 - **Setup**: `start` (auto-detects platform)

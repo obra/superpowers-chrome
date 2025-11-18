@@ -133,6 +133,10 @@ npm run build
 npm run dev
 ```
 
+### Windows tip
+
+Chrome is bound to `127.0.0.1:9222` by default to avoid hostname resolution issues on recent Windows builds. Override with `CHROME_WS_HOST` / `CHROME_WS_PORT` if you expose DevTools on a different interface.
+
 ## Architecture
 
 ```

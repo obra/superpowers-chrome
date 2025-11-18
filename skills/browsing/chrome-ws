@@ -4,6 +4,14 @@ const process = require('process');
 
 const [,, command, wsUrlOrIndex, ...args] = process.argv;
 
+const {
+  CHROME_DEBUG_HOST,
+  CHROME_DEBUG_PORT,
+  CHROME_DEBUG_BASE,
+  rewriteWsUrl,
+  WS_OVERRIDE_ENABLED
+} = require('./host-override');
+
 // Minimal WebSocket client implementation (dependency-free)
 class WebSocketClient {
   constructor(url) {
@@ -147,18 +155,25 @@ async function resolveWsUrl(wsUrlOrIndex) {
   const index = parseInt(wsUrlOrIndex);
   if (!isNaN(index)) {
     const tabs = await chromeHttp('/json');
-    const pageTabs = tabs.filter(t => t.type === 'page');
+    const pageTabs = Array.isArray(tabs)
+      ? tabs
+          .filter(t => t.type === 'page')
+          .map(tab => WS_OVERRIDE_ENABLED
+            ? { ...tab, webSocketDebuggerUrl: rewriteWsUrl(tab.webSocketDebuggerUrl) }
+            : tab
+          )
+      : [];
 
     // Auto-create tab if none exist (similar to auto-start Chrome behavior)
     if (pageTabs.length === 0) {
       const newTabInfo = await chromeHttp('/json/new?about:blank', 'PUT');
-      return newTabInfo.webSocketDebuggerUrl;
+      return WS_OVERRIDE_ENABLED ? rewriteWsUrl(newTabInfo.webSocketDebuggerUrl) : newTabInfo.webSocketDebuggerUrl;
     }
 
     if (index < 0 || index >= pageTabs.length) {
       throw new Error(`Tab index ${index} out of range (0-${pageTabs.length - 1})`);
     }
-    return pageTabs[index].webSocketDebuggerUrl;
+    return WS_OVERRIDE_ENABLED ? rewriteWsUrl(pageTabs[index].webSocketDebuggerUrl) : pageTabs[index].webSocketDebuggerUrl;
   }
 
   throw new Error(`Invalid tab specifier: ${wsUrlOrIndex}`);
@@ -167,13 +182,12 @@ async function resolveWsUrl(wsUrlOrIndex) {
 // Helper to make HTTP requests to Chrome
 async function chromeHttp(path, method = 'GET') {
   const http = require('http');
-  const url = new URL(`http://localhost:9222${path}`);
 
   return new Promise((resolve, reject) => {
     const options = {
-      hostname: url.hostname,
-      port: url.port,
-      path: url.pathname + url.search,
+      hostname: CHROME_DEBUG_HOST,
+      port: CHROME_DEBUG_PORT,
+      path,
       method: method
     };
 
@@ -219,7 +233,9 @@ if (command === 'start') {
     ],
     win32: [
       'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
-      'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe'
+      'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+      'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
+      'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe'
     ]
   };
 
@@ -246,7 +262,7 @@ if (command === 'start') {
     : '/tmp/chrome-debug';
 
   const chromeArgs = [
-    '--remote-debugging-port=9222',
+    `--remote-debugging-port=${CHROME_DEBUG_PORT}`,
     `--user-data-dir=${userDataDir}`
   ];
 
@@ -262,10 +278,10 @@ if (command === 'start') {
     try {
       const version = await chromeHttp('/json/version');
       console.log(`Chrome started: ${version.Browser}`);
-      console.log(`Remote debugging: http://localhost:9222`);
+      console.log(`Remote debugging: ${CHROME_DEBUG_BASE}`);
     } catch (e) {
       console.error('Chrome started but remote debugging not accessible');
-      console.error('Try: curl http://localhost:9222/json/version');
+      console.error(`Try: curl ${CHROME_DEBUG_BASE}/json/version`);
       process.exit(1);
     }
   }, 2000);
@@ -301,8 +317,10 @@ if (command === 'new') {
   const url = wsUrlOrIndex;
   (async () => {
     try {
-      const tab = await chromeHttp(`/json/new?${encodeURIComponent(url)}`, 'PUT');
-      console.log(tab.webSocketDebuggerUrl);
+      const encoded = encodeURIComponent(url);
+      const tab = await chromeHttp(`/json/new?${encoded}`, 'PUT');
+      const wsUrl = WS_OVERRIDE_ENABLED ? rewriteWsUrl(tab.webSocketDebuggerUrl) : tab.webSocketDebuggerUrl;
+      console.log(wsUrl);
     } catch (e) {
       console.error('Failed to create tab:', e.message);
       process.exit(1);

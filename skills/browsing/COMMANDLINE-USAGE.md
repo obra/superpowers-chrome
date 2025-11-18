@@ -544,7 +544,7 @@ fi
 
 ## Troubleshooting
 
-**Connection refused:** Verify Chrome running with `curl http://localhost:9222/json`
+**Connection refused:** Verify Chrome running with `curl http://127.0.0.1:9222/json`
 
 **Element not found:** Check page structure with `chrome-ws html 0`
 

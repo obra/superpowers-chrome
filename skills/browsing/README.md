@@ -32,9 +32,15 @@ chmod +x chrome-ws
 ./test-extract.sh   # Content extraction
 ./test-wait.sh      # Wait commands
 ./test-e2e.sh       # End-to-end workflow
+./test-host-override.js  # Smoke test for host/port overrides
 ```
 
 ## Requirements
 
 - Node.js 16+
 - Chrome with `--remote-debugging-port=9222`
+
+## Windows Notes
+
+- The CLI now binds to `127.0.0.1:9222` by default to avoid name-resolution issues on Windows.
+- Customize the connection via `CHROME_WS_HOST` / `CHROME_WS_PORT` if you forward DevTools elsewhere.
