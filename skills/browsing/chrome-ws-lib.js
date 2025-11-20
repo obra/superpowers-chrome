@@ -561,6 +561,13 @@ async function startChrome() {
   await new Promise(resolve => setTimeout(resolve, 2000));
 }
 
+// No-op session initializer used by the MCP entrypoint. Added by Codex to
+// match mcp/src/index.ts expectations and avoid startup crashes when the
+// module is required from an ESM bundle.
+function initializeSession() {
+  return;
+}
+
 module.exports = {
   getTabs,
   newTab,
@@ -576,5 +583,6 @@ module.exports = {
   waitForElement,
   waitForText,
   screenshot,
-  startChrome
+  startChrome,
+  initializeSession
 };
