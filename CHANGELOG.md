@@ -2,6 +2,27 @@
 
 All notable changes to the superpowers-chrome MCP project.
 
+## [1.5.1] - 2025-11-20 - Build System Fix and Release Documentation
+
+### Fixed
+- **Build system**: Fixed outdated `mcp/dist/index.js` bundle causing `initializeSession is not a function` error
+- **Version sync**: Aligned all package.json versions to 1.5.1
+
+### Added
+- **CLAUDE.md**: Comprehensive release engineering documentation
+  - Complete build system architecture
+  - Step-by-step release process
+  - Version management guidelines
+  - Marketplace distribution workflow
+  - Troubleshooting guide
+  - Development workflow best practices
+
+### Changed
+- **Build verification**: Added clean build process to ensure fresh bundled output
+- **Documentation**: Improved clarity on build dependencies and bundling process
+
+---
+
 ## [1.4.2] - 2025-11-02 - Auto-Capture Documentation and Response Clarity
 
 ### Changed
