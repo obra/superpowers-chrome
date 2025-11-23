@@ -2,6 +2,31 @@
 
 All notable changes to the superpowers-chrome MCP project.
 
+## [1.5.2] - 2025-11-22 - Critical Fix: Restore Auto-Capture Functionality
+
+### Fixed
+- **CRITICAL**: Restored all auto-capture and session management functionality that was accidentally removed
+  - `initializeSession()`, `cleanupSession()`, `createCaptureDir()` - Session lifecycle management
+  - `clickWithCapture()`, `fillWithCapture()`, `selectOptionWithCapture()`, `evaluateWithCapture()` - Auto-capture DOM actions
+  - `enableConsoleLogging()`, `getConsoleMessages()`, `clearConsoleMessages()` - Console logging utilities
+  - `generateDomSummary()`, `getPageSize()`, `generateMarkdown()`, `capturePageArtifacts()` - Capture utilities
+  - Session-based directory structure and time-ordered capture subdirectories
+  - 4-file capture format (page.html, page.md, screenshot.png, console-log.txt)
+  - Smart DOM summary system
+- **MCP server**: Now starts correctly without `initializeSession is not a function` error
+- **Build system**: Rebuilt bundle with all restored functionality
+
+### Changed
+- **Windows compatibility**: Maintained host-override improvements from v1.5.0-1.5.1
+  - `CHROME_DEBUG_HOST`, `CHROME_DEBUG_PORT`, `rewriteWsUrl()` integration preserved
+  - Enhanced `getTabs()` and `newTab()` with WebSocket URL rewriting
+  - Improved error handling for array responses
+
+### Technical Details
+The v1.5.0-1.5.1 Windows support work accidentally removed ~466 lines of auto-capture code from `chrome-ws-lib.js` that was added in v1.4.0. This release restores all v1.4.0 functionality while preserving the Windows host-override improvements.
+
+---
+
 ## [1.5.1] - 2025-11-20 - Build System Fix and Release Documentation
 
 ### Fixed
