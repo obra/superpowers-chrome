@@ -2,6 +2,25 @@
 
 All notable changes to the superpowers-chrome MCP project.
 
+## [1.5.3] - 2025-11-30 - Image Visibility and Single-Directory Auth
+
+### Fixed
+- **Image content visibility**: Markdown extraction now includes images with alt text and dimensions
+  - Adds prominent notice: "📷 This page contains N significant image(s). Check screenshot.png for visual content."
+  - Lists each image with description and size info
+  - Handles `<figure>` elements with captions
+- **Directory auth spam**: All capture files now go in single session directory
+  - Changed from subdirectories (`001-navigate-timestamp/page.md`) to flat structure (`001-navigate.md`)
+  - Only one directory permission prompt per session instead of per-page
+  - Files use prefixes: `001-navigate.html`, `001-navigate.md`, `001-navigate.png`, `001-navigate-console.txt`
+
+### Changed
+- `createCaptureDir()` renamed to `createCapturePrefix()` - returns prefix string instead of creating subdirectory
+- Response format updated to show flat file structure with prefixes
+- Help text updated to reflect new file naming convention
+
+---
+
 ## [1.5.2] - 2025-11-22 - Critical Fix: Restore Auto-Capture Functionality
 
 ### Fixed

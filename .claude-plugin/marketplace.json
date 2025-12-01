@@ -9,7 +9,7 @@
     {
       "name": "superpowers-chrome",
       "description": "Direct Chrome DevTools Protocol access. Control Chrome via MCP tool or CLI skill. Auto-starts browser, zero dependencies.",
-      "version": "1.5.2",
+      "version": "1.5.3",
       "source": "./",
       "author": {
         "name": "Jesse Vincent",
