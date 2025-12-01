@@ -568,9 +568,11 @@ async function screenshot(tabIndexOrWsUrl, filename, selector = null) {
   });
 
   const fs = require('fs');
+  const path = require('path');
   const buffer = Buffer.from(result.data, 'base64');
   fs.writeFileSync(filename, buffer);
-  return filename;
+  // Return absolute path so caller knows exactly where file is
+  return path.resolve(filename);
 }
 
 async function startChrome() {

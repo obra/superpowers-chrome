@@ -2,6 +2,15 @@
 
 All notable changes to the superpowers-chrome MCP project.
 
+## [1.5.4] - 2025-11-30 - Screenshot Returns Absolute Path
+
+### Fixed
+- **Screenshot path confusion**: `screenshot` action now returns absolute path instead of relative filename
+  - Before: `Screenshot saved to solar_optimum.png` (Claude can't find it)
+  - After: `Screenshot saved to /Users/jesse/project/solar_optimum.png` (Claude reads it directly)
+
+---
+
 ## [1.5.3] - 2025-11-30 - Image Visibility and Single-Directory Auth
 
 ### Fixed
