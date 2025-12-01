@@ -13922,15 +13922,13 @@ async function ensureChromeRunning() {
   }
 }
 function formatActionResponse(actionResult, actionDescription) {
-  const captureNum = actionResult.captureDir?.split("/").pop()?.split("-")[0] || "?";
+  const prefix = actionResult.capturePrefix || "???";
   const response = [
-    `${actionDescription} (capture #${captureNum})`,
+    `${actionDescription}`,
     `Current URL: ${actionResult.url || "unknown"}`,
     `Size: ${actionResult.pageSize?.width}\xD7${actionResult.pageSize?.height}`,
-    `Output dir: ${actionResult.captureDir}/`,
-    `Full webpage content: page.html, page.md`,
-    `Screenshot: screenshot.png`,
-    `JS console: console-log.txt`
+    `Session dir: ${actionResult.sessionDir}`,
+    `Files: ${prefix}.html, ${prefix}.md, ${prefix}.png, ${prefix}-console.txt`
   ];
   if (actionResult.consoleLog && actionResult.consoleLog.length > 0) {
     response.push(`Console: ${actionResult.consoleLog.length} messages`);
@@ -13959,15 +13957,13 @@ async function executeBrowserAction(params) {
       }
       const navResult = await chromeLib.navigate(tabIndex, params.payload, true);
       if (typeof navResult === "object" && navResult.url) {
-        const captureNum = navResult.captureDir?.split("/").pop()?.split("-")[0] || "?";
+        const prefix = navResult.capturePrefix || "???";
         const response = [
-          `Navigated to ${navResult.url} (capture #${captureNum})`,
+          `Navigated to ${navResult.url}`,
           `Current URL: ${navResult.url}`,
           `Size: ${navResult.pageSize?.width}\xD7${navResult.pageSize?.height}`,
-          `Output dir: ${navResult.captureDir}/`,
-          `Full webpage content: page.html, page.md`,
-          `Screenshot: screenshot.png`,
-          `JS console: console-log.txt`
+          `Session dir: ${navResult.sessionDir}`,
+          `Files: ${prefix}.html, ${prefix}.md, ${prefix}.png, ${prefix}-console.txt`
         ];
         if (navResult.error) {
           response.push(`\u26A0\uFE0F ${navResult.error}`);
@@ -14136,11 +14132,11 @@ close_tab: {"action": "close_tab", "tab_index": 1}
 
 ## Auto-Capture System
 DOM actions automatically save content to disk - NO EXTRACT NEEDED:
-- page.html (full rendered DOM) \u2192 Use instead of extract with "html"
-- page.md (structured content) \u2192 Use instead of extract with "markdown"
-- screenshot.png (visual state) \u2192 Use instead of screenshot action
-- console-log.txt (browser messages)
-Each capture gets numbered directory: 001-navigate-timestamp/, 002-click-timestamp/
+- {prefix}.html (full rendered DOM) \u2192 Use instead of extract with "html"
+- {prefix}.md (structured content) \u2192 Use instead of extract with "markdown"
+- {prefix}.png (visual state) \u2192 Use instead of screenshot action
+- {prefix}-console.txt (browser messages)
+All files go in a single session directory with prefixes: 001-navigate, 002-click, etc.
 
 The files are immediately available after navigate/click/type/select/eval actions.
 
@@ -14183,7 +14179,7 @@ server.tool(
   "use_browser",
   `Control persistent Chrome browser with automatic page capture. DOM actions (navigate, click, type, select, eval) save page content to disk automatically - CHECK AUTO-CAPTURED FILES FIRST.
 
-\u{1F6A8} CRITICAL: Navigation auto-captures page.md (markdown), page.html, screenshot.png. Check these BEFORE running extract!
+\u{1F6A8} CRITICAL: Navigation auto-captures {prefix}.md, {prefix}.html, {prefix}.png in session dir. Check these BEFORE running extract!
 
 EXTRACT ONLY WHEN: You need specific elements, different format, or content changed since navigation.
 

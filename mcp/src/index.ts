@@ -95,16 +95,14 @@ async function ensureChromeRunning(): Promise<void> {
  * Format action response with capture information
  */
 function formatActionResponse(actionResult: any, actionDescription: string): string {
-  const captureNum = actionResult.captureDir?.split('/').pop()?.split('-')[0] || '?';
+  const prefix = actionResult.capturePrefix || '???';
 
   const response = [
-    `${actionDescription} (capture #${captureNum})`,
+    `${actionDescription}`,
     `Current URL: ${actionResult.url || 'unknown'}`,
     `Size: ${actionResult.pageSize?.width}×${actionResult.pageSize?.height}`,
-    `Output dir: ${actionResult.captureDir}/`,
-    `Full webpage content: page.html, page.md`,
-    `Screenshot: screenshot.png`,
-    `JS console: console-log.txt`
+    `Session dir: ${actionResult.sessionDir}`,
+    `Files: ${prefix}.html, ${prefix}.md, ${prefix}.png, ${prefix}-console.txt`
   ];
 
   // Add console messages if any
@@ -145,15 +143,13 @@ async function executeBrowserAction(params: UseBrowserInput): Promise<string> {
 
       // Handle enhanced response
       if (typeof navResult === 'object' && navResult.url) {
-        const captureNum = navResult.captureDir?.split('/').pop()?.split('-')[0] || '?';
+        const prefix = navResult.capturePrefix || '???';
         const response = [
-          `Navigated to ${navResult.url} (capture #${captureNum})`,
+          `Navigated to ${navResult.url}`,
           `Current URL: ${navResult.url}`,
           `Size: ${navResult.pageSize?.width}×${navResult.pageSize?.height}`,
-          `Output dir: ${navResult.captureDir}/`,
-          `Full webpage content: page.html, page.md`,
-          `Screenshot: screenshot.png`,
-          `JS console: console-log.txt`
+          `Session dir: ${navResult.sessionDir}`,
+          `Files: ${prefix}.html, ${prefix}.md, ${prefix}.png, ${prefix}-console.txt`
         ];
 
         if (navResult.error) {
@@ -344,11 +340,11 @@ close_tab: {"action": "close_tab", "tab_index": 1}
 
 ## Auto-Capture System
 DOM actions automatically save content to disk - NO EXTRACT NEEDED:
-- page.html (full rendered DOM) → Use instead of extract with "html"
-- page.md (structured content) → Use instead of extract with "markdown"
-- screenshot.png (visual state) → Use instead of screenshot action
-- console-log.txt (browser messages)
-Each capture gets numbered directory: 001-navigate-timestamp/, 002-click-timestamp/
+- {prefix}.html (full rendered DOM) → Use instead of extract with "html"
+- {prefix}.md (structured content) → Use instead of extract with "markdown"
+- {prefix}.png (visual state) → Use instead of screenshot action
+- {prefix}-console.txt (browser messages)
+All files go in a single session directory with prefixes: 001-navigate, 002-click, etc.
 
 The files are immediately available after navigate/click/type/select/eval actions.
 
@@ -396,7 +392,7 @@ server.tool(
   "use_browser",
   `Control persistent Chrome browser with automatic page capture. DOM actions (navigate, click, type, select, eval) save page content to disk automatically - CHECK AUTO-CAPTURED FILES FIRST.
 
-🚨 CRITICAL: Navigation auto-captures page.md (markdown), page.html, screenshot.png. Check these BEFORE running extract!
+🚨 CRITICAL: Navigation auto-captures {prefix}.md, {prefix}.html, {prefix}.png in session dir. Check these BEFORE running extract!
 
 EXTRACT ONLY WHEN: You need specific elements, different format, or content changed since navigation.
 

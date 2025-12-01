@@ -388,7 +388,7 @@ async function navigate(tabIndexOrWsUrl, url, autoCapture = false) {
         frameId: result.frameId,
         url,
         pageSize: artifacts.pageSize,
-        captureDir: artifacts.captureDir,
+        capturePrefix: artifacts.capturePrefix,
         sessionDir: artifacts.sessionDir,
         files: artifacts.files,
         domSummary: artifacts.domSummary,
@@ -781,20 +781,13 @@ function cleanupSession() {
   }
 }
 
-async function createCaptureDir(actionType = 'navigate') {
-  const fs = require('fs');
-  const path = require('path');
-
+function createCapturePrefix(actionType = 'navigate') {
   // Ensure session is initialized
   initializeSession();
 
-  // Create time-ordered capture directory
+  // Create time-ordered prefix for flat file structure
   captureCounter++;
-  const timestamp = Date.now();
-  const captureDir = path.join(sessionDir, `${String(captureCounter).padStart(3, '0')}-${actionType}-${timestamp}`);
-
-  fs.mkdirSync(captureDir, { recursive: true });
-  return captureDir;
+  return `${String(captureCounter).padStart(3, '0')}-${actionType}`;
 }
 
 async function generateDomSummary(tabIndexOrWsUrl) {
@@ -861,7 +854,7 @@ async function getPageSize(tabIndexOrWsUrl) {
 async function generateMarkdown(tabIndexOrWsUrl) {
   const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
 
-  // Enhanced markdown extraction
+  // Enhanced markdown extraction with image support
   const js = `
     (() => {
       const results = [];
@@ -870,12 +863,46 @@ async function generateMarkdown(tabIndexOrWsUrl) {
       const title = document.title;
       if (title) results.push(\`# \${title}\\n\`);
 
-      // Extract main content elements
-      const elements = document.querySelectorAll('h1, h2, h3, h4, h5, h6, p, a, li, pre, code, blockquote, table');
+      // Count images for summary
+      const allImages = document.querySelectorAll('img');
+      const significantImages = Array.from(allImages).filter(img => {
+        const rect = img.getBoundingClientRect();
+        return rect.width >= 100 && rect.height >= 100;
+      });
+
+      // Add image summary at top if there are significant images
+      if (significantImages.length > 0) {
+        results.push(\`\\n**📷 This page contains \${significantImages.length} significant image(s). Check screenshot.png for visual content.**\\n\`);
+      }
+
+      // Extract main content elements including images
+      const elements = document.querySelectorAll('h1, h2, h3, h4, h5, h6, p, a, li, pre, code, blockquote, table, img, figure');
 
       for (const el of elements) {
         const tag = el.tagName.toLowerCase();
         const text = el.textContent.trim();
+
+        if (tag === 'img') {
+          const alt = el.alt || '';
+          const src = el.src || '';
+          const rect = el.getBoundingClientRect();
+          // Only include images that are reasonably sized (not tiny icons)
+          if (rect.width >= 50 && rect.height >= 50) {
+            const sizeInfo = \`\${Math.round(rect.width)}x\${Math.round(rect.height)}\`;
+            const description = alt ? \`"\${alt}"\` : '(no alt text)';
+            results.push(\`\\n![Image: \${description} - \${sizeInfo}](\${src})\\n\`);
+          }
+          continue;
+        }
+
+        if (tag === 'figure') {
+          const figcaption = el.querySelector('figcaption');
+          if (figcaption) {
+            results.push(\`\\n*Figure: \${figcaption.textContent.trim()}*\\n\`);
+          }
+          continue;
+        }
+
         if (!text) continue;
 
         if (tag.startsWith('h')) {
@@ -921,9 +948,12 @@ async function generateMarkdown(tabIndexOrWsUrl) {
 }
 
 async function capturePageArtifacts(tabIndexOrWsUrl, actionType = 'navigate') {
-  const captureDir = await createCaptureDir(actionType);
+  const prefix = createCapturePrefix(actionType);
   const fs = require('fs');
   const path = require('path');
+
+  // All files go in session root directory
+  const dir = initializeSession();
 
   // Capture all artifacts in parallel
   const [html, markdown, pageSize, domSummary] = await Promise.all([
@@ -933,11 +963,11 @@ async function capturePageArtifacts(tabIndexOrWsUrl, actionType = 'navigate') {
     generateDomSummary(tabIndexOrWsUrl)
   ]);
 
-  // Save files
-  const htmlPath = path.join(captureDir, 'page.html');
-  const markdownPath = path.join(captureDir, 'page.md');
-  const screenshotPath = path.join(captureDir, 'screenshot.png');
-  const consoleLogPath = path.join(captureDir, 'console-log.txt');
+  // Save files with prefix (flat structure - all in session dir)
+  const htmlPath = path.join(dir, `${prefix}.html`);
+  const markdownPath = path.join(dir, `${prefix}.md`);
+  const screenshotPath = path.join(dir, `${prefix}.png`);
+  const consoleLogPath = path.join(dir, `${prefix}-console.txt`);
 
   fs.writeFileSync(htmlPath, html || '');
   fs.writeFileSync(markdownPath, markdown || '');
@@ -949,8 +979,8 @@ async function capturePageArtifacts(tabIndexOrWsUrl, actionType = 'navigate') {
   await screenshot(tabIndexOrWsUrl, screenshotPath);
 
   return {
-    captureDir,
-    sessionDir: initializeSession(),
+    capturePrefix: prefix,
+    sessionDir: dir,
     files: {
       html: htmlPath,
       markdown: markdownPath,
@@ -970,7 +1000,7 @@ async function clickWithCapture(tabIndexOrWsUrl, selector) {
     action: 'click',
     selector,
     pageSize: artifacts.pageSize,
-    captureDir: artifacts.captureDir,
+    capturePrefix: artifacts.capturePrefix,
     sessionDir: artifacts.sessionDir,
     files: artifacts.files,
     domSummary: artifacts.domSummary,
@@ -986,7 +1016,7 @@ async function fillWithCapture(tabIndexOrWsUrl, selector, value) {
     selector,
     value,
     pageSize: artifacts.pageSize,
-    captureDir: artifacts.captureDir,
+    capturePrefix: artifacts.capturePrefix,
     sessionDir: artifacts.sessionDir,
     files: artifacts.files,
     domSummary: artifacts.domSummary,
@@ -1002,7 +1032,7 @@ async function selectOptionWithCapture(tabIndexOrWsUrl, selector, value) {
     selector,
     value,
     pageSize: artifacts.pageSize,
-    captureDir: artifacts.captureDir,
+    capturePrefix: artifacts.capturePrefix,
     sessionDir: artifacts.sessionDir,
     files: artifacts.files,
     domSummary: artifacts.domSummary,
@@ -1018,7 +1048,7 @@ async function evaluateWithCapture(tabIndexOrWsUrl, expression) {
     expression,
     result,
     pageSize: artifacts.pageSize,
-    captureDir: artifacts.captureDir,
+    capturePrefix: artifacts.capturePrefix,
     sessionDir: artifacts.sessionDir,
     files: artifacts.files,
     domSummary: artifacts.domSummary,
@@ -1049,7 +1079,7 @@ module.exports = {
   // Session management
   initializeSession,
   cleanupSession,
-  createCaptureDir,
+  createCapturePrefix,
   // Auto-capture utilities
   generateDomSummary,
   getPageSize,
