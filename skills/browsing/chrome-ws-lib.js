@@ -746,15 +746,45 @@ async function clearConsoleMessages(tabIndexOrWsUrl) {
 }
 
 // Session and directory management
+function getXdgCacheHome() {
+  const os = require('os');
+  const path = require('path');
+
+  // Check XDG_CACHE_HOME environment variable first
+  if (process.env.XDG_CACHE_HOME) {
+    return process.env.XDG_CACHE_HOME;
+  }
+
+  // Fall back to platform-specific defaults
+  const platform = os.platform();
+  const homeDir = os.homedir();
+
+  if (platform === 'darwin') {
+    return path.join(homeDir, 'Library', 'Caches');
+  } else if (platform === 'win32') {
+    return process.env.LOCALAPPDATA || path.join(homeDir, 'AppData', 'Local');
+  } else {
+    // Linux and other Unix-like systems
+    return path.join(homeDir, '.cache');
+  }
+}
+
 function initializeSession() {
   if (!sessionDir) {
     const fs = require('fs');
     const path = require('path');
-    const os = require('os');
 
-    sessionDir = path.join(os.tmpdir(), `chrome-session-${Date.now()}`);
+    // Create XDG cache directory structure: ~/.cache/superpowers/browser/YYYY-MM-DD/session-{timestamp}
+    const cacheHome = getXdgCacheHome();
+    const now = new Date();
+    const dateStr = now.toISOString().split('T')[0]; // YYYY-MM-DD
+    const sessionId = `session-${Date.now()}`;
+
+    sessionDir = path.join(cacheHome, 'superpowers', 'browser', dateStr, sessionId);
     fs.mkdirSync(sessionDir, { recursive: true });
     captureCounter = 0;
+
+    console.error(`Browser session directory: ${sessionDir}`);
 
     // Register cleanup on process exit
     process.on('exit', cleanupSession);
@@ -1079,6 +1109,7 @@ module.exports = {
   getConsoleMessages,
   clearConsoleMessages,
   // Session management
+  getXdgCacheHome,
   initializeSession,
   cleanupSession,
   createCapturePrefix,

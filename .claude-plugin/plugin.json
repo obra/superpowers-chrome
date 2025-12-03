@@ -10,6 +10,7 @@
   "repository": "https://github.com/obra/superpowers-chrome",
   "license": "MIT",
   "keywords": ["chrome", "browser", "automation", "devtools", "cdp", "websocket"],
+  "agents": ["./agents/browser-user.md"],
   "mcpServers": {
     "chrome": {
       "command": "node",
