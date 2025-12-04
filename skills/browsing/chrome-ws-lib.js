@@ -180,6 +180,11 @@ const consoleMessages = new Map();
 let sessionDir = null;
 let captureCounter = 0;
 
+// Chrome process management
+let chromeProcess = null;
+let chromeHeadless = true; // Default to headless mode
+let chromeUserDataDir = null;
+
 // Helper to resolve tab index or ws URL to actual ws URL
 async function resolveWsUrl(wsUrlOrIndex) {
   // If it's already a WebSocket URL, rewrite and return it
@@ -575,10 +580,15 @@ async function screenshot(tabIndexOrWsUrl, filename, selector = null) {
   return path.resolve(filename);
 }
 
-async function startChrome() {
+async function startChrome(headless = null) {
   const { spawn } = require('child_process');
   const { existsSync } = require('fs');
   const os = require('os');
+
+  // Use provided headless parameter, or fall back to current mode
+  if (headless !== null) {
+    chromeHeadless = headless;
+  }
 
   // Platform-specific Chrome paths
   const chromePaths = {
@@ -612,11 +622,14 @@ async function startChrome() {
     throw new Error(`Chrome not found. Searched: ${paths.join(', ')}`);
   }
 
-  const userDataDir = require('path').join(os.tmpdir(), `chrome-remote-${Date.now()}`);
+  // Reuse user data dir if switching modes, otherwise create new one
+  if (!chromeUserDataDir) {
+    chromeUserDataDir = require('path').join(os.tmpdir(), `chrome-remote-${Date.now()}`);
+  }
 
-  const proc = spawn(chromePath, [
+  const args = [
     `--remote-debugging-port=9222`,
-    `--user-data-dir=${userDataDir}`,
+    `--user-data-dir=${chromeUserDataDir}`,
     '--no-first-run',
     '--no-default-browser-check',
     '--disable-background-networking',
@@ -639,15 +652,140 @@ async function startChrome() {
     '--no-sandbox',
     '--safebrowsing-disable-auto-update',
     '--disable-blink-features=AutomationControlled'
-  ], {
+  ];
+
+  // Add headless flag if in headless mode
+  if (chromeHeadless) {
+    args.push('--headless=new');
+  }
+
+  const proc = spawn(chromePath, args, {
     detached: true,
     stdio: 'ignore'
   });
 
   proc.unref();
+  chromeProcess = proc;
 
   // Wait for Chrome to be ready
   await new Promise(resolve => setTimeout(resolve, 2000));
+
+  const mode = chromeHeadless ? 'headless' : 'headed';
+  console.error(`Chrome started in ${mode} mode (PID: ${proc.pid})`);
+}
+
+async function killChrome() {
+  if (!chromeProcess) {
+    return;
+  }
+
+  try {
+    // Try graceful shutdown first via CDP
+    try {
+      await chromeHttp('/json/close', 'GET');
+      await new Promise(resolve => setTimeout(resolve, 500));
+    } catch (e) {
+      // Ignore errors, Chrome might already be dead
+    }
+
+    // Force kill if still running
+    if (chromeProcess && chromeProcess.pid) {
+      try {
+        process.kill(chromeProcess.pid, 'SIGTERM');
+        await new Promise(resolve => setTimeout(resolve, 500));
+      } catch (e) {
+        // Process might already be dead
+      }
+    }
+  } catch (e) {
+    console.error(`Error killing Chrome: ${e.message}`);
+  }
+
+  chromeProcess = null;
+}
+
+async function showBrowser() {
+  if (!chromeHeadless) {
+    return 'Browser is already visible';
+  }
+
+  console.error('Switching to headed mode (browser window will be visible)...');
+  console.error('WARNING: This will restart Chrome and lose any POST-based page state');
+
+  // Get current tabs before killing Chrome
+  let currentTabs = [];
+  try {
+    const tabs = await getTabs();
+    currentTabs = tabs.map(t => t.url).filter(url => url && url !== 'about:blank');
+  } catch (e) {
+    // Ignore errors if Chrome isn't running
+  }
+
+  // Kill current Chrome instance
+  await killChrome();
+
+  // Start Chrome in headed mode
+  await startChrome(false);
+
+  // Reopen tabs (Note: This will re-request pages via GET, losing POST state)
+  if (currentTabs.length > 0) {
+    console.error(`Reopening ${currentTabs.length} tab(s)...`);
+    for (const url of currentTabs) {
+      try {
+        await newTab(url);
+      } catch (e) {
+        console.error(`Failed to reopen ${url}: ${e.message}`);
+      }
+    }
+  }
+
+  return 'Browser window is now visible. Note: Pages were reloaded via GET requests.';
+}
+
+async function hideBrowser() {
+  if (chromeHeadless) {
+    return 'Browser is already in headless mode';
+  }
+
+  console.error('Switching to headless mode (hiding browser window)...');
+  console.error('WARNING: This will restart Chrome and lose any POST-based page state');
+
+  // Get current tabs before killing Chrome
+  let currentTabs = [];
+  try {
+    const tabs = await getTabs();
+    currentTabs = tabs.map(t => t.url).filter(url => url && url !== 'about:blank');
+  } catch (e) {
+    // Ignore errors if Chrome isn't running
+  }
+
+  // Kill current Chrome instance
+  await killChrome();
+
+  // Start Chrome in headless mode
+  await startChrome(true);
+
+  // Reopen tabs (Note: This will re-request pages via GET, losing POST state)
+  if (currentTabs.length > 0) {
+    console.error(`Reopening ${currentTabs.length} tab(s)...`);
+    for (const url of currentTabs) {
+      try {
+        await newTab(url);
+      } catch (e) {
+        console.error(`Failed to reopen ${url}: ${e.message}`);
+      }
+    }
+  }
+
+  return 'Browser is now in headless mode. Note: Pages were reloaded via GET requests.';
+}
+
+async function getBrowserMode() {
+  return {
+    headless: chromeHeadless,
+    mode: chromeHeadless ? 'headless' : 'headed',
+    running: chromeProcess !== null
+  };
 }
 
 // Console logging utilities
@@ -1104,6 +1242,11 @@ module.exports = {
   waitForText,
   screenshot,
   startChrome,
+  killChrome,
+  // Headless mode management
+  showBrowser,
+  hideBrowser,
+  getBrowserMode,
   // Console logging utilities
   enableConsoleLogging,
   getConsoleMessages,

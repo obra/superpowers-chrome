@@ -99,6 +99,39 @@ Single MCP tool with action-based interface. Chrome auto-starts on first use.
   - `tab_index`: Tab to close
   - Example: `{action: "close_tab", tab_index: 2}`
 
+### Browser Mode Control
+- **show_browser**: Make browser window visible (headed mode)
+  - Example: `{action: "show_browser"}`
+  - ⚠️ **WARNING**: Restarts Chrome, reloads pages via GET, loses POST state
+
+- **hide_browser**: Switch to headless mode (invisible browser)
+  - Example: `{action: "hide_browser"}`
+  - ⚠️ **WARNING**: Restarts Chrome, reloads pages via GET, loses POST state
+
+- **browser_mode**: Check current browser mode
+  - Example: `{action: "browser_mode"}`
+  - Returns: `{"headless": true|false, "mode": "headless"|"headed", "running": true|false}`
+
+**Default behavior**: Chrome starts in **headless mode** (invisible, faster, less resource usage).
+
+**Critical caveats when toggling modes**:
+1. **Chrome must restart** - Cannot switch headless/headed mode on running Chrome
+2. **Pages reload via GET** - All open tabs are reopened with GET requests
+3. **POST state is lost** - Form submissions, POST results, and POST-based navigation will be lost
+4. **Session state is lost** - Any client-side state (JavaScript variables, etc.) is cleared
+5. **Cookies/auth may persist** - Uses same user data directory, so logged-in sessions may survive
+
+**When to use headed mode**:
+- Debugging visual rendering issues
+- Demonstrating browser behavior to user
+- Testing features that only work with visible browser
+- Debugging issues that don't reproduce in headless mode
+
+**When to stay in headless mode** (default):
+- All other cases - faster, cleaner, less intrusive
+- Screenshots work perfectly in headless mode
+- Most automation works identically in both modes
+
 ## Quick Start Pattern
 
 ```

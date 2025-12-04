@@ -40,6 +40,9 @@ enum BrowserAction {
   NEW_TAB = "new_tab",
   CLOSE_TAB = "close_tab",
   LIST_TABS = "list_tabs",
+  SHOW_BROWSER = "show_browser",
+  HIDE_BROWSER = "hide_browser",
+  BROWSER_MODE = "browser_mode",
   HELP = "help"
 }
 
@@ -306,6 +309,18 @@ async function executeBrowserAction(params: UseBrowserInput): Promise<string> {
         type: tab.type
       })), null, 2);
 
+    case BrowserAction.SHOW_BROWSER:
+      const showResult = await chromeLib.showBrowser();
+      return showResult;
+
+    case BrowserAction.HIDE_BROWSER:
+      const hideResult = await chromeLib.hideBrowser();
+      return hideResult;
+
+    case BrowserAction.BROWSER_MODE:
+      const mode = await chromeLib.getBrowserMode();
+      return JSON.stringify(mode, null, 2);
+
     case BrowserAction.HELP:
       return `# Chrome Browser Control
 
@@ -316,6 +331,7 @@ navigate, click, type, select, eval → Capture page state (HTML, markdown, scre
 extract, attr, screenshot → Get content/visuals
 await_element, await_text → Wait for page changes
 list_tabs, new_tab, close_tab → Tab management
+show_browser, hide_browser, browser_mode → Toggle headless/headed mode
 
 ## Navigation & Interaction (Auto-Capture Enabled)
 navigate: {"action": "navigate", "payload": "URL"} → Files saved to disk automatically
@@ -337,6 +353,15 @@ await_text: {"action": "await_text", "payload": "text_to_wait_for", "timeout": 5
 list_tabs: {"action": "list_tabs"} → Shows all tabs with indices
 new_tab: {"action": "new_tab"}
 close_tab: {"action": "close_tab", "tab_index": 1}
+
+## Browser Mode Control
+show_browser: {"action": "show_browser"} → Make browser window visible (restarts Chrome, loses POST state)
+hide_browser: {"action": "hide_browser"} → Switch to headless mode (restarts Chrome, loses POST state)
+browser_mode: {"action": "browser_mode"} → Check current mode (headless/headed)
+
+⚠️  WARNING: Toggling browser visibility restarts Chrome and reloads pages via GET requests.
+    This will LOSE form data, POST results, and any client-side state.
+    Default: headless mode (faster, less intrusive)
 
 ## Auto-Capture System
 DOM actions automatically save content to disk - NO EXTRACT NEEDED:

@@ -13895,6 +13895,9 @@ var BrowserAction = /* @__PURE__ */ ((BrowserAction2) => {
   BrowserAction2["NEW_TAB"] = "new_tab";
   BrowserAction2["CLOSE_TAB"] = "close_tab";
   BrowserAction2["LIST_TABS"] = "list_tabs";
+  BrowserAction2["SHOW_BROWSER"] = "show_browser";
+  BrowserAction2["HIDE_BROWSER"] = "hide_browser";
+  BrowserAction2["BROWSER_MODE"] = "browser_mode";
   BrowserAction2["HELP"] = "help";
   return BrowserAction2;
 })(BrowserAction || {});
@@ -14098,6 +14101,15 @@ Result: ${evalResult.result}`);
         url: tab.url,
         type: tab.type
       })), null, 2);
+    case "show_browser" /* SHOW_BROWSER */:
+      const showResult = await chromeLib.showBrowser();
+      return showResult;
+    case "hide_browser" /* HIDE_BROWSER */:
+      const hideResult = await chromeLib.hideBrowser();
+      return hideResult;
+    case "browser_mode" /* BROWSER_MODE */:
+      const mode = await chromeLib.getBrowserMode();
+      return JSON.stringify(mode, null, 2);
     case "help" /* HELP */:
       return `# Chrome Browser Control
 
@@ -14108,6 +14120,7 @@ navigate, click, type, select, eval \u2192 Capture page state (HTML, markdown, s
 extract, attr, screenshot \u2192 Get content/visuals
 await_element, await_text \u2192 Wait for page changes
 list_tabs, new_tab, close_tab \u2192 Tab management
+show_browser, hide_browser, browser_mode \u2192 Toggle headless/headed mode
 
 ## Navigation & Interaction (Auto-Capture Enabled)
 navigate: {"action": "navigate", "payload": "URL"} \u2192 Files saved to disk automatically
@@ -14129,6 +14142,15 @@ await_text: {"action": "await_text", "payload": "text_to_wait_for", "timeout": 5
 list_tabs: {"action": "list_tabs"} \u2192 Shows all tabs with indices
 new_tab: {"action": "new_tab"}
 close_tab: {"action": "close_tab", "tab_index": 1}
+
+## Browser Mode Control
+show_browser: {"action": "show_browser"} \u2192 Make browser window visible (restarts Chrome, loses POST state)
+hide_browser: {"action": "hide_browser"} \u2192 Switch to headless mode (restarts Chrome, loses POST state)
+browser_mode: {"action": "browser_mode"} \u2192 Check current mode (headless/headed)
+
+\u26A0\uFE0F  WARNING: Toggling browser visibility restarts Chrome and reloads pages via GET requests.
+    This will LOSE form data, POST results, and any client-side state.
+    Default: headless mode (faster, less intrusive)
 
 ## Auto-Capture System
 DOM actions automatically save content to disk - NO EXTRACT NEEDED:

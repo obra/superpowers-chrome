@@ -2,6 +2,45 @@
 
 All notable changes to the superpowers-chrome MCP project.
 
+## [Unreleased] - XDG Cache and Browser Agent
+
+### Added
+- **Headless mode by default**: Chrome now starts in headless mode for better performance and less desktop clutter
+  - Screenshots work perfectly in headless mode
+  - Faster startup and lower resource usage
+  - No browser windows cluttering the desktop
+- **Browser mode toggle**: New actions to control headless/headed mode
+  - `show_browser`: Switch to headed mode (visible browser window)
+  - `hide_browser`: Switch to headless mode (invisible browser)
+  - `browser_mode`: Check current mode status
+  - ⚠️ **WARNING**: Toggling modes restarts Chrome and reloads pages via GET (loses POST state)
+- **XDG cache directory**: Session files now stored in platform-appropriate cache locations
+  - macOS: `~/Library/Caches/superpowers/browser/YYYY-MM-DD/session-{timestamp}/`
+  - Linux: `~/.cache/superpowers/browser/YYYY-MM-DD/session-{timestamp}/`
+  - Windows: `%LOCALAPPDATA%/superpowers/browser/YYYY-MM-DD/session-{timestamp}/`
+  - Respects `XDG_CACHE_HOME` environment variable on Linux
+  - Date-based organization for easier cleanup
+- **browser-user agent**: New read-only agent for browser automation tasks
+  - Pre-loaded with browsing skill
+  - Restricted to read-only tools (Read, Grep, Glob, Skill, use_browser)
+  - Cannot modify files or execute shell commands
+  - Has access to browser cache directory for viewing captured pages
+
+### Changed
+- Chrome now defaults to headless mode instead of headed mode
+- Session directory structure uses XDG cache conventions
+- Browser process management improved with proper PID tracking and graceful shutdown
+
+### Technical
+- Added `chromeProcess`, `chromeHeadless`, `chromeUserDataDir` state tracking
+- Implemented `killChrome()`, `showBrowser()`, `hideBrowser()`, `getBrowserMode()` functions
+- Export `getXdgCacheHome()` for external use
+- MCP server updated with three new browser mode actions
+- Help text updated with browser mode control documentation
+- Comprehensive test suite for headless toggle functionality (`test-headless-toggle.cjs`)
+
+---
+
 ## [1.5.4] - 2025-11-30 - Screenshot Returns Absolute Path
 
 ### Fixed
