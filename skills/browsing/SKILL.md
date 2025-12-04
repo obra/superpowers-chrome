@@ -108,11 +108,20 @@ Single MCP tool with action-based interface. Chrome auto-starts on first use.
   - Example: `{action: "hide_browser"}`
   - ⚠️ **WARNING**: Restarts Chrome, reloads pages via GET, loses POST state
 
-- **browser_mode**: Check current browser mode
+- **browser_mode**: Check current browser mode and profile
   - Example: `{action: "browser_mode"}`
-  - Returns: `{"headless": true|false, "mode": "headless"|"headed", "running": true|false}`
+  - Returns: `{"headless": true|false, "mode": "headless"|"headed", "running": true|false, "profile": "name", "profileDir": "/path"}`
 
-**Default behavior**: Chrome starts in **headless mode** (invisible, faster, less resource usage).
+### Profile Management
+- **set_profile**: Change Chrome profile (must kill Chrome first)
+  - Example: `{action: "set_profile", "payload": "browser-user"}`
+  - ⚠️ **WARNING**: Chrome must be stopped first
+
+- **get_profile**: Get current profile name and directory
+  - Example: `{action: "get_profile"}`
+  - Returns: `{"profile": "name", "profileDir": "/path"}`
+
+**Default behavior**: Chrome starts in **headless mode** with **"superpowers-chrome" profile**.
 
 **Critical caveats when toggling modes**:
 1. **Chrome must restart** - Cannot switch headless/headed mode on running Chrome
@@ -131,6 +140,31 @@ Single MCP tool with action-based interface. Chrome auto-starts on first use.
 - All other cases - faster, cleaner, less intrusive
 - Screenshots work perfectly in headless mode
 - Most automation works identically in both modes
+
+**Profile management**:
+Profiles store persistent browser data (cookies, localStorage, extensions, auth sessions).
+
+**Profile locations**:
+- macOS: `~/Library/Caches/superpowers/browser-profiles/{name}/`
+- Linux: `~/.cache/superpowers/browser-profiles/{name}/`
+- Windows: `%LOCALAPPDATA%/superpowers/browser-profiles/{name}/`
+
+**When to use separate profiles**:
+- **Default profile ("superpowers-chrome")**: General automation, shared sessions
+- **Agent-specific profiles**: Isolate different agents' browser state
+  - Example: browser-user agent uses "browser-user" profile
+- **Task-specific profiles**: Testing with different user contexts
+  - Example: "test-logged-in" vs "test-logged-out"
+
+**Profile data persists across**:
+- Chrome restarts
+- Mode toggles (headless ↔ headed)
+- System reboots (data is in cache directory)
+
+**To use a different profile**:
+1. Kill Chrome if running: `await chromeLib.killChrome()`
+2. Set profile: `{action: "set_profile", "payload": "my-profile"}`
+3. Start Chrome: Next navigate/action will use new profile
 
 ## Quick Start Pattern
 

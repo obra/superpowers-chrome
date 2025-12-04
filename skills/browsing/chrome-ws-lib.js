@@ -184,6 +184,7 @@ let captureCounter = 0;
 let chromeProcess = null;
 let chromeHeadless = true; // Default to headless mode
 let chromeUserDataDir = null;
+let chromeProfileName = 'superpowers-chrome'; // Default profile name
 
 // Helper to resolve tab index or ws URL to actual ws URL
 async function resolveWsUrl(wsUrlOrIndex) {
@@ -580,14 +581,19 @@ async function screenshot(tabIndexOrWsUrl, filename, selector = null) {
   return path.resolve(filename);
 }
 
-async function startChrome(headless = null) {
+async function startChrome(headless = null, profileName = null) {
   const { spawn } = require('child_process');
-  const { existsSync } = require('fs');
+  const { existsSync, mkdirSync } = require('fs');
   const os = require('os');
 
   // Use provided headless parameter, or fall back to current mode
   if (headless !== null) {
     chromeHeadless = headless;
+  }
+
+  // Use provided profile name, or fall back to current profile
+  if (profileName !== null) {
+    chromeProfileName = profileName;
   }
 
   // Platform-specific Chrome paths
@@ -622,9 +628,11 @@ async function startChrome(headless = null) {
     throw new Error(`Chrome not found. Searched: ${paths.join(', ')}`);
   }
 
-  // Reuse user data dir if switching modes, otherwise create new one
+  // Set up profile directory (persistent across sessions)
   if (!chromeUserDataDir) {
-    chromeUserDataDir = require('path').join(os.tmpdir(), `chrome-remote-${Date.now()}`);
+    chromeUserDataDir = getChromeProfileDir(chromeProfileName);
+    // Ensure profile directory exists
+    mkdirSync(chromeUserDataDir, { recursive: true });
   }
 
   const args = [
@@ -671,7 +679,7 @@ async function startChrome(headless = null) {
   await new Promise(resolve => setTimeout(resolve, 2000));
 
   const mode = chromeHeadless ? 'headless' : 'headed';
-  console.error(`Chrome started in ${mode} mode (PID: ${proc.pid})`);
+  console.error(`Chrome started in ${mode} mode (PID: ${proc.pid}, profile: ${chromeProfileName})`);
 }
 
 async function killChrome() {
@@ -784,8 +792,23 @@ async function getBrowserMode() {
   return {
     headless: chromeHeadless,
     mode: chromeHeadless ? 'headless' : 'headed',
-    running: chromeProcess !== null
+    running: chromeProcess !== null,
+    profile: chromeProfileName,
+    profileDir: chromeUserDataDir
   };
+}
+
+function getProfileName() {
+  return chromeProfileName;
+}
+
+function setProfileName(profileName) {
+  if (chromeProcess) {
+    throw new Error('Cannot change profile while Chrome is running. Kill Chrome first.');
+  }
+  chromeProfileName = profileName;
+  chromeUserDataDir = null; // Reset so next startChrome() uses new profile
+  return `Profile set to: ${profileName}`;
 }
 
 // Console logging utilities
@@ -905,6 +928,12 @@ function getXdgCacheHome() {
     // Linux and other Unix-like systems
     return path.join(homeDir, '.cache');
   }
+}
+
+function getChromeProfileDir(profileName = 'superpowers-chrome') {
+  const path = require('path');
+  const cacheHome = getXdgCacheHome();
+  return path.join(cacheHome, 'superpowers', 'browser-profiles', profileName);
 }
 
 function initializeSession() {
@@ -1247,6 +1276,10 @@ module.exports = {
   showBrowser,
   hideBrowser,
   getBrowserMode,
+  // Profile management
+  getChromeProfileDir,
+  getProfileName,
+  setProfileName,
   // Console logging utilities
   enableConsoleLogging,
   getConsoleMessages,

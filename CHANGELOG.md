@@ -2,9 +2,16 @@
 
 All notable changes to the superpowers-chrome MCP project.
 
-## [Unreleased] - XDG Cache and Browser Agent
+## [Unreleased] - XDG Cache, Browser Agent, and Profile Management
 
 ### Added
+- **Persistent Chrome profiles with "superpowers-chrome" default**: Browser data now persists across sessions
+  - Default profile: `superpowers-chrome`
+  - Profile storage: `~/.cache/superpowers/browser-profiles/{profile-name}/`
+  - Persists cookies, localStorage, extensions, auth sessions
+  - Profile management actions: `set_profile`, `get_profile`
+  - Optional profile parameter to `startChrome(headless, profileName)`
+  - Agent-specific profiles enable isolated browser states
 - **Headless mode by default**: Chrome now starts in headless mode for better performance and less desktop clutter
   - Screenshots work perfectly in headless mode
   - Faster startup and lower resource usage
@@ -12,7 +19,7 @@ All notable changes to the superpowers-chrome MCP project.
 - **Browser mode toggle**: New actions to control headless/headed mode
   - `show_browser`: Switch to headed mode (visible browser window)
   - `hide_browser`: Switch to headless mode (invisible browser)
-  - `browser_mode`: Check current mode status
+  - `browser_mode`: Check current mode status and active profile
   - ⚠️ **WARNING**: Toggling modes restarts Chrome and reloads pages via GET (loses POST state)
 - **XDG cache directory**: Session files now stored in platform-appropriate cache locations
   - macOS: `~/Library/Caches/superpowers/browser/YYYY-MM-DD/session-{timestamp}/`
@@ -28,16 +35,22 @@ All notable changes to the superpowers-chrome MCP project.
 
 ### Changed
 - Chrome now defaults to headless mode instead of headed mode
+- Chrome profiles now persist in XDG cache directory instead of temp directory
 - Session directory structure uses XDG cache conventions
 - Browser process management improved with proper PID tracking and graceful shutdown
+- `browser_mode` action now returns profile information
 
 ### Technical
-- Added `chromeProcess`, `chromeHeadless`, `chromeUserDataDir` state tracking
+- Added `chromeProcess`, `chromeHeadless`, `chromeUserDataDir`, `chromeProfileName` state tracking
 - Implemented `killChrome()`, `showBrowser()`, `hideBrowser()`, `getBrowserMode()` functions
-- Export `getXdgCacheHome()` for external use
-- MCP server updated with three new browser mode actions
-- Help text updated with browser mode control documentation
-- Comprehensive test suite for headless toggle functionality (`test-headless-toggle.cjs`)
+- Implemented `getChromeProfileDir()`, `getProfileName()`, `setProfileName()` for profile management
+- `startChrome()` now accepts optional `profileName` parameter
+- Export `getXdgCacheHome()` and `getChromeProfileDir()` for external use
+- MCP server updated with five new actions: browser mode control + profile management
+- Help text updated with browser mode and profile management documentation
+- Comprehensive test suites:
+  - `test-headless-toggle.cjs` - Validates headless mode switching
+  - `test-profiles.cjs` - Validates profile isolation and persistence
 
 ---
 

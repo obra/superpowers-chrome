@@ -13898,6 +13898,8 @@ var BrowserAction = /* @__PURE__ */ ((BrowserAction2) => {
   BrowserAction2["SHOW_BROWSER"] = "show_browser";
   BrowserAction2["HIDE_BROWSER"] = "hide_browser";
   BrowserAction2["BROWSER_MODE"] = "browser_mode";
+  BrowserAction2["SET_PROFILE"] = "set_profile";
+  BrowserAction2["GET_PROFILE"] = "get_profile";
   BrowserAction2["HELP"] = "help";
   return BrowserAction2;
 })(BrowserAction || {});
@@ -14110,6 +14112,19 @@ Result: ${evalResult.result}`);
     case "browser_mode" /* BROWSER_MODE */:
       const mode = await chromeLib.getBrowserMode();
       return JSON.stringify(mode, null, 2);
+    case "set_profile" /* SET_PROFILE */:
+      if (!params.payload || typeof params.payload !== "string") {
+        throw new Error("set_profile requires payload with profile name");
+      }
+      const setProfileResult = chromeLib.setProfileName(params.payload);
+      return setProfileResult;
+    case "get_profile" /* GET_PROFILE */:
+      const currentProfile = chromeLib.getProfileName();
+      const profileDir = chromeLib.getChromeProfileDir(currentProfile);
+      return JSON.stringify({
+        profile: currentProfile,
+        profileDir
+      }, null, 2);
     case "help" /* HELP */:
       return `# Chrome Browser Control
 
@@ -14121,6 +14136,7 @@ extract, attr, screenshot \u2192 Get content/visuals
 await_element, await_text \u2192 Wait for page changes
 list_tabs, new_tab, close_tab \u2192 Tab management
 show_browser, hide_browser, browser_mode \u2192 Toggle headless/headed mode
+set_profile, get_profile \u2192 Manage Chrome profiles
 
 ## Navigation & Interaction (Auto-Capture Enabled)
 navigate: {"action": "navigate", "payload": "URL"} \u2192 Files saved to disk automatically
@@ -14146,11 +14162,19 @@ close_tab: {"action": "close_tab", "tab_index": 1}
 ## Browser Mode Control
 show_browser: {"action": "show_browser"} \u2192 Make browser window visible (restarts Chrome, loses POST state)
 hide_browser: {"action": "hide_browser"} \u2192 Switch to headless mode (restarts Chrome, loses POST state)
-browser_mode: {"action": "browser_mode"} \u2192 Check current mode (headless/headed)
+browser_mode: {"action": "browser_mode"} \u2192 Check current mode (headless/headed) and profile
 
 \u26A0\uFE0F  WARNING: Toggling browser visibility restarts Chrome and reloads pages via GET requests.
     This will LOSE form data, POST results, and any client-side state.
     Default: headless mode (faster, less intrusive)
+
+## Profile Management
+set_profile: {"action": "set_profile", "payload": "profile-name"} \u2192 Set Chrome profile (must kill Chrome first)
+get_profile: {"action": "get_profile"} \u2192 Get current profile name and directory
+
+Profiles are stored in: ~/.cache/superpowers/browser-profiles/{profile-name}/
+Default profile: "superpowers-chrome"
+Profile data persists across sessions (cookies, localStorage, extensions, etc.)
 
 ## Auto-Capture System
 DOM actions automatically save content to disk - NO EXTRACT NEEDED:
