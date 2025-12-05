@@ -2,7 +2,7 @@
 
 All notable changes to the superpowers-chrome MCP project.
 
-## [Unreleased] - XDG Cache, Browser Agent, and Profile Management
+## [1.6.0] - 2025-12-05 - XDG Cache, Browser Agent, and Profile Management
 
 ### Added
 - **Persistent Chrome profiles with "superpowers-chrome" default**: Browser data now persists across sessions
@@ -39,6 +39,9 @@ All notable changes to the superpowers-chrome MCP project.
 - Session directory structure uses XDG cache conventions
 - Browser process management improved with proper PID tracking and graceful shutdown
 - `browser_mode` action now returns profile information
+
+### Fixed
+- **set_profile action**: Fixed bug where `ensureChromeRunning()` prevented profile changes by exempting profile/info actions from auto-start
 
 ### Technical
 - Added `chromeProcess`, `chromeHeadless`, `chromeUserDataDir`, `chromeProfileName` state tracking
