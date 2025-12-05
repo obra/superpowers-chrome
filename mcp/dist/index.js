@@ -14244,7 +14244,19 @@ Workflows: navigate\u2192check_page.md_first | extract\u2192only_if_auto_capture
   async (args) => {
     try {
       const params = external_exports.object(UseBrowserParams).parse(args);
-      await ensureChromeRunning();
+      const actionsNotRequiringChrome = [
+        "set_profile" /* SET_PROFILE */,
+        // Must have Chrome stopped
+        "get_profile" /* GET_PROFILE */,
+        // Just returns config
+        "browser_mode" /* BROWSER_MODE */,
+        // Just returns state
+        "help" /* HELP */
+        // Just returns help text
+      ];
+      if (!actionsNotRequiringChrome.includes(params.action)) {
+        await ensureChromeRunning();
+      }
       const result = await executeBrowserAction(params);
       return {
         content: [{

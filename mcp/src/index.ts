@@ -464,8 +464,17 @@ Workflows: navigate→check_page.md_first | extract→only_if_auto_capture_insuf
       // Parse and validate input with Zod
       const params = z.object(UseBrowserParams).parse(args) as UseBrowserInput;
 
-      // Ensure Chrome is running
-      await ensureChromeRunning();
+      // Ensure Chrome is running (except for actions that don't need it)
+      const actionsNotRequiringChrome = [
+        BrowserAction.SET_PROFILE,    // Must have Chrome stopped
+        BrowserAction.GET_PROFILE,    // Just returns config
+        BrowserAction.BROWSER_MODE,   // Just returns state
+        BrowserAction.HELP            // Just returns help text
+      ];
+
+      if (!actionsNotRequiringChrome.includes(params.action)) {
+        await ensureChromeRunning();
+      }
 
       // Execute browser action
       const result = await executeBrowserAction(params);
