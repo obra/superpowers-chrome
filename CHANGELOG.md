@@ -2,6 +2,27 @@
 
 All notable changes to the superpowers-chrome MCP project.
 
+## [1.6.1] - 2025-12-15 - Auto-Detect Headless Mode in Containers
+
+### Fixed
+- **Chrome crashes in containers**: MCP server now auto-detects display availability
+  - Linux: Checks `DISPLAY` or `WAYLAND_DISPLAY` environment variables
+  - macOS: Checks `TERM_PROGRAM` or `DISPLAY`
+  - Windows: Assumes display available (headless servers rare)
+  - Falls back to headless mode when no display detected
+- **Command-line overrides**: Added `--headed` flag to complement existing `--headless`
+  - `--headless`: Force headless mode
+  - `--headed`: Force headed mode (will fail if no display)
+  - No flag: Auto-detect based on environment
+- **Improved logging**: Startup message now shows mode and why it was chosen
+  - Example: `(headless mode, auto-detected no display)`
+
+### Technical
+- Added `hasDisplay()` function for cross-platform display detection
+- Previously Chrome defaulted to headed mode unless `--headless` was passed, causing crashes in containers/CI
+
+---
+
 ## [1.6.0] - 2025-12-05 - XDG Cache, Browser Agent, and Profile Management
 
 ### Added
