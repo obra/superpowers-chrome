@@ -13880,7 +13880,26 @@ var __dirname = dirname(__filename);
 var require2 = createRequire(import.meta.url);
 var chromeLib = require2(join(__dirname, "../../skills/browsing/chrome-ws-lib.js"));
 var chromeStarted = false;
-var headlessMode = process.argv.includes("--headless");
+function hasDisplay() {
+  const platform = process.platform;
+  if (platform === "darwin") {
+    return process.env.TERM_PROGRAM !== void 0 || process.env.DISPLAY !== void 0;
+  } else if (platform === "win32") {
+    return true;
+  } else {
+    return !!(process.env.DISPLAY || process.env.WAYLAND_DISPLAY);
+  }
+}
+var forceHeadless = process.argv.includes("--headless");
+var forceHeaded = process.argv.includes("--headed");
+var headlessMode;
+if (forceHeadless) {
+  headlessMode = true;
+} else if (forceHeaded) {
+  headlessMode = false;
+} else {
+  headlessMode = !hasDisplay();
+}
 var BrowserAction = /* @__PURE__ */ ((BrowserAction2) => {
   BrowserAction2["NAVIGATE"] = "navigate";
   BrowserAction2["CLICK"] = "click";
@@ -14279,7 +14298,8 @@ async function main() {
   chromeLib.initializeSession();
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error(`Chrome MCP server running via stdio${headlessMode ? " (headless mode)" : ""}`);
+  const modeReason = forceHeadless ? "forced via --headless" : forceHeaded ? "forced via --headed" : headlessMode ? "auto-detected no display" : "display available";
+  console.error(`Chrome MCP server running via stdio (${headlessMode ? "headless" : "headed"} mode, ${modeReason})`);
 }
 main().catch((error) => {
   console.error("Server error:", error);

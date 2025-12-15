@@ -22,8 +22,42 @@ const chromeLib = require(join(__dirname, "../../skills/browsing/chrome-ws-lib.j
 // Track if Chrome has been started
 let chromeStarted = false;
 
+/**
+ * Detect if a display is available for headed browser mode.
+ * Returns true if we can show a browser window.
+ */
+function hasDisplay(): boolean {
+  const platform = process.platform;
+
+  if (platform === 'darwin') {
+    // macOS: Generally has a display if running interactively
+    // Check if we're in a GUI session (not SSH without forwarding)
+    return process.env.TERM_PROGRAM !== undefined || process.env.DISPLAY !== undefined;
+  } else if (platform === 'win32') {
+    // Windows: Assume display available (headless Windows servers are rare)
+    return true;
+  } else {
+    // Linux/Unix: Check DISPLAY or WAYLAND_DISPLAY environment variables
+    return !!(process.env.DISPLAY || process.env.WAYLAND_DISPLAY);
+  }
+}
+
 // Parse command line arguments for headless mode
-const headlessMode = process.argv.includes('--headless');
+// --headless: Force headless mode
+// --headed: Force headed mode (will fail if no display)
+// Default: headless if no display available, headed otherwise
+const forceHeadless = process.argv.includes('--headless');
+const forceHeaded = process.argv.includes('--headed');
+
+let headlessMode: boolean;
+if (forceHeadless) {
+  headlessMode = true;
+} else if (forceHeaded) {
+  headlessMode = false;
+} else {
+  // Auto-detect: headless if no display available
+  headlessMode = !hasDisplay();
+}
 
 // Action enum for use_browser tool
 enum BrowserAction {
@@ -508,7 +542,10 @@ async function main() {
   // Connect server to transport
   await server.connect(transport);
 
-  console.error(`Chrome MCP server running via stdio${headlessMode ? ' (headless mode)' : ''}`);
+  const modeReason = forceHeadless ? 'forced via --headless' :
+                     forceHeaded ? 'forced via --headed' :
+                     headlessMode ? 'auto-detected no display' : 'display available';
+  console.error(`Chrome MCP server running via stdio (${headlessMode ? 'headless' : 'headed'} mode, ${modeReason})`);
 }
 
 // Run the server
