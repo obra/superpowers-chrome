@@ -713,9 +713,23 @@ const cdpClick = click;
 async function fill(tabIndexOrWsUrl, selector, value) {
   const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
 
-  // If selector provided, click it first to focus
+  // If selector provided, focus it (using JS focus, not click, to avoid capture side effects)
   if (selector) {
-    await click(tabIndexOrWsUrl, selector);
+    const focusJs = `
+      (() => {
+        const el = ${getElementSelector(selector)};
+        if (!el) return { success: false, error: 'Element not found' };
+        el.focus();
+        return { success: true, focused: document.activeElement === el };
+      })()
+    `;
+    const focusResult = await sendCdpCommand(wsUrl, 'Runtime.evaluate', {
+      expression: focusJs,
+      returnByValue: true
+    });
+    if (!focusResult.result?.value?.success) {
+      throw new Error(focusResult.result?.value?.error || 'Failed to focus element');
+    }
   }
 
   // Check if current focus is a textarea (for \n handling)
@@ -1805,11 +1819,69 @@ async function captureActionWithDiff(tabIndexOrWsUrl, actionType, actionFn, sett
 
   const prefix = createCapturePrefix(actionType);
   const dir = initializeSession();
+  const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
 
-  // Capture BEFORE state
+  // Helper to save/restore focus around operations that might lose it (like screenshots)
+  async function saveFocus() {
+    const result = await sendCdpCommand(wsUrl, 'Runtime.evaluate', {
+      expression: `
+        (() => {
+          const el = document.activeElement;
+          if (!el || el === document.body) return null;
+          // Build a unique selector for the focused element
+          if (el.id) return { type: 'id', value: el.id };
+          if (el.name) return { type: 'name', value: el.name, tag: el.tagName.toLowerCase() };
+          // Fallback: use path from body
+          const path = [];
+          let current = el;
+          while (current && current !== document.body) {
+            const parent = current.parentElement;
+            if (!parent) break;
+            const siblings = Array.from(parent.children).filter(c => c.tagName === current.tagName);
+            const index = siblings.indexOf(current);
+            path.unshift({ tag: current.tagName.toLowerCase(), index });
+            current = parent;
+          }
+          return { type: 'path', value: path };
+        })()
+      `,
+      returnByValue: true
+    });
+    return result.result?.value;
+  }
+
+  async function restoreFocus(focusInfo) {
+    if (!focusInfo) return;
+    let selector;
+    if (focusInfo.type === 'id') {
+      selector = `document.getElementById(${JSON.stringify(focusInfo.value)})`;
+    } else if (focusInfo.type === 'name') {
+      selector = `document.querySelector(${JSON.stringify(focusInfo.tag + '[name="' + focusInfo.value + '"]')})`;
+    } else if (focusInfo.type === 'path') {
+      selector = `(() => {
+        let el = document.body;
+        const path = ${JSON.stringify(focusInfo.value)};
+        for (const step of path) {
+          const children = Array.from(el.children).filter(c => c.tagName.toLowerCase() === step.tag);
+          el = children[step.index];
+          if (!el) return null;
+        }
+        return el;
+      })()`;
+    }
+    if (selector) {
+      await sendCdpCommand(wsUrl, 'Runtime.evaluate', {
+        expression: `(() => { const el = ${selector}; if (el) el.focus(); })()`
+      });
+    }
+  }
+
+  // Capture BEFORE state (save/restore focus around screenshot)
   const beforeHtml = await getHtml(tabIndexOrWsUrl);
+  const focusInfo = await saveFocus();
   const beforeScreenshotPath = path.join(dir, `${prefix}-before.png`);
   await screenshot(tabIndexOrWsUrl, beforeScreenshotPath);
+  await restoreFocus(focusInfo);
 
   // Execute the action
   const actionResult = await actionFn();
