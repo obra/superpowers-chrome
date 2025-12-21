@@ -725,6 +725,9 @@ async function fill(tabIndexOrWsUrl, selector, value) {
   });
   const isTextarea = focusInfo.result?.value?.isTextarea || false;
 
+  // Small delay helper to let browser process input
+  const settle = (ms = 50) => new Promise(r => setTimeout(r, ms));
+
   // Parse and type the value, handling \t and \n specially
   let buffer = '';
 
@@ -735,20 +738,31 @@ async function fill(tabIndexOrWsUrl, selector, value) {
       // Flush buffer, then Tab
       if (buffer) {
         await sendCdpCommand(wsUrl, 'Input.insertText', { text: buffer });
+        await settle();  // Let browser process text before Tab
         buffer = '';
       }
       await keyboardPress(tabIndexOrWsUrl, 'Tab');
+      await settle();  // Let browser process Tab and update focus
     } else if (char === '\n') {
       // Flush buffer, then Enter (or literal newline in textarea)
       if (buffer) {
         await sendCdpCommand(wsUrl, 'Input.insertText', { text: buffer });
+        await settle();  // Let browser process text before Enter
         buffer = '';
       }
-      if (isTextarea) {
+      // Re-check if current focus is a textarea (focus may have changed after Tab)
+      const currentFocus = await sendCdpCommand(wsUrl, 'Runtime.evaluate', {
+        expression: `({ isTextarea: document.activeElement?.tagName === 'TEXTAREA' })`,
+        returnByValue: true
+      });
+      const currentlyInTextarea = currentFocus.result?.value?.isTextarea || false;
+
+      if (currentlyInTextarea) {
         await sendCdpCommand(wsUrl, 'Input.insertText', { text: '\n' });
       } else {
         await keyboardPress(tabIndexOrWsUrl, 'Enter');
       }
+      await settle();
     } else {
       buffer += char;
     }
