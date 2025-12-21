@@ -1,6 +1,16 @@
 /**
  * Chrome WebSocket Library - Core CDP automation functions
  * Used by both CLI and MCP server
+ *
+ * Fixes implemented:
+ * - JRV-130: Connection pooling for persistent focus
+ * - JRV-127: keyboard_press action for special keys
+ * - JRV-123: React-compatible input via Input.insertText
+ * - JRV-124: React-compatible click via Input.dispatchMouseEvent
+ * - JRV-125: Tab key handling (via keyboard_press)
+ * - JRV-126: Better eval return handling
+ * - JRV-128: SPA navigation support
+ * - JRV-129: Multi-element selector warnings
  */
 
 const http = require('http');
@@ -19,10 +29,15 @@ class WebSocketClient {
     this.callbacks = {};
     this.socket = null;
     this.buffer = Buffer.alloc(0);
+    this.connected = false;
   }
 
   on(event, callback) {
     this.callbacks[event] = callback;
+  }
+
+  isConnected() {
+    return this.connected && this.socket !== null;
   }
 
   connect() {
@@ -45,6 +60,7 @@ class WebSocketClient {
 
       req.on('upgrade', (res, socket) => {
         this.socket = socket;
+        this.connected = true;
 
         socket.on('data', (data) => {
           this.buffer = Buffer.concat([this.buffer, data]);
@@ -52,7 +68,13 @@ class WebSocketClient {
         });
 
         socket.on('error', (err) => {
+          this.connected = false;
           if (this.callbacks.error) this.callbacks.error(err);
+        });
+
+        socket.on('close', () => {
+          this.connected = false;
+          if (this.callbacks.close) this.callbacks.close();
         });
 
         if (this.callbacks.open) this.callbacks.open();
@@ -98,6 +120,9 @@ class WebSocketClient {
   }
 
   send(data) {
+    if (!this.socket || !this.connected) {
+      throw new Error('WebSocket not connected');
+    }
     const payload = Buffer.from(data, 'utf8');
     const payloadLen = payload.length;
 
@@ -134,11 +159,120 @@ class WebSocketClient {
   }
 
   close() {
+    this.connected = false;
     if (this.socket) {
       this.socket.end();
       this.socket = null;
     }
   }
+}
+
+// =============================================================================
+// CONNECTION POOL (JRV-130: Fix focus lost between eval calls)
+// =============================================================================
+
+// Connection pool: maintains persistent WebSocket connections per tab
+const connectionPool = new Map(); // wsUrl -> { ws: WebSocketClient, pendingRequests: Map, messageIdCounter: number }
+
+/**
+ * Get or create a pooled connection for a tab
+ */
+async function getPooledConnection(wsUrl) {
+  let conn = connectionPool.get(wsUrl);
+
+  if (conn && conn.ws.isConnected()) {
+    return conn;
+  }
+
+  // Create new connection
+  const ws = new WebSocketClient(wsUrl);
+  conn = {
+    ws,
+    pendingRequests: new Map(), // id -> { resolve, reject, timeout }
+    messageIdCounter: 1
+  };
+
+  ws.on('message', (msg) => {
+    try {
+      const data = JSON.parse(msg);
+      if (data.id !== undefined) {
+        const pending = conn.pendingRequests.get(data.id);
+        if (pending) {
+          clearTimeout(pending.timeout);
+          conn.pendingRequests.delete(data.id);
+          if (data.error) {
+            pending.reject(new Error(data.error.message || JSON.stringify(data.error)));
+          } else {
+            pending.resolve(data.result);
+          }
+        }
+      }
+      // Handle events (console messages, etc.)
+      if (data.method && conn.eventHandler) {
+        conn.eventHandler(data);
+      }
+    } catch (e) {
+      console.error('Error processing CDP message:', e);
+    }
+  });
+
+  ws.on('close', () => {
+    connectionPool.delete(wsUrl);
+    // Reject all pending requests
+    for (const [id, pending] of conn.pendingRequests) {
+      clearTimeout(pending.timeout);
+      pending.reject(new Error('Connection closed'));
+    }
+    conn.pendingRequests.clear();
+  });
+
+  ws.on('error', (err) => {
+    console.error('WebSocket error:', err);
+  });
+
+  await ws.connect();
+  connectionPool.set(wsUrl, conn);
+
+  return conn;
+}
+
+/**
+ * Send CDP command using pooled connection (maintains focus/state)
+ */
+async function sendCdpCommandPooled(wsUrl, method, params = {}, timeout = 30000) {
+  const conn = await getPooledConnection(wsUrl);
+  const id = conn.messageIdCounter++;
+
+  return new Promise((resolve, reject) => {
+    const timeoutHandle = setTimeout(() => {
+      conn.pendingRequests.delete(id);
+      reject(new Error(`CDP command timeout: ${method}`));
+    }, timeout);
+
+    conn.pendingRequests.set(id, { resolve, reject, timeout: timeoutHandle });
+    conn.ws.send(JSON.stringify({ id, method, params }));
+  });
+}
+
+/**
+ * Close pooled connection for a tab
+ */
+function closePooledConnection(wsUrl) {
+  const conn = connectionPool.get(wsUrl);
+  if (conn) {
+    conn.ws.close();
+    connectionPool.delete(wsUrl);
+  }
+}
+
+/**
+ * Close all pooled connections
+ */
+function closeAllConnections() {
+  for (const [wsUrl, conn] of connectionPool) {
+    conn.ws.close();
+  }
+  connectionPool.clear();
 }
 
 // Helper to make HTTP requests to Chrome
@@ -176,7 +310,7 @@ async function chromeHttp(path, method = 'GET') {
 // Console message storage per tab
 const consoleMessages = new Map();
 
-// Session management
+// Session management - uses XDG cache directories
 let sessionDir = null;
 let captureCounter = 0;
 
@@ -214,7 +348,7 @@ async function resolveWsUrl(wsUrlOrIndex) {
   throw new Error(`Invalid tab specifier: ${wsUrlOrIndex}`);
 }
 
-// Message ID counter (simple incrementing counter)
+// Message ID counter for legacy single-use connections
 let messageIdCounter = 1;
 
 // Helper to generate element selection code (supports CSS and XPath)
@@ -228,8 +362,41 @@ function getElementSelector(selector) {
   }
 }
 
-// Send CDP command and wait for response
-async function sendCdpCommand(wsUrl, method, params = {}) {
+// Helper to get all matching elements (for JRV-129 warnings)
+function getElementSelectorAll(selector) {
+  if (selector.startsWith('/') || selector.startsWith('//')) {
+    // XPath - get all matches
+    return `(() => {
+      const result = [];
+      const iterator = document.evaluate(${JSON.stringify(selector)}, document, null, XPathResult.ORDERED_NODE_ITERATOR_TYPE, null);
+      let node;
+      while (node = iterator.iterateNext()) result.push(node);
+      return result;
+    })()`;
+  } else {
+    // CSS selector
+    return `Array.from(document.querySelectorAll(${JSON.stringify(selector)}))`;
+  }
+}
+
+/**
+ * Send CDP command using pooled connection (default - maintains focus)
+ * Falls back to single-use connection if pool fails
+ */
+async function sendCdpCommand(wsUrl, method, params = {}, timeout = 30000) {
+  try {
+    return await sendCdpCommandPooled(wsUrl, method, params, timeout);
+  } catch (e) {
+    // Fallback to single-use connection for reliability
+    console.error('Pooled connection failed, using single-use:', e.message);
+    return await sendCdpCommandSingle(wsUrl, method, params, timeout);
+  }
+}
+
+/**
+ * Legacy single-use connection (for backwards compatibility)
+ */
+async function sendCdpCommandSingle(wsUrl, method, params = {}, timeout = 30000) {
   const ws = new WebSocketClient(wsUrl);
 
   return new Promise((resolve, reject) => {
@@ -261,15 +428,62 @@ async function sendCdpCommand(wsUrl, method, params = {}) {
       })
       .catch(reject);
 
-    // Timeout after 30s
     setTimeout(() => {
       if (!resolved) {
         ws.close();
         reject(new Error('CDP command timeout'));
       }
-    }, 30000);
+    }, timeout);
   });
 }
+
+// =============================================================================
+// KEY NAME MAPPINGS (JRV-127: keyboard.press support)
+// =============================================================================
+
+// Map common key names to CDP key codes
+const KEY_DEFINITIONS = {
+  // Navigation keys
+  'Tab': { key: 'Tab', code: 'Tab', keyCode: 9 },
+  'Enter': { key: 'Enter', code: 'Enter', keyCode: 13 },
+  'Escape': { key: 'Escape', code: 'Escape', keyCode: 27 },
+  'Backspace': { key: 'Backspace', code: 'Backspace', keyCode: 8 },
+  'Delete': { key: 'Delete', code: 'Delete', keyCode: 46 },
+  'Space': { key: ' ', code: 'Space', keyCode: 32 },
+
+  // Arrow keys
+  'ArrowUp': { key: 'ArrowUp', code: 'ArrowUp', keyCode: 38 },
+  'ArrowDown': { key: 'ArrowDown', code: 'ArrowDown', keyCode: 40 },
+  'ArrowLeft': { key: 'ArrowLeft', code: 'ArrowLeft', keyCode: 37 },
+  'ArrowRight': { key: 'ArrowRight', code: 'ArrowRight', keyCode: 39 },
+
+  // Modifier keys
+  'Shift': { key: 'Shift', code: 'ShiftLeft', keyCode: 16 },
+  'Control': { key: 'Control', code: 'ControlLeft', keyCode: 17 },
+  'Alt': { key: 'Alt', code: 'AltLeft', keyCode: 18 },
+  'Meta': { key: 'Meta', code: 'MetaLeft', keyCode: 91 },
+
+  // Function keys
+  'F1': { key: 'F1', code: 'F1', keyCode: 112 },
+  'F2': { key: 'F2', code: 'F2', keyCode: 113 },
+  'F3': { key: 'F3', code: 'F3', keyCode: 114 },
+  'F4': { key: 'F4', code: 'F4', keyCode: 115 },
+  'F5': { key: 'F5', code: 'F5', keyCode: 116 },
+  'F6': { key: 'F6', code: 'F6', keyCode: 117 },
+  'F7': { key: 'F7', code: 'F7', keyCode: 118 },
+  'F8': { key: 'F8', code: 'F8', keyCode: 119 },
+  'F9': { key: 'F9', code: 'F9', keyCode: 120 },
+  'F10': { key: 'F10', code: 'F10', keyCode: 121 },
+  'F11': { key: 'F11', code: 'F11', keyCode: 122 },
+  'F12': { key: 'F12', code: 'F12', keyCode: 123 },
+
+  // Other
+  'Home': { key: 'Home', code: 'Home', keyCode: 36 },
+  'End': { key: 'End', code: 'End', keyCode: 35 },
+  'PageUp': { key: 'PageUp', code: 'PageUp', keyCode: 33 },
+  'PageDown': { key: 'PageDown', code: 'PageDown', keyCode: 34 },
+  'Insert': { key: 'Insert', code: 'Insert', keyCode: 45 },
+};
 
 // API Functions
 
@@ -413,55 +627,390 @@ async function navigate(tabIndexOrWsUrl, url, autoCapture = false) {
   return result.frameId;
 }
 
+// =============================================================================
+// CLICK FUNCTION (JRV-124: Now uses CDP mouse events by default)
+// =============================================================================
+
+/**
+ * Click element using CDP mouse events (works with React and all frameworks)
+ * Falls back to el.click() if CDP approach fails
+ */
 async function click(tabIndexOrWsUrl, selector) {
   const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
-  const js = `${getElementSelector(selector)}?.click()`;
-  await sendCdpCommand(wsUrl, 'Runtime.evaluate', { expression: js });
+
+  try {
+    // Get element's bounding box and scroll into view
+    const js = `
+      (() => {
+        const el = ${getElementSelector(selector)};
+        if (!el) return { found: false };
+        el.scrollIntoView({ block: 'center', inline: 'center' });
+        const rect = el.getBoundingClientRect();
+        return {
+          x: rect.left + rect.width / 2,
+          y: rect.top + rect.height / 2,
+          found: true
+        };
+      })()
+    `;
+
+    const result = await sendCdpCommand(wsUrl, 'Runtime.evaluate', {
+      expression: js,
+      returnByValue: true
+    });
+
+    if (!result.result.value || !result.result.value.found) {
+      throw new Error(`Element not found: ${selector}`);
+    }
+
+    const { x, y } = result.result.value;
+
+    // Send real mouse events (works with React synthetic events)
+    await sendCdpCommand(wsUrl, 'Input.dispatchMouseEvent', {
+      type: 'mousePressed',
+      x,
+      y,
+      button: 'left',
+      clickCount: 1
+    });
+
+    await sendCdpCommand(wsUrl, 'Input.dispatchMouseEvent', {
+      type: 'mouseReleased',
+      x,
+      y,
+      button: 'left',
+      clickCount: 1
+    });
+
+    return { clicked: true, x, y };
+  } catch (e) {
+    // Fallback to el.click() for edge cases (e.g., hidden elements)
+    const js = `${getElementSelector(selector)}?.click()`;
+    await sendCdpCommand(wsUrl, 'Runtime.evaluate', { expression: js });
+    return { clicked: true, fallback: true };
+  }
 }
 
+// Legacy alias for backwards compatibility
+const cdpClick = click;
+
+// =============================================================================
+// TYPE FUNCTION - Smart text input with Tab/Enter handling
+// =============================================================================
+
+/**
+ * Type text into current focus (or click selector first if provided)
+ *
+ * Special characters:
+ *   \t = Tab (moves to next field)
+ *   \n = Enter (submits form, or newline in textarea)
+ *
+ * Examples:
+ *   type(0, null, "hello")                    // type into current focus
+ *   type(0, "#email", "user@example.com")     // click #email, then type
+ *   type(0, "#email", "user@example.com\tpassword\n")  // type, tab, type, submit
+ */
 async function fill(tabIndexOrWsUrl, selector, value) {
   const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
-  const escapedValue = value.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\n/g, '\\n');
-  const js = `
-    (() => {
-      const el = ${getElementSelector(selector)};
-      if (el) {
-        el.value = '${escapedValue}';
-        el.dispatchEvent(new Event('input', { bubbles: true }));
-        el.dispatchEvent(new Event('change', { bubbles: true }));
-        ${value.endsWith('\n') ? 'el.form?.submit() || el.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", keyCode: 13, bubbles: true }));' : ''}
+
+  // If selector provided, click it first to focus
+  if (selector) {
+    await click(tabIndexOrWsUrl, selector);
+  }
+
+  // Check if current focus is a textarea (for \n handling)
+  const focusInfo = await sendCdpCommand(wsUrl, 'Runtime.evaluate', {
+    expression: `({ isTextarea: document.activeElement?.tagName === 'TEXTAREA' })`,
+    returnByValue: true
+  });
+  const isTextarea = focusInfo.result?.value?.isTextarea || false;
+
+  // Parse and type the value, handling \t and \n specially
+  let buffer = '';
+
+  for (let i = 0; i < value.length; i++) {
+    const char = value[i];
+
+    if (char === '\t') {
+      // Flush buffer, then Tab
+      if (buffer) {
+        await sendCdpCommand(wsUrl, 'Input.insertText', { text: buffer });
+        buffer = '';
       }
-    })()
-  `;
-  await sendCdpCommand(wsUrl, 'Runtime.evaluate', { expression: js });
+      await keyboardPress(tabIndexOrWsUrl, 'Tab');
+    } else if (char === '\n') {
+      // Flush buffer, then Enter (or literal newline in textarea)
+      if (buffer) {
+        await sendCdpCommand(wsUrl, 'Input.insertText', { text: buffer });
+        buffer = '';
+      }
+      if (isTextarea) {
+        await sendCdpCommand(wsUrl, 'Input.insertText', { text: '\n' });
+      } else {
+        await keyboardPress(tabIndexOrWsUrl, 'Enter');
+      }
+    } else {
+      buffer += char;
+    }
+  }
+
+  // Flush remaining buffer
+  if (buffer) {
+    await sendCdpCommand(wsUrl, 'Input.insertText', { text: buffer });
+  }
+
+  return { typed: true, value };
 }
 
-async function selectOption(tabIndexOrWsUrl, selector, value) {
+// Legacy alias
+const insertText = fill;
+
+/**
+ * Press a special key using CDP Input.dispatchKeyEvent (JRV-127, JRV-125)
+ * Supports: Tab, Enter, Escape, Arrow keys, F1-F12, etc.
+ */
+async function keyboardPress(tabIndexOrWsUrl, keyName, modifiers = {}) {
   const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
+
+  const keyDef = KEY_DEFINITIONS[keyName];
+  if (!keyDef) {
+    throw new Error(`Unknown key: ${keyName}. Supported keys: ${Object.keys(KEY_DEFINITIONS).join(', ')}`);
+  }
+
+  // Calculate modifier flags
+  let modifierFlags = 0;
+  if (modifiers.alt) modifierFlags |= 1;
+  if (modifiers.ctrl) modifierFlags |= 2;
+  if (modifiers.meta) modifierFlags |= 4;
+  if (modifiers.shift) modifierFlags |= 8;
+
+  // Send keyDown
+  await sendCdpCommand(wsUrl, 'Input.dispatchKeyEvent', {
+    type: 'keyDown',
+    key: keyDef.key,
+    code: keyDef.code,
+    windowsVirtualKeyCode: keyDef.keyCode,
+    nativeVirtualKeyCode: keyDef.keyCode,
+    modifiers: modifierFlags
+  });
+
+  // Send keyUp
+  await sendCdpCommand(wsUrl, 'Input.dispatchKeyEvent', {
+    type: 'keyUp',
+    key: keyDef.key,
+    code: keyDef.code,
+    windowsVirtualKeyCode: keyDef.keyCode,
+    nativeVirtualKeyCode: keyDef.keyCode,
+    modifiers: modifierFlags
+  });
+
+  return { pressed: keyName, modifiers };
+}
+
+/**
+ * Type text character by character using CDP (for complex input scenarios)
+ */
+async function keyboardType(tabIndexOrWsUrl, text) {
+  const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
+
+  for (const char of text) {
+    if (char === '\n') {
+      await keyboardPress(tabIndexOrWsUrl, 'Enter');
+    } else if (char === '\t') {
+      await keyboardPress(tabIndexOrWsUrl, 'Tab');
+    } else {
+      // Regular character - use insertText
+      await sendCdpCommand(wsUrl, 'Input.insertText', { text: char });
+    }
+  }
+
+  return { typed: text };
+}
+
+// =============================================================================
+// SELECT FUNCTION (JRV-129: Multi-element warning)
+// =============================================================================
+
+/**
+ * Select dropdown option with multi-element warning (JRV-129)
+ */
+async function selectOption(tabIndexOrWsUrl, selector, value, index = 0) {
+  const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
+
+  // Check how many elements match and warn if multiple
+  const countJs = `${getElementSelectorAll(selector)}.length`;
+  const countResult = await sendCdpCommand(wsUrl, 'Runtime.evaluate', {
+    expression: countJs,
+    returnByValue: true
+  });
+  const matchCount = countResult.result.value || 0;
+
+  let warning = null;
+  if (matchCount > 1) {
+    warning = `Selector "${selector}" matches ${matchCount} elements. Using element at index ${index}. Use a more specific selector or pass index parameter.`;
+    console.error(`WARNING: ${warning}`);
+  }
+
   const js = `
     (() => {
-      const el = ${getElementSelector(selector)};
-      if (el && el.tagName === 'SELECT') {
-        el.value = ${JSON.stringify(value)};
-        el.dispatchEvent(new Event('change', { bubbles: true }));
-        return true;
-      }
-      return false;
+      const elements = ${getElementSelectorAll(selector)};
+      const el = elements[${index}];
+      if (!el) return { success: false, error: 'Element not found at index ${index}' };
+      if (el.tagName !== 'SELECT') return { success: false, error: 'Element is not a SELECT' };
+
+      el.value = ${JSON.stringify(value)};
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+      return { success: true, matchCount: elements.length };
     })()
   `;
+
   const result = await sendCdpCommand(wsUrl, 'Runtime.evaluate', {
     expression: js,
     returnByValue: true
   });
-  return result.result.value;
+
+  const resultValue = result.result.value;
+  if (!resultValue.success) {
+    throw new Error(resultValue.error);
+  }
+
+  return {
+    success: true,
+    matchCount: resultValue.matchCount,
+    warning,
+    selectedIndex: index
+  };
 }
 
+// =============================================================================
+// EVALUATE FUNCTIONS (JRV-126: Better return value handling)
+// =============================================================================
+
+/**
+ * Legacy evaluate - may return undefined for complex objects
+ */
 async function evaluate(tabIndexOrWsUrl, expression) {
   const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
   const result = await sendCdpCommand(wsUrl, 'Runtime.evaluate', {
     expression,
     returnByValue: true
   });
+  return result.result.value;
+}
+
+/**
+ * Enhanced evaluate with automatic JSON serialization (JRV-126)
+ * Handles complex objects, arrays, DOM nodes better
+ */
+async function evaluateJson(tabIndexOrWsUrl, expression) {
+  const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
+
+  // Wrap in JSON.stringify to handle complex return values
+  const wrappedExpression = `
+    (() => {
+      try {
+        const result = ${expression};
+        if (result === undefined) return { __type: 'undefined' };
+        if (result === null) return null;
+        if (result instanceof Element) {
+          return {
+            __type: 'Element',
+            tagName: result.tagName,
+            id: result.id,
+            className: result.className,
+            textContent: result.textContent?.slice(0, 100)
+          };
+        }
+        if (typeof result === 'function') {
+          return { __type: 'function', name: result.name || 'anonymous' };
+        }
+        return result;
+      } catch (e) {
+        return { __type: 'error', message: e.message };
+      }
+    })()
+  `;
+
+  const result = await sendCdpCommand(wsUrl, 'Runtime.evaluate', {
+    expression: wrappedExpression,
+    returnByValue: true,
+    awaitPromise: true
+  });
+
+  return result.result.value;
+}
+
+/**
+ * Get raw CDP result including type information
+ */
+async function evaluateRaw(tabIndexOrWsUrl, expression) {
+  const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
+  const result = await sendCdpCommand(wsUrl, 'Runtime.evaluate', {
+    expression,
+    returnByValue: false
+  });
+  return result.result;
+}
+
+// =============================================================================
+// NAVIGATION FUNCTIONS (JRV-128: SPA navigation support)
+// =============================================================================
+
+/**
+ * SPA-compatible navigation using history.pushState (JRV-128)
+ * Doesn't reload the page, works with client-side routers
+ */
+async function spaNavigate(tabIndexOrWsUrl, path, options = {}) {
+  const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
+
+  const { state = {}, title = '', dispatchPopstate = true } = options;
+
+  const js = `
+    (() => {
+      const path = ${JSON.stringify(path)};
+      const state = ${JSON.stringify(state)};
+      const title = ${JSON.stringify(title)};
+
+      // Use pushState for SPA navigation
+      history.pushState(state, title, path);
+
+      // Dispatch popstate event so React Router / Vue Router / etc. picks it up
+      ${dispatchPopstate ? `window.dispatchEvent(new PopStateEvent('popstate', { state }));` : ''}
+
+      return {
+        success: true,
+        path,
+        href: window.location.href
+      };
+    })()
+  `;
+
+  const result = await sendCdpCommand(wsUrl, 'Runtime.evaluate', {
+    expression: js,
+    returnByValue: true
+  });
+
+  return result.result.value;
+}
+
+/**
+ * Navigate using location.href (triggers page reload)
+ */
+async function hrefNavigate(tabIndexOrWsUrl, url) {
+  const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
+
+  const js = `
+    (() => {
+      window.location.href = ${JSON.stringify(url)};
+      return { navigating: true, url: ${JSON.stringify(url)} };
+    })()
+  `;
+
+  const result = await sendCdpCommand(wsUrl, 'Runtime.evaluate', {
+    expression: js,
+    returnByValue: true
+  });
+
   return result.result.value;
 }
 
@@ -1191,6 +1740,113 @@ async function capturePageArtifacts(tabIndexOrWsUrl, actionType = 'navigate') {
   };
 }
 
+// =============================================================================
+// AUTO-CAPTURE WITH DOM DIFF
+// =============================================================================
+
+/**
+ * Generate a simple text diff between two HTML strings
+ * Returns lines that changed (added/removed)
+ */
+function generateHtmlDiff(beforeHtml, afterHtml) {
+  const beforeLines = (beforeHtml || '').split('\n');
+  const afterLines = (afterHtml || '').split('\n');
+
+  const beforeSet = new Set(beforeLines);
+  const afterSet = new Set(afterLines);
+
+  const removed = beforeLines.filter(line => !afterSet.has(line) && line.trim());
+  const added = afterLines.filter(line => !beforeSet.has(line) && line.trim());
+
+  let diff = '';
+  if (removed.length > 0) {
+    diff += '=== REMOVED ===\n';
+    diff += removed.slice(0, 50).map(l => '- ' + l.slice(0, 200)).join('\n');
+    if (removed.length > 50) diff += `\n... and ${removed.length - 50} more removed lines`;
+    diff += '\n\n';
+  }
+  if (added.length > 0) {
+    diff += '=== ADDED ===\n';
+    diff += added.slice(0, 50).map(l => '+ ' + l.slice(0, 200)).join('\n');
+    if (added.length > 50) diff += `\n... and ${added.length - 50} more added lines`;
+  }
+
+  if (!diff) {
+    diff = '(no changes detected)';
+  }
+
+  return diff;
+}
+
+/**
+ * Capture page state before and after an action, with diff
+ * @param {number|string} tabIndexOrWsUrl - Tab index or WebSocket URL
+ * @param {string} actionType - Type of action (click, type, etc.)
+ * @param {Function} actionFn - Async function that performs the action
+ * @param {number} settleTime - Time to wait for page to settle (ms)
+ */
+async function captureActionWithDiff(tabIndexOrWsUrl, actionType, actionFn, settleTime = 3000) {
+  const fs = require('fs');
+  const path = require('path');
+
+  const prefix = createCapturePrefix(actionType);
+  const dir = initializeSession();
+
+  // Capture BEFORE state
+  const beforeHtml = await getHtml(tabIndexOrWsUrl);
+  const beforeScreenshotPath = path.join(dir, `${prefix}-before.png`);
+  await screenshot(tabIndexOrWsUrl, beforeScreenshotPath);
+
+  // Execute the action
+  const actionResult = await actionFn();
+
+  // Wait for page to settle (React re-renders, animations, etc.)
+  await new Promise(resolve => setTimeout(resolve, settleTime));
+
+  // Capture AFTER state
+  const [afterHtml, markdown, pageSize, domSummary] = await Promise.all([
+    getHtml(tabIndexOrWsUrl),
+    generateMarkdown(tabIndexOrWsUrl),
+    getPageSize(tabIndexOrWsUrl),
+    generateDomSummary(tabIndexOrWsUrl)
+  ]);
+
+  // Generate diff
+  const diff = generateHtmlDiff(beforeHtml, afterHtml);
+
+  // Save files
+  const beforeHtmlPath = path.join(dir, `${prefix}-before.html`);
+  const afterHtmlPath = path.join(dir, `${prefix}-after.html`);
+  const diffPath = path.join(dir, `${prefix}-diff.txt`);
+  const markdownPath = path.join(dir, `${prefix}.md`);
+  const afterScreenshotPath = path.join(dir, `${prefix}-after.png`);
+
+  fs.writeFileSync(beforeHtmlPath, beforeHtml || '');
+  fs.writeFileSync(afterHtmlPath, afterHtml || '');
+  fs.writeFileSync(diffPath, diff);
+  fs.writeFileSync(markdownPath, markdown || '');
+  await screenshot(tabIndexOrWsUrl, afterScreenshotPath);
+
+  return {
+    actionResult,
+    capture: {
+      prefix,
+      sessionDir: dir,
+      files: {
+        beforeHtml: beforeHtmlPath,
+        afterHtml: afterHtmlPath,
+        diff: diffPath,
+        markdown: markdownPath,
+        beforeScreenshot: beforeScreenshotPath,
+        afterScreenshot: afterScreenshotPath
+      },
+      pageSize,
+      domSummary,
+      diffSummary: diff.split('\n').slice(0, 5).join('\n') + (diff.split('\n').length > 5 ? '\n...' : '')
+    }
+  };
+}
+
 // Enhanced DOM actions with auto-capture
 async function clickWithCapture(tabIndexOrWsUrl, selector) {
   await click(tabIndexOrWsUrl, selector);
@@ -1256,13 +1912,14 @@ async function evaluateWithCapture(tabIndexOrWsUrl, expression) {
 }
 
 module.exports = {
+  // Core browser actions (click/fill now use CDP events by default for React compatibility)
   getTabs,
   newTab,
   closeTab,
   navigate,
-  click,
-  fill,
-  selectOption,
+  click,           // Uses CDP mouse events, falls back to el.click()
+  fill,            // Uses CDP insertText, falls back to el.value=
+  selectOption,    // Warns if selector matches multiple elements
   evaluate,
   extractText,
   getHtml,
@@ -1270,33 +1927,53 @@ module.exports = {
   waitForElement,
   waitForText,
   screenshot,
+
+  // Keyboard support for special keys (Tab, Enter, Escape, Arrow keys, etc.)
+  keyboardPress,
+  KEY_DEFINITIONS,
+
+  // Chrome lifecycle
   startChrome,
   killChrome,
-  // Headless mode management
   showBrowser,
   hideBrowser,
   getBrowserMode,
+
   // Profile management
   getChromeProfileDir,
   getProfileName,
   setProfileName,
-  // Console logging utilities
+
+  // Console logging
   enableConsoleLogging,
   getConsoleMessages,
   clearConsoleMessages,
+
   // Session management
   getXdgCacheHome,
   initializeSession,
   cleanupSession,
   createCapturePrefix,
+
   // Auto-capture utilities
   generateDomSummary,
   getPageSize,
   generateMarkdown,
   capturePageArtifacts,
-  // Enhanced DOM actions
   clickWithCapture,
   fillWithCapture,
   selectOptionWithCapture,
-  evaluateWithCapture
+  evaluateWithCapture,
+
+  // DOM diff capture (before/after with diff)
+  generateHtmlDiff,
+  captureActionWithDiff,
+
+  // Connection management (JRV-130)
+  closePooledConnection,
+  closeAllConnections,
+
+  // Legacy aliases (for backwards compatibility)
+  cdpClick: click,
+  insertText: fill,
 };

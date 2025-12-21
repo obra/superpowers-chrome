@@ -60,10 +60,11 @@ if (forceHeadless) {
 }
 
 // Action enum for use_browser tool
+// Note: click and type now use CDP events by default (React-compatible)
 enum BrowserAction {
   NAVIGATE = "navigate",
-  CLICK = "click",
-  TYPE = "type",
+  CLICK = "click",              // Uses CDP mouse events (works with React)
+  TYPE = "type",                // Uses CDP insertText (works with React)
   EXTRACT = "extract",
   SCREENSHOT = "screenshot",
   EVAL = "eval",
@@ -79,7 +80,9 @@ enum BrowserAction {
   BROWSER_MODE = "browser_mode",
   SET_PROFILE = "set_profile",
   GET_PROFILE = "get_profile",
-  HELP = "help"
+  HELP = "help",
+  // Special keys (Tab, Enter, Escape, Arrow keys, etc.)
+  KEYBOARD_PRESS = "keyboard_press",
 }
 
 // Zod schema for use_browser tool parameters
@@ -93,16 +96,25 @@ const UseBrowserParams = {
     .describe("Which tab. Indices shift when tabs close."),
   selector: z.string()
     .optional()
-    .describe("CSS or XPath selector. XPath must start with / or //."),
+    .describe("CSS or XPath selector. XPath must start with / or //. Optional for type (types into current focus)."),
   payload: z.string()
     .optional()
-    .describe("Action-specific data: navigate=URL | type=text (append \\n to submit) | extract=format (text|html|markdown) | screenshot=filename | eval=JavaScript | select=option value | attr=attribute name | await_text=text to wait for"),
+    .describe("Action-specific data: navigate=URL | type=text (\\t=Tab, \\n=Enter) | extract=format (text|html|markdown) | screenshot=filename | eval=JavaScript | select=option value | attr=attribute name | await_text=text to wait for | keyboard_press=key name (Tab, Enter, Space, Escape, Arrow*, F1-F12)"),
   timeout: z.number()
     .int()
     .min(0)
     .max(60000)
     .default(5000)
-    .describe("Timeout in ms. Only for await actions.")
+    .describe("Timeout in ms. Only for await actions."),
+  // Keyboard modifiers for keyboard_press (Shift+Tab, Ctrl+A, etc.)
+  modifiers: z.object({
+    alt: z.boolean().optional(),
+    ctrl: z.boolean().optional(),
+    meta: z.boolean().optional(),
+    shift: z.boolean().optional(),
+  }).optional().describe("Keyboard modifiers for keyboard_press"),
+  // Element index when selector matches multiple elements
+  index: z.number().int().min(0).optional().describe("Element index for select action when selector matches multiple elements")
 };
 
 type UseBrowserInput = z.infer<ReturnType<typeof z.object<typeof UseBrowserParams>>>;
@@ -168,6 +180,36 @@ function formatActionResponse(actionResult: any, actionDescription: string): str
 }
 
 /**
+ * Format capture response with DOM diff information
+ */
+function formatCaptureResponse(
+  action: string,
+  details: string,
+  capture: {
+    sessionDir: string;
+    files: Record<string, string>;
+    diffSummary: string;
+    domSummary: string;
+    pageSize: { width: number; height: number };
+  }
+): string {
+  const fileList = Object.entries(capture.files)
+    .map(([key, path]) => `  ${key}: ${path}`)
+    .join('\n');
+
+  return `${action}: ${details}
+
+📁 Capture saved to: ${capture.sessionDir}
+${fileList}
+
+📊 Page: ${capture.pageSize.width}×${capture.pageSize.height}
+${capture.domSummary}
+
+📝 DOM Changes:
+${capture.diffSummary}`;
+}
+
+/**
  * Execute browser action using chrome-ws library
  */
 async function executeBrowserAction(params: UseBrowserInput): Promise<string> {
@@ -228,14 +270,20 @@ async function executeBrowserAction(params: UseBrowserInput): Promise<string> {
       return formatActionResponse(clickResult, `Clicked: ${params.selector}`);
 
     case BrowserAction.TYPE:
-      if (!params.selector) {
-        throw new Error("type requires selector");
-      }
       if (!params.payload || typeof params.payload !== 'string') {
         throw new Error("type requires payload with text");
       }
-      const typeResult = await chromeLib.fillWithCapture(tabIndex, params.selector, params.payload);
-      return formatActionResponse(typeResult, `Typed "${params.payload}" into: ${params.selector}`);
+      // Selector is optional - if omitted, types into current focus
+      const typeResult = await chromeLib.captureActionWithDiff(
+        tabIndex,
+        'type',
+        () => chromeLib.fill(tabIndex, params.selector || null, params.payload)
+      );
+      return formatCaptureResponse(
+        'Typed',
+        params.selector ? `into ${params.selector}` : 'into current focus',
+        typeResult.capture
+      );
 
     case BrowserAction.EXTRACT:
       const format = params.payload || 'text';
@@ -372,25 +420,52 @@ async function executeBrowserAction(params: UseBrowserInput): Promise<string> {
         profileDir: profileDir
       }, null, 2);
 
+    case BrowserAction.KEYBOARD_PRESS:
+      // Press special keys (Tab, Enter, Escape, Arrow keys, etc.)
+      if (!params.payload) {
+        throw new Error("keyboard_press requires payload with key name (e.g., Tab, Enter, Escape)");
+      }
+      const keyResult = await chromeLib.captureActionWithDiff(
+        tabIndex,
+        'keypress',
+        () => chromeLib.keyboardPress(tabIndex, params.payload, params.modifiers || {})
+      );
+      const modStr = Object.entries(params.modifiers || {})
+        .filter(([_, v]) => v)
+        .map(([k]) => k)
+        .join('+');
+      return formatCaptureResponse(
+        'Pressed',
+        modStr ? `${modStr}+${params.payload}` : params.payload,
+        keyResult.capture
+      );
+
     case BrowserAction.HELP:
       return `# Chrome Browser Control
 
 Auto-starting Chrome with automatic page captures for every DOM action.
 
 ## Actions Overview
-navigate, click, type, select, eval → Capture page state (HTML, markdown, screenshot, DOM summary)
+navigate, click, type, keyboard_press, select, eval → Capture page state with before/after DOM diff
 extract, attr, screenshot → Get content/visuals
 await_element, await_text → Wait for page changes
 list_tabs, new_tab, close_tab → Tab management
 show_browser, hide_browser, browser_mode → Toggle headless/headed mode
 set_profile, get_profile → Manage Chrome profiles
 
-## Navigation & Interaction (Auto-Capture Enabled)
-navigate: {"action": "navigate", "payload": "URL"} → Files saved to disk automatically
-click: {"action": "click", "selector": "CSS_or_XPath"} → Post-click files saved
-type: {"action": "type", "selector": "input", "payload": "text\\n"} → Form state saved
-select: {"action": "select", "selector": "select", "payload": "option_value"} → Selection saved
-eval: {"action": "eval", "payload": "JavaScript_code"} → Result + page state saved
+## Navigation & Interaction (Auto-Capture with DOM Diff)
+navigate: {"action": "navigate", "payload": "URL"} → Before/after HTML + diff
+click: {"action": "click", "selector": "CSS_or_XPath"} → React-compatible CDP events
+type: {"action": "type", "payload": "text", "selector": "optional"} → Smart \\t=Tab, \\n=Enter
+keyboard_press: {"action": "keyboard_press", "payload": "Tab"} → Special keys
+select: {"action": "select", "selector": "select", "payload": "option_value"}
+eval: {"action": "eval", "payload": "JavaScript_code"}
+
+## keyboard_press Examples
+{"action": "keyboard_press", "payload": "Tab"} → Move to next field
+{"action": "keyboard_press", "payload": "Space"} → Toggle checkbox
+{"action": "keyboard_press", "payload": "ArrowDown"} → Navigate dropdown
+{"action": "keyboard_press", "payload": "Tab", "modifiers": {"shift": true}} → Shift+Tab
 
 ## Content & Export (Manual) - CHECK AUTO-CAPTURED FILES FIRST
 extract: {"action": "extract", "payload": "markdown|text|html", "selector": "required"} → ONLY for specific elements/changed content
