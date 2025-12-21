@@ -732,6 +732,12 @@ async function fill(tabIndexOrWsUrl, selector, value) {
     }
   }
 
+  // Convert literal escape sequences to actual characters
+  // (MCP payloads may contain literal \t and \n rather than actual tab/newline)
+  const processedValue = value
+    .replace(/\\t/g, '\t')
+    .replace(/\\n/g, '\n');
+
   // Check if current focus is a textarea (for \n handling)
   const focusInfo = await sendCdpCommand(wsUrl, 'Runtime.evaluate', {
     expression: `({ isTextarea: document.activeElement?.tagName === 'TEXTAREA' })`,
@@ -745,8 +751,8 @@ async function fill(tabIndexOrWsUrl, selector, value) {
   // Parse and type the value, handling \t and \n specially
   let buffer = '';
 
-  for (let i = 0; i < value.length; i++) {
-    const char = value[i];
+  for (let i = 0; i < processedValue.length; i++) {
+    const char = processedValue[i];
 
     if (char === '\t') {
       // Flush buffer, then Tab
