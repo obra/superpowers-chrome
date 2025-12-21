@@ -2,6 +2,28 @@
 
 All notable changes to the superpowers-chrome MCP project.
 
+## [1.6.2] - 2025-12-21 - Focus Preservation and Tab Navigation
+
+### Fixed
+- **Tab/Enter not working in type payloads**: Fixed `\t` and `\n` escape sequences in MCP payloads
+  - MCP payloads contain literal backslash-t/n strings, not actual tab/newline characters
+  - Added preprocessing to convert `\t` → tab and `\n` → newline before parsing
+  - Now `type(selector, "field1\tfield2\n")` correctly tabs between fields and submits
+- **Focus lost during screenshots**: Screenshots were stealing focus, breaking Tab navigation
+  - Added `saveFocus()` and `restoreFocus()` helpers to `captureActionWithDiff()`
+  - Saves focused element (by id, name, or DOM path) before screenshot
+  - Restores focus after screenshot so subsequent actions work correctly
+- **Type with selector losing focus**: Changed `fill()` to use `el.focus()` instead of `click()`
+  - Click triggers `capturePageArtifacts()` which takes a screenshot, losing focus
+  - Using JS focus avoids the capture side effect
+
+### Technical
+- `fill()` now preprocesses value with `.replace(/\\t/g, '\t').replace(/\\n/g, '\n')`
+- `captureActionWithDiff()` wraps before-screenshot with focus save/restore
+- Focus identification uses id > name > DOM path fallback strategy
+
+---
+
 ## [1.6.1] - 2025-12-15 - Auto-Detect Headless Mode in Containers
 
 ### Fixed
