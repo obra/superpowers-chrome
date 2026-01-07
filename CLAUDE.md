@@ -245,6 +245,8 @@ Files included in npm package (from root `package.json`):
 "files": [
   "mcp/dist/",
   "skills/browsing/chrome-ws-lib.js",
+  "skills/browsing/host-override.js",
+  "skills/browsing/package.json",
   "README.md",
   "CHANGELOG.md"
 ]
