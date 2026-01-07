@@ -2100,6 +2100,16 @@ async function getViewport(tabIndexOrWsUrl) {
   return result.result?.value || {};
 }
 
+/**
+ * Clear all browser cookies
+ * @param {number|string} tabIndexOrWsUrl - Tab index (0, 1, etc.) or WebSocket URL
+ * @returns {Promise<void>}
+ */
+async function clearCookies(tabIndexOrWsUrl) {
+  const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
+  await sendCdpCommand(wsUrl, 'Network.clearBrowserCookies', {});
+}
+
 module.exports = {
   // Core browser actions (click/fill now use CDP events by default for React compatibility)
   getTabs,
@@ -2166,6 +2176,9 @@ module.exports = {
   setViewport,
   clearViewport,
   getViewport,
+
+  // Cookie management
+  clearCookies,
 
   // Legacy aliases (for backwards compatibility)
   cdpClick: click,

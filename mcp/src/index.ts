@@ -86,6 +86,8 @@ enum BrowserAction {
   // Viewport control (mobile testing, responsive design)
   SET_VIEWPORT = "set_viewport",
   CLEAR_VIEWPORT = "clear_viewport",
+  // Cookie management
+  CLEAR_COOKIES = "clear_cookies",
 }
 
 // Zod schema for use_browser tool parameters
@@ -479,6 +481,10 @@ async function executeBrowserAction(params: UseBrowserInput): Promise<string> {
       await chromeLib.clearViewport(tabIndex);
       return `Viewport cleared (reset to browser default)`;
 
+    case BrowserAction.CLEAR_COOKIES:
+      await chromeLib.clearCookies(tabIndex);
+      return `Cookies cleared`;
+
     case BrowserAction.HELP:
       return `# Chrome Browser Control
 
@@ -491,6 +497,7 @@ await_element, await_text → Wait for page changes
 list_tabs, new_tab, close_tab → Tab management
 show_browser, hide_browser, browser_mode → Toggle headless/headed mode
 set_viewport, clear_viewport → Device emulation (mobile/tablet/desktop)
+clear_cookies → Clear all browser cookies
 set_profile, get_profile → Manage Chrome profiles
 
 ## Navigation & Interaction (Auto-Capture with DOM Diff)
@@ -550,6 +557,9 @@ set_viewport: {
 clear_viewport: {"action": "clear_viewport"} → Reset to browser default
 
 Viewport persists across actions. Set once, then navigate/click/screenshot at that viewport.
+
+## Cookie Management
+clear_cookies: {"action": "clear_cookies"} → Clear all browser cookies
 
 ## Profile Management
 set_profile: {"action": "set_profile", "payload": "profile-name"} → Set Chrome profile (must kill Chrome first)

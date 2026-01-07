@@ -13923,6 +13923,7 @@ var BrowserAction = /* @__PURE__ */ ((BrowserAction2) => {
   BrowserAction2["KEYBOARD_PRESS"] = "keyboard_press";
   BrowserAction2["SET_VIEWPORT"] = "set_viewport";
   BrowserAction2["CLEAR_VIEWPORT"] = "clear_viewport";
+  BrowserAction2["CLEAR_COOKIES"] = "clear_cookies";
   return BrowserAction2;
 })(BrowserAction || {});
 var UseBrowserParams = {
@@ -14205,6 +14206,9 @@ Result: ${evalResult.result}`);
     case "clear_viewport" /* CLEAR_VIEWPORT */:
       await chromeLib.clearViewport(tabIndex);
       return `Viewport cleared (reset to browser default)`;
+    case "clear_cookies" /* CLEAR_COOKIES */:
+      await chromeLib.clearCookies(tabIndex);
+      return `Cookies cleared`;
     case "help" /* HELP */:
       return `# Chrome Browser Control
 
@@ -14217,6 +14221,7 @@ await_element, await_text \u2192 Wait for page changes
 list_tabs, new_tab, close_tab \u2192 Tab management
 show_browser, hide_browser, browser_mode \u2192 Toggle headless/headed mode
 set_viewport, clear_viewport \u2192 Device emulation (mobile/tablet/desktop)
+clear_cookies \u2192 Clear all browser cookies
 set_profile, get_profile \u2192 Manage Chrome profiles
 
 ## Navigation & Interaction (Auto-Capture with DOM Diff)
@@ -14276,6 +14281,9 @@ set_viewport: {
 clear_viewport: {"action": "clear_viewport"} \u2192 Reset to browser default
 
 Viewport persists across actions. Set once, then navigate/click/screenshot at that viewport.
+
+## Cookie Management
+clear_cookies: {"action": "clear_cookies"} \u2192 Clear all browser cookies
 
 ## Profile Management
 set_profile: {"action": "set_profile", "payload": "profile-name"} \u2192 Set Chrome profile (must kill Chrome first)
