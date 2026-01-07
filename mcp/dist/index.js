@@ -13921,6 +13921,8 @@ var BrowserAction = /* @__PURE__ */ ((BrowserAction2) => {
   BrowserAction2["GET_PROFILE"] = "get_profile";
   BrowserAction2["HELP"] = "help";
   BrowserAction2["KEYBOARD_PRESS"] = "keyboard_press";
+  BrowserAction2["SET_VIEWPORT"] = "set_viewport";
+  BrowserAction2["CLEAR_VIEWPORT"] = "clear_viewport";
   return BrowserAction2;
 })(BrowserAction || {});
 var UseBrowserParams = {
@@ -13937,7 +13939,14 @@ var UseBrowserParams = {
     shift: external_exports.boolean().optional()
   }).optional().describe("Keyboard modifiers for keyboard_press"),
   // Element index when selector matches multiple elements
-  index: external_exports.number().int().min(0).optional().describe("Element index for select action when selector matches multiple elements")
+  index: external_exports.number().int().min(0).optional().describe("Element index for select action when selector matches multiple elements"),
+  // Viewport settings for device emulation (set_viewport action)
+  viewport: external_exports.object({
+    width: external_exports.number().int().min(320).max(7680).optional().describe("Viewport width in CSS pixels"),
+    height: external_exports.number().int().min(200).max(4320).optional().describe("Viewport height in CSS pixels"),
+    deviceScaleFactor: external_exports.number().min(0.25).max(5).default(1).describe("DPI multiplier (1=96dpi, 2=192dpi for retina)"),
+    mobile: external_exports.boolean().default(false).describe("Enable mobile emulation (touch events + mobile UA string)")
+  }).optional().describe("Viewport settings for device emulation (set_viewport action)")
 };
 async function ensureChromeRunning() {
   if (chromeStarted) {
@@ -14187,6 +14196,15 @@ Result: ${evalResult.result}`);
         modStr ? `${modStr}+${params.payload}` : params.payload,
         keyResult.capture
       );
+    case "set_viewport" /* SET_VIEWPORT */:
+      if (!params.viewport) {
+        throw new Error("set_viewport requires viewport object with at least width or height");
+      }
+      const viewportResult = await chromeLib.setViewport(tabIndex, params.viewport);
+      return `Viewport set: ${viewportResult.width}x${viewportResult.height} CSS pixels (scale: ${viewportResult.deviceScaleFactor}, mobile: ${viewportResult.mobile}, touch: ${viewportResult.touch})`;
+    case "clear_viewport" /* CLEAR_VIEWPORT */:
+      await chromeLib.clearViewport(tabIndex);
+      return `Viewport cleared (reset to browser default)`;
     case "help" /* HELP */:
       return `# Chrome Browser Control
 
@@ -14198,6 +14216,7 @@ extract, attr, screenshot \u2192 Get content/visuals
 await_element, await_text \u2192 Wait for page changes
 list_tabs, new_tab, close_tab \u2192 Tab management
 show_browser, hide_browser, browser_mode \u2192 Toggle headless/headed mode
+set_viewport, clear_viewport \u2192 Device emulation (mobile/tablet/desktop)
 set_profile, get_profile \u2192 Manage Chrome profiles
 
 ## Navigation & Interaction (Auto-Capture with DOM Diff)
@@ -14236,6 +14255,27 @@ browser_mode: {"action": "browser_mode"} \u2192 Check current mode (headless/hea
 \u26A0\uFE0F  WARNING: Toggling browser visibility restarts Chrome and reloads pages via GET requests.
     This will LOSE form data, POST results, and any client-side state.
     Default: headless mode (faster, less intrusive)
+
+## Device Emulation (Viewport Control)
+set_viewport: {
+  "action": "set_viewport",
+  "tab_index": 0,
+  "viewport": {
+    "width": 375,
+    "height": 812,
+    "deviceScaleFactor": 2,
+    "mobile": true
+  }
+} \u2192 iPhone 12 emulation (375x812 CSS pixels, 192dpi, mobile UA + touch)
+
+set_viewport: {
+  "action": "set_viewport",
+  "viewport": {"width": 1920, "height": 1080}
+} \u2192 Desktop 1080p
+
+clear_viewport: {"action": "clear_viewport"} \u2192 Reset to browser default
+
+Viewport persists across actions. Set once, then navigate/click/screenshot at that viewport.
 
 ## Profile Management
 set_profile: {"action": "set_profile", "payload": "profile-name"} \u2192 Set Chrome profile (must kill Chrome first)
