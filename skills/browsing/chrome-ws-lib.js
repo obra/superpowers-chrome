@@ -2026,8 +2026,8 @@ async function setViewport(tabIndexOrWsUrl, params) {
   const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
 
   const viewportParams = {
-    width: params.width || 1200,
-    height: params.height || 800,
+    width: params.width ?? 1200,
+    height: params.height ?? 800,
     deviceScaleFactor: params.deviceScaleFactor !== undefined ? params.deviceScaleFactor : 1,
     mobile: params.mobile === true
   };

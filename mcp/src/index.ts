@@ -470,20 +470,23 @@ async function executeBrowserAction(params: UseBrowserInput): Promise<string> {
         keyResult.capture
       );
 
-    case BrowserAction.SET_VIEWPORT:
+    case BrowserAction.SET_VIEWPORT: {
       if (!params.viewport) {
-        throw new Error("set_viewport requires viewport object with at least width or height");
+        throw new Error("set_viewport requires a viewport object (empty object uses default 1200x800 dimensions)");
       }
       const viewportResult = await chromeLib.setViewport(tabIndex, params.viewport);
       return `Viewport set: ${viewportResult.width}x${viewportResult.height} CSS pixels (scale: ${viewportResult.deviceScaleFactor}, mobile: ${viewportResult.mobile}, touch: ${viewportResult.touch})`;
+    }
 
-    case BrowserAction.CLEAR_VIEWPORT:
+    case BrowserAction.CLEAR_VIEWPORT: {
       await chromeLib.clearViewport(tabIndex);
       return `Viewport cleared (reset to browser default)`;
+    }
 
-    case BrowserAction.CLEAR_COOKIES:
+    case BrowserAction.CLEAR_COOKIES: {
       await chromeLib.clearCookies(tabIndex);
       return `Cookies cleared`;
+    }
 
     case BrowserAction.HELP:
       return `# Chrome Browser Control
@@ -547,7 +550,7 @@ set_viewport: {
     "deviceScaleFactor": 2,
     "mobile": true
   }
-} → iPhone 12 emulation (375x812 CSS pixels, 192dpi, mobile UA + touch)
+} → Mobile device emulation (e.g., iPhone 12: 375x812 CSS pixels, 2x scale, mobile UA + touch)
 
 set_viewport: {
   "action": "set_viewport",
