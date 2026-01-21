@@ -137,6 +137,50 @@ npm run dev
 
 Chrome is bound to `127.0.0.1:9222` by default to avoid hostname resolution issues on recent Windows builds. Override with `CHROME_WS_HOST` / `CHROME_WS_PORT` if you expose DevTools on a different interface.
 
+### Linux/WSL2 Headed Mode
+
+The MCP server auto-detects display availability by checking the `DISPLAY` or `WAYLAND_DISPLAY` environment variables. When running in headed mode (visible browser window), Chrome needs these variables to connect to your display server.
+
+**Problem:** In WSL2 or when MCP servers are spawned by applications that don't inherit your shell environment, these variables may not be set, causing `show_browser` to fail silently or Chrome to crash.
+
+**Solution:** Explicitly configure the `DISPLAY` environment variable in your MCP server configuration:
+
+```json
+{
+  "mcpServers": {
+    "chrome": {
+      "command": "node",
+      "args": ["/path/to/mcp/dist/index.js"],
+      "env": {
+        "DISPLAY": ":0"
+      }
+    }
+  }
+}
+```
+
+For Claude Code, add this to `~/.claude/mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "plugin_superpowers-chrome_chrome": {
+      "command": "node",
+      "args": ["${HOME}/.claude/plugins/cache/superpowers-marketplace/superpowers-chrome/VERSION/mcp/dist/index.js"],
+      "env": {
+        "DISPLAY": ":0"
+      }
+    }
+  }
+}
+```
+
+Replace `VERSION` with your installed version (e.g., `1.6.1`).
+
+**Note:** After updating the configuration, restart Claude Code or your MCP client for the changes to take effect.
+
+**Verifying your display:** Run `echo $DISPLAY` in your terminal. Common values are `:0` for WSLg or a local X server, or `:10.0` for SSH X forwarding.
+
 ## Architecture
 
 ```

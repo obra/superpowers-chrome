@@ -33,6 +33,8 @@ cd ~/.claude/plugins/cache/superpowers-chrome/skills/browsing
 
 **Windows tip:** The tooling defaults to `127.0.0.1:9222` for DevTools traffic. Override via `CHROME_WS_HOST` / `CHROME_WS_PORT` if you forward Chrome elsewhere.
 
+**Linux/WSL2 tip:** For headed mode (visible browser), the MCP server needs the `DISPLAY` environment variable. If `show_browser` doesn't work, configure `"env": {"DISPLAY": ":0"}` in your MCP server config. See [mcp/README.md](mcp/README.md#linuxwsl2-headed-mode) for details.
+
 ## Windows Verification (November 7, 2025)
 
 - `node skills/browsing/chrome-ws start` launched Chrome with remote debugging enabled on a fresh Windows 11 Pro install.
