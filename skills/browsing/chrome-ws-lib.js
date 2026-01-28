@@ -1187,8 +1187,70 @@ async function screenshot(tabIndexOrWsUrl, filename, selector = null) {
   const path = require('path');
   const buffer = Buffer.from(result.data, 'base64');
   fs.writeFileSync(filename, buffer);
+
+  // Auto-downscale if image exceeds safe dimensions for Claude API
+  // (Claude's many-image mode limits to 2000px max dimension)
+  await downscaleImageIfNeeded(filename, 1800);
+
   // Return absolute path so caller knows exactly where file is
   return path.resolve(filename);
+}
+
+/**
+ * Downscale image if any dimension exceeds maxDimension
+ * Uses platform-native tools (sips on macOS, ImageMagick on Linux)
+ * @param {string} filepath - Path to image file
+ * @param {number} maxDimension - Maximum allowed dimension (default 1800)
+ */
+async function downscaleImageIfNeeded(filepath, maxDimension = 1800) {
+  const { execSync } = require('child_process');
+  const os = require('os');
+  const fs = require('fs');
+
+  // Read image dimensions using platform-native tools
+  const platform = os.platform();
+
+  try {
+    let width, height;
+
+    if (platform === 'darwin') {
+      // macOS: use sips to get dimensions
+      const output = execSync(`sips -g pixelWidth -g pixelHeight "${filepath}" 2>/dev/null`, { encoding: 'utf8' });
+      const widthMatch = output.match(/pixelWidth:\s*(\d+)/);
+      const heightMatch = output.match(/pixelHeight:\s*(\d+)/);
+      width = widthMatch ? parseInt(widthMatch[1]) : 0;
+      height = heightMatch ? parseInt(heightMatch[1]) : 0;
+    } else if (platform === 'linux') {
+      // Linux: try ImageMagick identify
+      try {
+        const output = execSync(`identify -format "%w %h" "${filepath}" 2>/dev/null`, { encoding: 'utf8' });
+        [width, height] = output.trim().split(' ').map(Number);
+      } catch {
+        // ImageMagick not available, skip downscaling
+        return;
+      }
+    } else {
+      // Windows or other: skip for now
+      return;
+    }
+
+    // Check if downscaling is needed
+    if (width <= maxDimension && height <= maxDimension) {
+      return; // No downscaling needed
+    }
+
+    // Downscale to fit within maxDimension box
+    if (platform === 'darwin') {
+      // macOS: sips -Z scales to fit in a square box
+      execSync(`sips -Z ${maxDimension} "${filepath}" 2>/dev/null`);
+    } else if (platform === 'linux') {
+      // Linux: ImageMagick convert with resize
+      execSync(`convert "${filepath}" -resize ${maxDimension}x${maxDimension}\\> "${filepath}" 2>/dev/null`);
+    }
+  } catch (e) {
+    // Silently ignore downscaling failures - better to have large image than no image
+    // Could log to stderr for debugging: console.error(`Downscaling failed: ${e.message}`);
+  }
 }
 
 async function startChrome(headless = null, profileName = null) {

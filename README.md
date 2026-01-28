@@ -23,7 +23,12 @@ Direct browser control via Chrome DevTools Protocol. Two modes available:
 ## Quick Start
 
 ```bash
-cd ~/.claude/plugins/cache/superpowers-chrome/skills/browsing
+# Find your plugin installation path (varies by marketplace and version)
+# Common locations:
+#   ~/.claude/plugins/cache/superpowers-marketplace/superpowers-chrome/<version>/skills/browsing
+#   ~/.claude/plugins/cache/superpowers-chrome/skills/browsing
+
+cd ~/.claude/plugins/cache/superpowers-marketplace/superpowers-chrome/*/skills/browsing
 ./chrome-ws start                        # Launch Chrome
 ./chrome-ws new "https://example.com"   # Create tab
 ./chrome-ws navigate 0 "https://google.com"
