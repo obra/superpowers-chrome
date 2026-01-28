@@ -218,6 +218,40 @@ The `\n` at the end of the password submits the form.
 {action: "eval", payload: "Array.from(document.querySelectorAll('a')).map(a => a.href)"}
 ```
 
+### Resize Viewport (Responsive Testing)
+Use `eval` to resize the browser window for testing responsive layouts:
+```
+{action: "eval", payload: "window.resizeTo(375, 812); 'Resized to mobile'"}
+{action: "eval", payload: "window.resizeTo(768, 1024); 'Resized to tablet'"}
+{action: "eval", payload: "window.resizeTo(1920, 1080); 'Resized to desktop'"}
+```
+
+**Note**: This resizes the window, not device emulation. It won't change:
+- Device pixel ratio (retina displays)
+- Touch events
+- User-Agent string
+
+For most responsive testing, window resize is sufficient.
+
+### Clear Cookies
+Use `eval` to clear cookies accessible to JavaScript:
+```
+{action: "eval", payload: "document.cookie.split(';').forEach(c => { document.cookie = c.trim().split('=')[0] + '=;expires=Thu, 01 Jan 1970 00:00:00 GMT;path=/'; }); 'Cookies cleared'"}
+```
+
+**Note**: This clears cookies accessible to JavaScript. It won't clear:
+- httpOnly cookies (server-side only)
+- Cookies from other domains
+
+For most logout/reset scenarios, this is sufficient.
+
+### Scroll Page
+```
+{action: "eval", payload: "window.scrollTo(0, document.body.scrollHeight); 'Scrolled to bottom'"}
+{action: "eval", payload: "window.scrollTo(0, 0); 'Scrolled to top'"}
+{action: "eval", payload: "document.querySelector('.target').scrollIntoView(); 'Scrolled to element'"}
+```
+
 ## Tips
 
 **Always wait before interaction:**

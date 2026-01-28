@@ -352,9 +352,17 @@ async function resolveWsUrl(wsUrlOrIndex) {
 let messageIdCounter = 1;
 
 // Helper to generate element selection code (supports CSS and XPath)
+// For XPath with text()='...', also tries normalize-space() fallback for mixed content elements
 function getElementSelector(selector) {
   if (selector.startsWith('/') || selector.startsWith('//')) {
-    // XPath selector
+    // XPath selector - with fallback for text()='...' patterns on mixed content elements
+    // (e.g., <a><svg/>Settings</a> won't match text()='Settings' but will match normalize-space()='Settings')
+    const hasTextEquals = /text\(\)\s*=\s*['"]/.test(selector);
+    if (hasTextEquals) {
+      // Create fallback XPath using normalize-space() instead of text()
+      const fallbackSelector = selector.replace(/text\(\)\s*=\s*(['"])(.*?)\1/g, "normalize-space()=$1$2$1");
+      return `(document.evaluate(${JSON.stringify(selector)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue || document.evaluate(${JSON.stringify(fallbackSelector)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue)`;
+    }
     return `document.evaluate(${JSON.stringify(selector)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue`;
   } else {
     // CSS selector
@@ -363,9 +371,26 @@ function getElementSelector(selector) {
 }
 
 // Helper to get all matching elements (for JRV-129 warnings)
+// For XPath with text()='...', also tries normalize-space() fallback for mixed content elements
 function getElementSelectorAll(selector) {
   if (selector.startsWith('/') || selector.startsWith('//')) {
-    // XPath - get all matches
+    // XPath - get all matches, with fallback for text()='...' patterns
+    const hasTextEquals = /text\(\)\s*=\s*['"]/.test(selector);
+    if (hasTextEquals) {
+      const fallbackSelector = selector.replace(/text\(\)\s*=\s*(['"])(.*?)\1/g, "normalize-space()=$1$2$1");
+      return `(() => {
+        const result = [];
+        const seen = new Set();
+        for (const xpath of [${JSON.stringify(selector)}, ${JSON.stringify(fallbackSelector)}]) {
+          const iterator = document.evaluate(xpath, document, null, XPathResult.ORDERED_NODE_ITERATOR_TYPE, null);
+          let node;
+          while (node = iterator.iterateNext()) {
+            if (!seen.has(node)) { seen.add(node); result.push(node); }
+          }
+        }
+        return result;
+      })()`;
+    }
     return `(() => {
       const result = [];
       const iterator = document.evaluate(${JSON.stringify(selector)}, document, null, XPathResult.ORDERED_NODE_ITERATOR_TYPE, null);
@@ -442,14 +467,15 @@ async function sendCdpCommandSingle(wsUrl, method, params = {}, timeout = 30000)
 // =============================================================================
 
 // Map common key names to CDP key codes
+// Keys with 'text' property will trigger native browser behaviors (form submit, etc.)
 const KEY_DEFINITIONS = {
-  // Navigation keys
-  'Tab': { key: 'Tab', code: 'Tab', keyCode: 9 },
-  'Enter': { key: 'Enter', code: 'Enter', keyCode: 13 },
+  // Navigation keys - text property needed for Enter/Tab to trigger native behaviors
+  'Tab': { key: 'Tab', code: 'Tab', keyCode: 9, text: '\t' },
+  'Enter': { key: 'Enter', code: 'Enter', keyCode: 13, text: '\r' },
   'Escape': { key: 'Escape', code: 'Escape', keyCode: 27 },
   'Backspace': { key: 'Backspace', code: 'Backspace', keyCode: 8 },
   'Delete': { key: 'Delete', code: 'Delete', keyCode: 46 },
-  'Space': { key: ' ', code: 'Space', keyCode: 32 },
+  'Space': { key: ' ', code: 'Space', keyCode: 32, text: ' ' },
 
   // Arrow keys
   'ArrowUp': { key: 'ArrowUp', code: 'ArrowUp', keyCode: 38 },
@@ -818,14 +844,15 @@ async function keyboardPress(tabIndexOrWsUrl, keyName, modifiers = {}) {
   if (modifiers.meta) modifierFlags |= 4;
   if (modifiers.shift) modifierFlags |= 8;
 
-  // Send keyDown
+  // Send keyDown (include text property if defined - needed for form submission, etc.)
   await sendCdpCommand(wsUrl, 'Input.dispatchKeyEvent', {
     type: 'keyDown',
     key: keyDef.key,
     code: keyDef.code,
     windowsVirtualKeyCode: keyDef.keyCode,
     nativeVirtualKeyCode: keyDef.keyCode,
-    modifiers: modifierFlags
+    modifiers: modifierFlags,
+    ...(keyDef.text && { text: keyDef.text })
   });
 
   // Send keyUp
