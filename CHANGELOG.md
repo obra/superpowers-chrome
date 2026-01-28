@@ -2,6 +2,23 @@
 
 All notable changes to the superpowers-chrome MCP project.
 
+## [1.6.3] - 2026-01-28 - Bug Fixes and Auto-Downscale Screenshots
+
+### Fixed
+- **Enter key form submission**: Added `text: '\r'` to Enter keyDown events, enabling native form submission via `\n` in type payloads
+- **XPath text() selector on mixed content**: XPath selectors like `//a[text()='Settings']` now fallback to `normalize-space()` for elements with mixed content (e.g., `<a><svg/>Settings</a>`)
+- **README Quick Start path**: Updated plugin installation path to include marketplace/version structure
+
+### Added
+- **Auto-downscale screenshots**: Screenshots exceeding 1800px are automatically downscaled using native tools (sips on macOS, ImageMagick on Linux) to prevent Claude API "2000px limit" errors in many-image mode
+- **Eval patterns in skill docs**: Added documented patterns for viewport resize, cookie clearing, and scrolling via `eval` action
+- **Test harness**: Added `test-harness.js` for automated React input testing (50+ iterations)
+
+### Changed
+- **Tab and Space keys**: Added `text` property to Tab (`\t`) and Space (` `) key definitions for consistency
+
+---
+
 ## [1.6.2] - 2025-12-21 - Focus Preservation and Tab Navigation
 
 ### Fixed
