@@ -15,6 +15,27 @@ chmod +x chrome-ws
 
 Chrome starts with `--remote-debugging-port=9222` and separate profile in `/tmp/chrome-debug` (or `C:\temp\chrome-debug` on Windows).
 
+## Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CHROME_WS_BROWSER` | (auto-detect) | Path to browser executable. Overrides auto-detection. |
+| `CHROME_WS_HOST` | `127.0.0.1` | Debug host address |
+| `CHROME_WS_PORT` | `9222` | Debug port number |
+
+**Examples:**
+
+```bash
+# Force Chromium instead of Chrome
+CHROME_WS_BROWSER=/usr/bin/chromium ./chrome-ws start
+
+# Use custom port
+CHROME_WS_PORT=9333 ./chrome-ws start
+
+# Use Brave browser
+CHROME_WS_BROWSER="/usr/bin/brave-browser" ./chrome-ws start
+```
+
 ## Command Reference
 
 **Setup:**

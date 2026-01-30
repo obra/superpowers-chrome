@@ -247,8 +247,8 @@ if (command === 'start') {
     process.exit(1);
   }
 
-  // Find Chrome executable
-  const chromePath = paths.find(p => existsSync(p));
+  // Find Chrome executable (CHROME_WS_BROWSER env var overrides auto-detection)
+  const chromePath = process.env.CHROME_WS_BROWSER || paths.find(p => existsSync(p));
 
   if (!chromePath) {
     console.error('Chrome not found. Searched:');
