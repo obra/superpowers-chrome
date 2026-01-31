@@ -2,6 +2,15 @@
 
 All notable changes to the superpowers-chrome MCP project.
 
+## [1.6.4] - 2026-01-31 - Clarify Auto-Capture in Tool Description and Skill
+
+### Changed
+- **MCP tool description**: Rewritten to clearly describe what each auto-captured file contains (viewport screenshot, structured markdown, full DOM, console messages) and guide Claude to prefer reading them over using extract or screenshot actions
+- **MCP help text**: Aligned auto-capture section with new tool description language
+- **Browsing skill**: Added Auto-Capture section explaining the capture system; updated screenshot action to indicate viewport screenshots are already auto-captured
+
+---
+
 ## [1.6.3] - 2026-01-28 - Bug Fixes and Auto-Downscale Screenshots
 
 ### Fixed

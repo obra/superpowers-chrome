@@ -24,6 +24,16 @@ Control Chrome via DevTools Protocol using the `use_browser` MCP tool. Single un
 - Generating screenshots/PDFs
 - Prefer higher-level abstractions
 
+## Auto-Capture
+
+Every DOM action (navigate, click, type, select, eval, keyboard_press) automatically saves:
+- `{prefix}.png` — viewport screenshot
+- `{prefix}.md` — page content as structured markdown
+- `{prefix}.html` — full rendered DOM
+- `{prefix}-console.txt` — browser console messages
+
+Files are saved to the session directory with sequential prefixes (001-navigate, 002-click, etc.). You must check these before using extract or screenshot actions.
+
 ## The use_browser Tool
 
 Single MCP tool with action-based interface. Chrome auto-starts on first use.
@@ -83,10 +93,11 @@ Single MCP tool with action-based interface. Chrome auto-starts on first use.
   - Example: `{action: "eval", payload: "document.title"}`
 
 ### Export
-- **screenshot**: Capture screenshot
+- **screenshot**: Capture screenshot of a specific element
   - `payload`: Filename
   - `selector`: Optional - screenshot specific element
-  - Example: `{action: "screenshot", payload: "/tmp/page.png"}`
+  - Viewport screenshots are auto-captured after every DOM action. Use this only when you need a specific element.
+  - Example: `{action: "screenshot", payload: "/tmp/chart.png", selector: ".chart"}`
 
 ### Tab Management
 - **list_tabs**: List all open tabs

@@ -499,14 +499,14 @@ Default profile: "superpowers-chrome"
 Profile data persists across sessions (cookies, localStorage, extensions, etc.)
 
 ## Auto-Capture System
-DOM actions automatically save content to disk - NO EXTRACT NEEDED:
-- {prefix}.html (full rendered DOM) → Use instead of extract with "html"
-- {prefix}.md (structured content) → Use instead of extract with "markdown"
-- {prefix}.png (visual state) → Use instead of screenshot action
-- {prefix}-console.txt (browser messages)
-All files go in a single session directory with prefixes: 001-navigate, 002-click, etc.
+Every DOM action auto-captures to the session dir:
+- {prefix}.png — viewport screenshot
+- {prefix}.md — page content as structured markdown
+- {prefix}.html — full rendered DOM
+- {prefix}-console.txt — browser console messages
 
-The files are immediately available after navigate/click/type/select/eval actions.
+Files use sequential prefixes: 001-navigate, 002-click, etc.
+Prefer reading these files to using 'extract' or 'screenshot' whenever possible.
 
 ## Selectors
 CSS: "button.submit", "#email", ".form input[name=password]"
@@ -550,17 +550,17 @@ const server = new McpServer({
 // Register the use_browser tool
 server.tool(
   "use_browser",
-  `Control persistent Chrome browser with automatic page capture. DOM actions (navigate, click, type, select, eval) save page content to disk automatically - CHECK AUTO-CAPTURED FILES FIRST.
+  `Control persistent Chrome browser with automatic page capture.
 
-🚨 CRITICAL: Navigation auto-captures {prefix}.md, {prefix}.html, {prefix}.png in session dir. Check these BEFORE running extract!
+Every DOM action (navigate, click, type, select, eval) auto-captures to the session dir:
+- {prefix}.png — viewport screenshot
+- {prefix}.md — page content as structured markdown
+- {prefix}.html — full rendered DOM
+- {prefix}-console.txt — browser console messages
 
-EXTRACT ONLY WHEN: You need specific elements, different format, or content changed since navigation.
+Prefer reading these files to using 'extract' or 'screenshot' whenever possible.
 
-Selectors: CSS or XPath (XPath starts with / or //). Append \\n to payload in 'type' to submit forms.
-
-Examples: {action:"navigate", payload:"https://site.com"} → page.md auto-captured | {action:"extract", payload:"text", selector:".price"} → only for specific elements
-
-Workflows: navigate→check_page.md_first | extract→only_if_auto_capture_insufficient`,
+Selectors: CSS or XPath (XPath starts with / or //). Append \\n to payload in 'type' to submit forms.`,
   UseBrowserParams,
   {
     readOnlyHint: false,
