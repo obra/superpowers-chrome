@@ -2,6 +2,34 @@
 
 All notable changes to the superpowers-chrome MCP project.
 
+## [1.7.0] - 2026-02-08 - Dynamic Port Allocation and Multi-Instance Support
+
+### Added
+- **Dynamic CDP port allocation**: Chrome no longer hardcodes port 9222. `startChrome()` finds an available port in range 9222-12111, enabling multiple parallel Chrome instances without conflicts
+- **Per-profile meta.json**: Port assignment, PID, and headless mode are persisted at `~/.cache/superpowers/browser-profiles/{name}.meta.json`. This enables:
+  - Reconnection to Chrome instances that survive MCP restarts
+  - Collision detection when port is already in use
+  - Other sessions discovering which port a profile's Chrome is on
+- **`--port=N` flag**: Both MCP server and CLI accept explicit port override
+  - MCP: `node mcp/dist/index.js --port=9444`
+  - CLI: `./chrome-ws start --port=9555`
+- **`isPortAlive()` / `findAvailablePort()` utilities**: Exported from chrome-ws-lib for advanced use
+- **`browser_mode` action**: Now returns `port` field alongside headless/headed status
+
+### Changed
+- **`startChrome()` signature**: New optional third parameter `port` for explicit port selection
+- **Port priority**: explicit `--port` param > `CHROME_WS_PORT` env var > dynamic allocation
+- **`showBrowser`/`hideBrowser`**: Now preserve the active port across Chrome restarts
+- **`killChrome()`**: Clears meta.json so other sessions know the port is free
+
+### Technical
+- Added `chromeHttpAt(host, port, path, method)` for probing ports before setting `activePort`
+- Module-level `activePort` variable replaces static `CHROME_DEBUG_PORT` in `chromeHttp()`
+- `rewriteWsUrl` calls pass `activePort` for correct WebSocket URL rewriting
+- Stale meta.json detected via PID liveness check (`process.kill(pid, 0)`) and Chrome `/json/version` probe
+
+---
+
 ## [1.6.4] - 2026-01-31 - Clarify Auto-Capture in Tool Description and Skill
 
 ### Changed

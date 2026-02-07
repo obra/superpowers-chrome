@@ -119,9 +119,9 @@ Single MCP tool with action-based interface. Chrome auto-starts on first use.
   - Example: `{action: "hide_browser"}`
   - ⚠️ **WARNING**: Restarts Chrome, reloads pages via GET, loses POST state
 
-- **browser_mode**: Check current browser mode and profile
+- **browser_mode**: Check current browser mode, port, and profile
   - Example: `{action: "browser_mode"}`
-  - Returns: `{"headless": true|false, "mode": "headless"|"headed", "running": true|false, "profile": "name", "profileDir": "/path"}`
+  - Returns: `{"headless": true|false, "mode": "headless"|"headed", "running": true|false, "port": 9222, "profile": "name", "profileDir": "/path"}`
 
 ### Profile Management
 - **set_profile**: Change Chrome profile (must kill Chrome first)
@@ -132,7 +132,7 @@ Single MCP tool with action-based interface. Chrome auto-starts on first use.
   - Example: `{action: "get_profile"}`
   - Returns: `{"profile": "name", "profileDir": "/path"}`
 
-**Default behavior**: Chrome starts in **headless mode** with **"superpowers-chrome" profile**.
+**Default behavior**: Chrome starts in **headless mode** with **"superpowers-chrome" profile** on a **dynamically allocated port** (range 9222-12111). Override with `CHROME_WS_PORT` env var or MCP `--port=N` flag.
 
 **Critical caveats when toggling modes**:
 1. **Chrome must restart** - Cannot switch headless/headed mode on running Chrome
