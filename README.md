@@ -36,7 +36,9 @@ cd ~/.claude/plugins/cache/superpowers-marketplace/superpowers-chrome/*/skills/b
 ./chrome-ws click 0 "button[name=btnK]"
 ```
 
-**Windows tip:** The tooling defaults to `127.0.0.1:9222` for DevTools traffic. Override via `CHROME_WS_HOST` / `CHROME_WS_PORT` if you forward Chrome elsewhere.
+**Port allocation:** Chrome gets a dynamically allocated port (range 9222-12111) to avoid conflicts. Port assignment is persisted per profile in `~/.cache/superpowers/browser-profiles/{name}.meta.json`. Override with `--port=N` flag or `CHROME_WS_PORT` env var. Multiple profiles can run in parallel on different ports.
+
+**Windows tip:** The tooling defaults to `127.0.0.1` for DevTools traffic. Override via `CHROME_WS_HOST` / `CHROME_WS_PORT` or `--port=N` if you forward Chrome elsewhere.
 
 **Linux/WSL2 tip:** For headed mode (visible browser), the MCP server needs the `DISPLAY` environment variable. If `show_browser` doesn't work, configure `"env": {"DISPLAY": ":0"}` in your MCP server config. See [mcp/README.md](mcp/README.md#linuxwsl2-headed-mode) for details.
 
