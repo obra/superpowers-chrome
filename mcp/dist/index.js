@@ -13892,6 +13892,8 @@ function hasDisplay() {
 }
 var forceHeadless = process.argv.includes("--headless");
 var forceHeaded = process.argv.includes("--headed");
+var portArg = process.argv.find((a) => a.startsWith("--port="));
+var explicitPort = portArg ? parseInt(portArg.split("=")[1], 10) : void 0;
 var headlessMode;
 if (forceHeadless) {
   headlessMode = true;
@@ -13944,15 +13946,10 @@ async function ensureChromeRunning() {
     return;
   }
   try {
-    await chromeLib.getTabs();
+    await chromeLib.startChrome(headlessMode, void 0, explicitPort);
     chromeStarted = true;
-  } catch (error) {
-    try {
-      await chromeLib.startChrome(headlessMode);
-      chromeStarted = true;
-    } catch (startError) {
-      throw new Error(`Failed to auto-start Chrome: ${startError instanceof Error ? startError.message : String(startError)}`);
-    }
+  } catch (startError) {
+    throw new Error(`Failed to auto-start Chrome: ${startError instanceof Error ? startError.message : String(startError)}`);
   }
 }
 function formatActionResponse(actionResult, actionDescription) {
@@ -14349,7 +14346,8 @@ async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
   const modeReason = forceHeadless ? "forced via --headless" : forceHeaded ? "forced via --headed" : headlessMode ? "auto-detected no display" : "display available";
-  console.error(`Chrome MCP server running via stdio (${headlessMode ? "headless" : "headed"} mode, ${modeReason})`);
+  const portInfo = explicitPort ? `, port: ${explicitPort} (via --port)` : "";
+  console.error(`Chrome MCP server running via stdio (${headlessMode ? "headless" : "headed"} mode, ${modeReason}${portInfo})`);
 }
 main().catch((error) => {
   console.error("Server error:", error);
