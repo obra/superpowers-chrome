@@ -42,12 +42,15 @@ function hasDisplay(): boolean {
   }
 }
 
-// Parse command line arguments for headless mode
+// Parse command line arguments for headless mode and port
 // --headless: Force headless mode
 // --headed: Force headed mode (will fail if no display)
+// --port=N: Use specific CDP port (overrides dynamic allocation)
 // Default: headless if no display available, headed otherwise
 const forceHeadless = process.argv.includes('--headless');
 const forceHeaded = process.argv.includes('--headed');
+const portArg = process.argv.find(a => a.startsWith('--port='));
+const explicitPort = portArg ? parseInt(portArg.split('=')[1], 10) : undefined;
 
 let headlessMode: boolean;
 if (forceHeadless) {
@@ -120,7 +123,10 @@ const UseBrowserParams = {
 type UseBrowserInput = z.infer<ReturnType<typeof z.object<typeof UseBrowserParams>>>;
 
 /**
- * Ensure Chrome is running, auto-start if needed
+ * Ensure Chrome is running, auto-start if needed.
+ * startChrome() handles meta.json discovery and reconnection to existing
+ * Chrome instances, so we delegate entirely to it rather than probing
+ * a potentially wrong port with getTabs() first.
  */
 async function ensureChromeRunning(): Promise<void> {
   if (chromeStarted) {
@@ -128,17 +134,12 @@ async function ensureChromeRunning(): Promise<void> {
   }
 
   try {
-    // Try to list tabs - if this works, Chrome is running
-    await chromeLib.getTabs();
+    // startChrome checks meta.json for existing Chrome, reconnects if alive,
+    // otherwise finds an available port and launches a new instance.
+    await chromeLib.startChrome(headlessMode, undefined, explicitPort);
     chromeStarted = true;
-  } catch (error) {
-    // Chrome not running, start it
-    try {
-      await chromeLib.startChrome(headlessMode);
-      chromeStarted = true;
-    } catch (startError) {
-      throw new Error(`Failed to auto-start Chrome: ${startError instanceof Error ? startError.message : String(startError)}`);
-    }
+  } catch (startError) {
+    throw new Error(`Failed to auto-start Chrome: ${startError instanceof Error ? startError.message : String(startError)}`);
   }
 }
 
@@ -620,7 +621,8 @@ async function main() {
   const modeReason = forceHeadless ? 'forced via --headless' :
                      forceHeaded ? 'forced via --headed' :
                      headlessMode ? 'auto-detected no display' : 'display available';
-  console.error(`Chrome MCP server running via stdio (${headlessMode ? 'headless' : 'headed'} mode, ${modeReason})`);
+  const portInfo = explicitPort ? `, port: ${explicitPort} (via --port)` : '';
+  console.error(`Chrome MCP server running via stdio (${headlessMode ? 'headless' : 'headed'} mode, ${modeReason}${portInfo})`);
 }
 
 // Run the server

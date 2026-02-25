@@ -22,6 +22,14 @@ const {
   rewriteWsUrl
 } = require('./host-override');
 
+// Dynamic port: updated by startChrome() when Chrome launches or reconnects.
+// Defaults to CHROME_DEBUG_PORT (from env CHROME_WS_PORT or 9222).
+let activePort = CHROME_DEBUG_PORT;
+
+// Port range for dynamic allocation (tried sequentially starting at 9222 for backward compat)
+const PORT_RANGE_START = 9222;
+const PORT_RANGE_END = 12111;
+
 // Minimal WebSocket client implementation (dependency-free)
 class WebSocketClient {
   constructor(url) {
@@ -275,36 +283,29 @@ function closeAllConnections() {
   connectionPool.clear();
 }
 
-// Helper to make HTTP requests to Chrome
-async function chromeHttp(path, method = 'GET') {
+// HTTP helper with explicit host/port — used for probing ports before setting activePort
+async function chromeHttpAt(host, port, path, method = 'GET') {
   return new Promise((resolve, reject) => {
-    const options = {
-      hostname: CHROME_DEBUG_HOST,
-      port: CHROME_DEBUG_PORT,
-      path,
-      method: method
-    };
+    const options = { hostname: host, port, path, method };
 
     const req = http.request(options, (res) => {
       let data = '';
       res.on('data', chunk => data += chunk);
       res.on('end', () => {
-        if (!data) {
-          resolve({});
-          return;
-        }
-        try {
-          resolve(JSON.parse(data));
-        } catch (e) {
-          // Some endpoints return plain text (e.g., "Target is closing")
-          resolve({ message: data });
-        }
+        if (!data) { resolve({}); return; }
+        try { resolve(JSON.parse(data)); }
+        catch (e) { resolve({ message: data }); }
       });
     });
 
     req.on('error', reject);
     req.end();
   });
+}
+
+// Helper to make HTTP requests to Chrome on the active port
+async function chromeHttp(path, method = 'GET') {
+  return chromeHttpAt(CHROME_DEBUG_HOST, activePort, path, method);
 }
 
 // Console message storage per tab
@@ -324,7 +325,7 @@ let chromeProfileName = 'superpowers-chrome'; // Default profile name
 async function resolveWsUrl(wsUrlOrIndex) {
   // If it's already a WebSocket URL, rewrite and return it
   if (typeof wsUrlOrIndex === 'string' && wsUrlOrIndex.startsWith('ws://')) {
-    return rewriteWsUrl(wsUrlOrIndex);
+    return rewriteWsUrl(wsUrlOrIndex, CHROME_DEBUG_HOST, activePort);
   }
 
   // If it's a number (tab index), resolve it
@@ -522,7 +523,7 @@ async function getTabs() {
     .filter(tab => tab.type === 'page')
     .map(tab => ({
       ...tab,
-      webSocketDebuggerUrl: rewriteWsUrl(tab.webSocketDebuggerUrl)
+      webSocketDebuggerUrl: rewriteWsUrl(tab.webSocketDebuggerUrl, CHROME_DEBUG_HOST, activePort)
     }));
 }
 
@@ -530,7 +531,7 @@ async function newTab(url = 'about:blank') {
   const encoded = encodeURIComponent(url);
   const tab = await chromeHttp(`/json/new?${encoded}`, 'PUT');
   if (tab && typeof tab === 'object') {
-    tab.webSocketDebuggerUrl = rewriteWsUrl(tab.webSocketDebuggerUrl);
+    tab.webSocketDebuggerUrl = rewriteWsUrl(tab.webSocketDebuggerUrl, CHROME_DEBUG_HOST, activePort);
   }
   return tab;
 }
@@ -1253,7 +1254,7 @@ async function downscaleImageIfNeeded(filepath, maxDimension = 1800) {
   }
 }
 
-async function startChrome(headless = null, profileName = null) {
+async function startChrome(headless = null, profileName = null, port = null) {
   const { spawn } = require('child_process');
   const { existsSync, mkdirSync } = require('fs');
   const os = require('os');
@@ -1268,7 +1269,34 @@ async function startChrome(headless = null, profileName = null) {
     chromeProfileName = profileName;
   }
 
-  // Platform-specific Chrome paths
+  // --- Step 1: Check meta.json for an already-running Chrome on this profile ---
+  // This enables reconnection after MCP restart while Chrome is still alive.
+  if (!port) {
+    const meta = readProfileMeta(chromeProfileName);
+    if (meta && meta.port) {
+      if (await isPortAlive(CHROME_DEBUG_HOST, meta.port, meta.pid)) {
+        activePort = meta.port;
+        console.error(`Reconnected to existing Chrome (port: ${meta.port}, PID: ${meta.pid}, profile: ${chromeProfileName})`);
+        return;
+      }
+      // Stale meta.json — Chrome died without cleanup
+      clearProfileMeta(chromeProfileName);
+    }
+  }
+
+  // --- Step 2: Determine which port to use ---
+  // Priority: explicit port param > CHROME_WS_PORT env var > dynamic allocation
+  const HAS_ENV_PORT = process.env.CHROME_WS_PORT !== undefined;
+  let chosenPort;
+  if (port) {
+    chosenPort = port;
+  } else if (HAS_ENV_PORT) {
+    chosenPort = CHROME_DEBUG_PORT; // already parsed from env by host-override.js
+  } else {
+    chosenPort = await findAvailablePort();
+  }
+
+  // --- Step 3: Find Chrome binary ---
   const chromePaths = {
     darwin: [
       '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
@@ -1303,12 +1331,12 @@ async function startChrome(headless = null, profileName = null) {
   // Set up profile directory (persistent across sessions)
   if (!chromeUserDataDir) {
     chromeUserDataDir = getChromeProfileDir(chromeProfileName);
-    // Ensure profile directory exists
     mkdirSync(chromeUserDataDir, { recursive: true });
   }
 
+  // --- Step 4: Launch Chrome with the chosen port ---
   const args = [
-    `--remote-debugging-port=9222`,
+    `--remote-debugging-port=${chosenPort}`,
     `--user-data-dir=${chromeUserDataDir}`,
     '--no-first-run',
     '--no-default-browser-check',
@@ -1334,7 +1362,6 @@ async function startChrome(headless = null, profileName = null) {
     '--disable-blink-features=AutomationControlled'
   ];
 
-  // Add headless flag if in headless mode
   if (chromeHeadless) {
     args.push('--headless=new');
   }
@@ -1346,12 +1373,23 @@ async function startChrome(headless = null, profileName = null) {
 
   proc.unref();
   chromeProcess = proc;
+  activePort = chosenPort;
 
   // Wait for Chrome to be ready
   await new Promise(resolve => setTimeout(resolve, 2000));
 
+  // --- Step 5: Persist port assignment in meta.json ---
+  writeProfileMeta(chromeProfileName, {
+    port: chosenPort,
+    pid: proc.pid,
+    headless: chromeHeadless,
+    profileName: chromeProfileName,
+    userDataDir: chromeUserDataDir,
+    startedAt: new Date().toISOString()
+  });
+
   const mode = chromeHeadless ? 'headless' : 'headed';
-  console.error(`Chrome started in ${mode} mode (PID: ${proc.pid}, profile: ${chromeProfileName})`);
+  console.error(`Chrome started in ${mode} mode (PID: ${proc.pid}, port: ${chosenPort}, profile: ${chromeProfileName})`);
 }
 
 async function killChrome() {
@@ -1381,7 +1419,10 @@ async function killChrome() {
     console.error(`Error killing Chrome: ${e.message}`);
   }
 
+  // Clean up meta.json so other sessions know this port is free
+  clearProfileMeta(chromeProfileName);
   chromeProcess = null;
+  activePort = CHROME_DEBUG_PORT;
 }
 
 async function showBrowser() {
@@ -1401,11 +1442,14 @@ async function showBrowser() {
     // Ignore errors if Chrome isn't running
   }
 
+  // Save port so we reuse it after restart (avoid port churn)
+  const savedPort = activePort;
+
   // Kill current Chrome instance
   await killChrome();
 
-  // Start Chrome in headed mode
-  await startChrome(false);
+  // Start Chrome in headed mode on the same port
+  await startChrome(false, null, savedPort);
 
   // Reopen tabs (Note: This will re-request pages via GET, losing POST state)
   if (currentTabs.length > 0) {
@@ -1439,11 +1483,14 @@ async function hideBrowser() {
     // Ignore errors if Chrome isn't running
   }
 
+  // Save port so we reuse it after restart
+  const savedPort = activePort;
+
   // Kill current Chrome instance
   await killChrome();
 
-  // Start Chrome in headless mode
-  await startChrome(true);
+  // Start Chrome in headless mode on the same port
+  await startChrome(true, null, savedPort);
 
   // Reopen tabs (Note: This will re-request pages via GET, losing POST state)
   if (currentTabs.length > 0) {
@@ -1465,6 +1512,7 @@ async function getBrowserMode() {
     headless: chromeHeadless,
     mode: chromeHeadless ? 'headless' : 'headed',
     running: chromeProcess !== null,
+    port: activePort,
     profile: chromeProfileName,
     profileDir: chromeUserDataDir
   };
@@ -1475,6 +1523,9 @@ function getProfileName() {
 }
 
 function setProfileName(profileName) {
+  if (!/^[a-zA-Z0-9_-]+$/.test(profileName)) {
+    throw new Error('Invalid profile name. Only alphanumeric characters, hyphens, and underscores are allowed.');
+  }
   if (chromeProcess) {
     throw new Error('Cannot change profile while Chrome is running. Kill Chrome first.');
   }
@@ -1606,6 +1657,91 @@ function getChromeProfileDir(profileName = 'superpowers-chrome') {
   const path = require('path');
   const cacheHome = getXdgCacheHome();
   return path.join(cacheHome, 'superpowers', 'browser-profiles', profileName);
+}
+
+// --- Dynamic port allocation and per-profile meta.json ---
+//
+// Each profile gets a sibling meta.json file next to its data directory:
+//   ~/.cache/superpowers/browser-profiles/superpowers-chrome/       ← profile data
+//   ~/.cache/superpowers/browser-profiles/superpowers-chrome.meta.json ← port/pid tracking
+//
+// This enables:
+//   - Reconnection to Chrome instances started by previous sessions
+//   - Multiple parallel Chrome instances (different profiles = different ports)
+//   - Collision detection (port already in use by another profile or process)
+
+function getProfileMetaPath(profileName = 'superpowers-chrome') {
+  const path = require('path');
+  const cacheHome = getXdgCacheHome();
+  return path.join(cacheHome, 'superpowers', 'browser-profiles', `${profileName}.meta.json`);
+}
+
+function readProfileMeta(profileName = 'superpowers-chrome') {
+  const fs = require('fs');
+  try {
+    const data = fs.readFileSync(getProfileMetaPath(profileName), 'utf8');
+    return JSON.parse(data);
+  } catch {
+    return null;
+  }
+}
+
+function writeProfileMeta(profileName, data) {
+  const fs = require('fs');
+  const path = require('path');
+  const metaPath = getProfileMetaPath(profileName);
+  // Ensure parent directory exists
+  fs.mkdirSync(path.dirname(metaPath), { recursive: true });
+  fs.writeFileSync(metaPath, JSON.stringify(data, null, 2) + '\n');
+}
+
+function clearProfileMeta(profileName) {
+  const fs = require('fs');
+  try {
+    fs.unlinkSync(getProfileMetaPath(profileName));
+  } catch {
+    // Already absent — nothing to do
+  }
+}
+
+// Check if a port has a live Chrome DevTools instance, optionally verify PID
+async function isPortAlive(host, port, expectedPid = null) {
+  try {
+    const data = await chromeHttpAt(host, port, '/json/version');
+    // Verify it's actually Chrome (not some other service on this port)
+    if (!data || !data.Browser) return false;
+    // If we have an expected PID, verify the process still exists
+    if (expectedPid) {
+      try { process.kill(expectedPid, 0); } // signal 0 = existence check
+      catch { return false; }
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// Probe whether a port is free (no listener) using a temporary TCP server
+function isPortFree(port) {
+  const net = require('net');
+  return new Promise((resolve) => {
+    const server = net.createServer();
+    server.once('error', () => resolve(false));
+    server.once('listening', () => { server.close(() => resolve(true)); });
+    server.listen(port, '127.0.0.1');
+  });
+}
+
+// Find first available port in range. Starts at PORT_RANGE_START (9222) for backward compat.
+async function findAvailablePort(start = PORT_RANGE_START, end = PORT_RANGE_END) {
+  for (let port = start; port <= end; port++) {
+    if (await isPortFree(port)) return port;
+  }
+  throw new Error(`No available port in range ${start}-${end}`);
+}
+
+function getActivePort() {
+  return activePort;
 }
 
 function initializeSession() {
@@ -2153,6 +2289,14 @@ module.exports = {
   // Connection management (JRV-130)
   closePooledConnection,
   closeAllConnections,
+
+  // Dynamic port allocation and per-profile meta.json
+  getActivePort,
+  findAvailablePort,
+  getProfileMetaPath,
+  readProfileMeta,
+  writeProfileMeta,
+  clearProfileMeta,
 
   // Legacy aliases (for backwards compatibility)
   cdpClick: click,

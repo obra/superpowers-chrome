@@ -2,7 +2,11 @@
 
 const process = require('process');
 
-const [,, command, wsUrlOrIndex, ...args] = process.argv;
+// Parse --port=N flag from anywhere in argv (filter it out of positional args)
+const allArgs = process.argv.slice(2);
+const portArg = allArgs.find(a => a.startsWith('--port='));
+const positionalArgs = allArgs.filter(a => !a.startsWith('--port='));
+const [command, wsUrlOrIndex, ...args] = positionalArgs;
 
 const {
   CHROME_DEBUG_HOST,
@@ -11,6 +15,9 @@ const {
   rewriteWsUrl,
   WS_OVERRIDE_ENABLED
 } = require('./host-override');
+
+// Effective port: --port=N flag overrides CHROME_WS_PORT env / default 9222
+const effectivePort = portArg ? parseInt(portArg.split('=')[1], 10) : CHROME_DEBUG_PORT;
 
 // Minimal WebSocket client implementation (dependency-free)
 class WebSocketClient {
@@ -179,14 +186,14 @@ async function resolveWsUrl(wsUrlOrIndex) {
   throw new Error(`Invalid tab specifier: ${wsUrlOrIndex}`);
 }
 
-// Helper to make HTTP requests to Chrome
+// Helper to make HTTP requests to Chrome on the effective port
 async function chromeHttp(path, method = 'GET') {
   const http = require('http');
 
   return new Promise((resolve, reject) => {
     const options = {
       hostname: CHROME_DEBUG_HOST,
-      port: CHROME_DEBUG_PORT,
+      port: effectivePort,
       path,
       method: method
     };
@@ -262,7 +269,7 @@ if (command === 'start') {
     : '/tmp/chrome-debug';
 
   const chromeArgs = [
-    `--remote-debugging-port=${CHROME_DEBUG_PORT}`,
+    `--remote-debugging-port=${effectivePort}`,
     `--user-data-dir=${userDataDir}`
   ];
 
@@ -273,15 +280,17 @@ if (command === 'start') {
   });
   chrome.unref();
 
+  const debugBase = `http://${CHROME_DEBUG_HOST}:${effectivePort}`;
+
   // Wait and verify
   setTimeout(async () => {
     try {
       const version = await chromeHttp('/json/version');
       console.log(`Chrome started: ${version.Browser}`);
-      console.log(`Remote debugging: ${CHROME_DEBUG_BASE}`);
+      console.log(`Remote debugging: ${debugBase}`);
     } catch (e) {
       console.error('Chrome started but remote debugging not accessible');
-      console.error(`Try: curl ${CHROME_DEBUG_BASE}/json/version`);
+      console.error(`Try: curl ${debugBase}/json/version`);
       process.exit(1);
     }
   }, 2000);
