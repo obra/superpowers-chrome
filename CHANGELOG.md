@@ -2,6 +2,27 @@
 
 All notable changes to the superpowers-chrome MCP project.
 
+## [1.8.0] - 2026-02-25 - Viewport Emulation, Full-Page Screenshots, and HiDPI Fix
+
+### Added
+- **Viewport emulation** (`set_viewport`): device emulation with custom width/height/deviceScaleFactor and mobile mode (touch events + mobile UA string). Useful for responsive design testing and mobile screenshots
+- **`clear_viewport`**: reset device emulation to browser default
+- **`get_viewport`**: query current CSS viewport dimensions and devicePixelRatio
+- **`clear_cookies`**: clear all browser cookies via CDP `Network.clearBrowserCookies`, without switching profiles
+- **Full-page screenshots** (`fullpage: true`): capture entire scrollable page content beyond the visible viewport using `captureBeyondViewport` and `Page.getLayoutMetrics`. Available in MCP (`{"action": "screenshot", "payload": "full.png", "fullpage": true}`), CLI (`chrome-ws screenshot 0 full.png --fullpage`), and lib
+- **`chrome-ws pid`** command: prints Chrome PID for X11 window management (e.g. `xdotool search --pid`)
+- **`chrome-ws info`** command: prints JSON with pid, port, mode, profile, profileDir, and running status; reads meta.json so it works across processes
+- **`getChromePid()`** exported from chrome-ws-lib
+- **`browser_mode` action** now includes `pid` field
+
+### Fixed
+- **HiDPI screenshot sizing on Linux**: Viewport screenshots (no selector) now pass an explicit clip using `window.innerWidth`/`window.innerHeight` with `scale: 1` instead of relying on Chrome's internal DPI-scaled dimensions. All screenshots also pass `fromSurface: true`. Fixes oversized screenshots on Linux displays with system DPI scaling (e.g. 1.5x/Xft.dpi:144)
+
+### Security
+- **profileName path traversal**: `setProfileName()` now validates the profile name against `[a-zA-Z0-9_-]+` before writing meta.json, preventing path traversal via user-supplied profile names
+
+---
+
 ## [1.7.0] - 2026-02-08 - Dynamic Port Allocation and Multi-Instance Support
 
 ### Added
