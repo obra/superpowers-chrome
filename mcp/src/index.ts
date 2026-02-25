@@ -86,6 +86,12 @@ enum BrowserAction {
   HELP = "help",
   // Special keys (Tab, Enter, Escape, Arrow keys, etc.)
   KEYBOARD_PRESS = "keyboard_press",
+  // Viewport control (mobile testing, responsive design)
+  SET_VIEWPORT = "set_viewport",
+  CLEAR_VIEWPORT = "clear_viewport",
+  GET_VIEWPORT = "get_viewport",
+  // Cookie management
+  CLEAR_COOKIES = "clear_cookies",
 }
 
 // Zod schema for use_browser tool parameters
@@ -117,7 +123,32 @@ const UseBrowserParams = {
     shift: z.boolean().optional(),
   }).optional().describe("Keyboard modifiers for keyboard_press"),
   // Element index when selector matches multiple elements
-  index: z.number().int().min(0).optional().describe("Element index for select action when selector matches multiple elements")
+  index: z.number().int().min(0).optional().describe("Element index for select action when selector matches multiple elements"),
+  // Viewport settings for device emulation (set_viewport action)
+  viewport: z.object({
+    width: z.number()
+      .int()
+      .min(320)
+      .max(7680)
+      .optional()
+      .describe("Viewport width in CSS pixels"),
+    height: z.number()
+      .int()
+      .min(200)
+      .max(4320)
+      .optional()
+      .describe("Viewport height in CSS pixels"),
+    deviceScaleFactor: z.number()
+      .min(0.25)
+      .max(5)
+      .default(1)
+      .describe("DPI multiplier (1=96dpi, 2=192dpi for retina)"),
+    mobile: z.boolean()
+      .default(false)
+      .describe("Enable mobile emulation (touch events + mobile UA string)"),
+  })
+    .optional()
+    .describe("Viewport settings for device emulation (set_viewport action)")
 };
 
 type UseBrowserInput = z.infer<ReturnType<typeof z.object<typeof UseBrowserParams>>>;
@@ -441,6 +472,29 @@ async function executeBrowserAction(params: UseBrowserInput): Promise<string> {
         keyResult.capture
       );
 
+    case BrowserAction.SET_VIEWPORT: {
+      if (!params.viewport) {
+        throw new Error("set_viewport requires a viewport object (empty object uses default 1200x800 dimensions)");
+      }
+      const viewportResult = await chromeLib.setViewport(tabIndex, params.viewport);
+      return `Viewport set: ${viewportResult.width}x${viewportResult.height} CSS pixels (scale: ${viewportResult.deviceScaleFactor}, mobile: ${viewportResult.mobile}, touch: ${viewportResult.touch})`;
+    }
+
+    case BrowserAction.CLEAR_VIEWPORT: {
+      await chromeLib.clearViewport(tabIndex);
+      return `Viewport cleared (reset to browser default)`;
+    }
+
+    case BrowserAction.GET_VIEWPORT: {
+      const vp = await chromeLib.getViewport(tabIndex);
+      return `Current viewport: ${vp.innerWidth}x${vp.innerHeight} CSS pixels (devicePixelRatio: ${vp.devicePixelRatio}, orientation: ${vp.orientation})`;
+    }
+
+    case BrowserAction.CLEAR_COOKIES: {
+      await chromeLib.clearCookies(tabIndex);
+      return `Cookies cleared`;
+    }
+
     case BrowserAction.HELP:
       return `# Chrome Browser Control
 
@@ -452,6 +506,8 @@ extract, attr, screenshot → Get content/visuals
 await_element, await_text → Wait for page changes
 list_tabs, new_tab, close_tab → Tab management
 show_browser, hide_browser, browser_mode → Toggle headless/headed mode
+set_viewport, clear_viewport, get_viewport → Device emulation (mobile/tablet/desktop)
+clear_cookies → Clear all browser cookies
 set_profile, get_profile → Manage Chrome profiles
 
 ## Navigation & Interaction (Auto-Capture with DOM Diff)
@@ -490,6 +546,31 @@ browser_mode: {"action": "browser_mode"} → Check current mode (headless/headed
 ⚠️  WARNING: Toggling browser visibility restarts Chrome and reloads pages via GET requests.
     This will LOSE form data, POST results, and any client-side state.
     Default: headless mode (faster, less intrusive)
+
+## Device Emulation (Viewport Control)
+set_viewport: {
+  "action": "set_viewport",
+  "tab_index": 0,
+  "viewport": {
+    "width": 375,
+    "height": 812,
+    "deviceScaleFactor": 2,
+    "mobile": true
+  }
+} → Mobile device emulation (e.g., iPhone 12: 375x812 CSS pixels, 2x scale, mobile UA + touch)
+
+set_viewport: {
+  "action": "set_viewport",
+  "viewport": {"width": 1920, "height": 1080}
+} → Desktop 1080p
+
+clear_viewport: {"action": "clear_viewport"} → Reset to browser default
+get_viewport: {"action": "get_viewport"} → Get current viewport dimensions and devicePixelRatio
+
+Viewport persists across actions. Set once, then navigate/click/screenshot at that viewport.
+
+## Cookie Management
+clear_cookies: {"action": "clear_cookies"} → Clear all browser cookies
 
 ## Profile Management
 set_profile: {"action": "set_profile", "payload": "profile-name"} → Set Chrome profile (must kill Chrome first)
