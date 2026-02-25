@@ -1152,12 +1152,18 @@ async function waitForText(tabIndexOrWsUrl, text, timeout = 5000) {
   });
 }
 
-async function screenshot(tabIndexOrWsUrl, filename, selector = null) {
+async function screenshot(tabIndexOrWsUrl, filename, selector = null, fullPage = false) {
   const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
 
   let clip = undefined;
-  if (selector) {
-    // Get element bounds
+  if (fullPage) {
+    // Full-page capture: get total content dimensions via layout metrics,
+    // then capture beyond the visible viewport.
+    const metrics = await sendCdpCommand(wsUrl, 'Page.getLayoutMetrics');
+    const { width, height } = metrics.contentSize;
+    clip = { x: 0, y: 0, width, height, scale: 1 };
+  } else if (selector) {
+    // Element capture: use element's CSS bounding rect
     const js = `
       (() => {
         const el = ${getElementSelector(selector)};
@@ -1177,11 +1183,23 @@ async function screenshot(tabIndexOrWsUrl, filename, selector = null) {
       returnByValue: true
     });
     clip = result.result.value;
+  } else {
+    // Viewport capture: explicitly clip to CSS pixel dimensions.
+    // Without an explicit clip, Chrome uses its internal (DPI-scaled) dimensions,
+    // which produces oversized screenshots on Linux HiDPI displays.
+    const vpResult = await sendCdpCommand(wsUrl, 'Runtime.evaluate', {
+      expression: '({ width: window.innerWidth, height: window.innerHeight })',
+      returnByValue: true
+    });
+    const { width, height } = vpResult.result.value;
+    clip = { x: 0, y: 0, width, height, scale: 1 };
   }
 
   const result = await sendCdpCommand(wsUrl, 'Page.captureScreenshot', {
     format: 'png',
-    ...(clip ? { clip } : {})
+    fromSurface: true,
+    captureBeyondViewport: fullPage,
+    clip
   });
 
   const fs = require('fs');
@@ -1512,10 +1530,15 @@ async function getBrowserMode() {
     headless: chromeHeadless,
     mode: chromeHeadless ? 'headless' : 'headed',
     running: chromeProcess !== null,
+    pid: chromeProcess ? chromeProcess.pid : null,
     port: activePort,
     profile: chromeProfileName,
     profileDir: chromeUserDataDir
   };
+}
+
+function getChromePid() {
+  return chromeProcess ? chromeProcess.pid : null;
 }
 
 function getProfileName() {
@@ -2362,6 +2385,7 @@ module.exports = {
   showBrowser,
   hideBrowser,
   getBrowserMode,
+  getChromePid,
 
   // Profile management
   getChromeProfileDir,

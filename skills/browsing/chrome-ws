@@ -298,6 +298,43 @@ if (command === 'start') {
   return;
 }
 
+// Command: pid - print Chrome PID (for X11 window management, etc.)
+if (command === 'pid') {
+  const lib = require('./chrome-ws-lib.js');
+  const pid = lib.getChromePid();
+  if (pid === null) {
+    console.error('Chrome is not running (started via MCP). PID is only available when Chrome was started in this process.');
+    process.exit(1);
+  }
+  console.log(pid);
+  return;
+}
+
+// Command: info - print Chrome info as JSON (pid, mode, profile, port)
+if (command === 'info') {
+  const lib = require('./chrome-ws-lib.js');
+  (async () => {
+    try {
+      const mode = await lib.getBrowserMode();
+      // Also try to get PID from meta.json if available
+      const meta = lib.readProfileMeta ? lib.readProfileMeta(mode.profile) : null;
+      const info = {
+        pid: meta ? meta.pid : mode.pid,
+        port: meta ? meta.port : mode.port,
+        mode: meta ? (meta.headless ? 'headless' : 'headed') : mode.mode,
+        profile: mode.profile,
+        profileDir: mode.profileDir,
+        running: meta !== null
+      };
+      console.log(JSON.stringify(info, null, 2));
+    } catch (e) {
+      console.error('Failed to get Chrome info:', e.message);
+      process.exit(1);
+    }
+  })();
+  return;
+}
+
 // Command: tabs - list all tabs
 if (command === 'tabs') {
   (async () => {
@@ -673,21 +710,18 @@ if (command === 'wait-text') {
 
 // Command: screenshot - capture screenshot
 if (command === 'screenshot') {
-  const [filename] = args;
+  const fullPage = args.includes('--fullpage');
+  const cleanArgs = args.filter(a => a !== '--fullpage');
+  const [filename] = cleanArgs;
   if (!wsUrlOrIndex || !filename) {
-    console.error('Usage: chrome-ws screenshot <tab-index-or-ws-url> <filename.png>');
+    console.error('Usage: chrome-ws screenshot <tab-index-or-ws-url> <filename.png> [--fullpage]');
     process.exit(1);
   }
   (async () => {
     try {
-      const wsUrl = await resolveWsUrl(wsUrlOrIndex);
-      const result = await sendCdpCommand(wsUrl, 'Page.captureScreenshot', {
-        format: 'png'
-      });
-      const fs = require('fs');
-      const buffer = Buffer.from(result.data, 'base64');
-      fs.writeFileSync(filename, buffer);
-      console.log(`Screenshot saved to ${filename}`);
+      const lib = require('./chrome-ws-lib.js');
+      const savedPath = await lib.screenshot(wsUrlOrIndex, filename, null, fullPage);
+      console.log(`Screenshot saved to ${savedPath}`);
     } catch (e) {
       console.error('Screenshot failed:', e.message);
       process.exit(1);

@@ -148,7 +148,11 @@ const UseBrowserParams = {
       .describe("Enable mobile emulation (touch events + mobile UA string)"),
   })
     .optional()
-    .describe("Viewport settings for device emulation (set_viewport action)")
+    .describe("Viewport settings for device emulation (set_viewport action)"),
+  // Full-page screenshot flag (screenshot action)
+  fullpage: z.boolean()
+    .optional()
+    .describe("Capture full scrollable page content, not just the visible viewport (screenshot action)")
 };
 
 type UseBrowserInput = z.infer<ReturnType<typeof z.object<typeof UseBrowserParams>>>;
@@ -363,7 +367,12 @@ async function executeBrowserAction(params: UseBrowserInput): Promise<string> {
       if (!params.payload || typeof params.payload !== 'string') {
         throw new Error("screenshot requires payload with filename");
       }
-      const filepath = await chromeLib.screenshot(tabIndex, params.payload, params.selector || undefined);
+      const filepath = await chromeLib.screenshot(
+        tabIndex,
+        params.payload,
+        params.selector || undefined,
+        params.fullpage ?? false
+      );
       return `Screenshot saved to ${filepath}`;
 
     case BrowserAction.SELECT:
@@ -502,7 +511,7 @@ Auto-starting Chrome with automatic page captures for every DOM action.
 
 ## Actions Overview
 navigate, click, type, keyboard_press, select, eval → Capture page state with before/after DOM diff
-extract, attr, screenshot → Get content/visuals
+extract, attr, screenshot, screenshot+fullpage → Get content/visuals
 await_element, await_text → Wait for page changes
 list_tabs, new_tab, close_tab → Tab management
 show_browser, hide_browser, browser_mode → Toggle headless/headed mode

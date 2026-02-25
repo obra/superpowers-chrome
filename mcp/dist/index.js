@@ -13950,7 +13950,9 @@ var UseBrowserParams = {
     height: external_exports.number().int().min(200).max(4320).optional().describe("Viewport height in CSS pixels"),
     deviceScaleFactor: external_exports.number().min(0.25).max(5).default(1).describe("DPI multiplier (1=96dpi, 2=192dpi for retina)"),
     mobile: external_exports.boolean().default(false).describe("Enable mobile emulation (touch events + mobile UA string)")
-  }).optional().describe("Viewport settings for device emulation (set_viewport action)")
+  }).optional().describe("Viewport settings for device emulation (set_viewport action)"),
+  // Full-page screenshot flag (screenshot action)
+  fullpage: external_exports.boolean().optional().describe("Capture full scrollable page content, not just the visible viewport (screenshot action)")
 };
 async function ensureChromeRunning() {
   if (chromeStarted) {
@@ -14104,7 +14106,12 @@ async function executeBrowserAction(params) {
       if (!params.payload || typeof params.payload !== "string") {
         throw new Error("screenshot requires payload with filename");
       }
-      const filepath = await chromeLib.screenshot(tabIndex, params.payload, params.selector || void 0);
+      const filepath = await chromeLib.screenshot(
+        tabIndex,
+        params.payload,
+        params.selector || void 0,
+        params.fullpage ?? false
+      );
       return `Screenshot saved to ${filepath}`;
     case "select" /* SELECT */:
       if (!params.selector) {
@@ -14221,7 +14228,7 @@ Auto-starting Chrome with automatic page captures for every DOM action.
 
 ## Actions Overview
 navigate, click, type, keyboard_press, select, eval \u2192 Capture page state with before/after DOM diff
-extract, attr, screenshot \u2192 Get content/visuals
+extract, attr, screenshot, screenshot+fullpage \u2192 Get content/visuals
 await_element, await_text \u2192 Wait for page changes
 list_tabs, new_tab, close_tab \u2192 Tab management
 show_browser, hide_browser, browser_mode \u2192 Toggle headless/headed mode
