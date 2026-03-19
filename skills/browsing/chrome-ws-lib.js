@@ -332,7 +332,7 @@ async function resolveWsUrl(wsUrlOrIndex) {
   const index = typeof wsUrlOrIndex === 'number' ? wsUrlOrIndex : parseInt(wsUrlOrIndex);
   if (!isNaN(index)) {
     const tabs = await chromeHttp('/json');
-    const pageTabs = tabs.filter(t => t.type === 'page');
+    const pageTabs = Array.isArray(tabs) ? tabs.filter(t => t.type === 'page') : [];
 
     // Auto-create tab if none exist (similar to auto-start Chrome behavior)
     if (pageTabs.length === 0) {
