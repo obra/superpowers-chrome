@@ -4,7 +4,7 @@ Ultra-lightweight MCP server for Chrome DevTools Protocol via `chrome-ws`.
 
 ## Features
 
-- **Single Tool**: `use_browser` with 13 actions
+- **Single Tool**: `use_browser` with 23 actions
 - **XPath & CSS**: Selectors support both CSS and XPath (auto-detected)
 - **Auto-start**: Chrome launches automatically on first use
 - **Zero Config**: No setup required, works out of the box
@@ -65,6 +65,16 @@ The `use_browser` tool accepts these parameters:
 | `new_tab` | Create new tab | - | - |
 | `close_tab` | Close tab | - | - |
 | `list_tabs` | List all tabs | - | - |
+| `show_browser` | Show browser window | - | - |
+| `hide_browser` | Hide browser window | - | - |
+| `browser_mode` | Get browser visibility state | - | - |
+| `set_profile` | Switch browser profile | - | Profile name |
+| `get_profile` | Get current profile name | - | - |
+| `keyboard_press` | Send keyboard key | - | Key name (e.g. 'Enter') |
+| `set_viewport` | Set viewport dimensions | - | JSON: `{"width": N, "height": N}` |
+| `clear_viewport` | Reset viewport to default | - | - |
+| `get_viewport` | Get current viewport size | - | - |
+| `clear_cookies` | Clear all browser cookies | - | - |
 
 ### Examples
 
