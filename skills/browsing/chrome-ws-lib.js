@@ -1322,6 +1322,8 @@ async function startChrome(headless = null, profileName = null, port = null) {
     ],
     linux: [
       '/usr/bin/google-chrome',
+      '/usr/bin/google-chrome-stable',
+      '/run/current-system/sw/bin/google-chrome-stable',
       '/usr/bin/chromium-browser',
       '/usr/bin/chromium'
     ],

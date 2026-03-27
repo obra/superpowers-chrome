@@ -235,6 +235,7 @@ if (command === 'start') {
     linux: [
       '/usr/bin/google-chrome',
       '/usr/bin/google-chrome-stable',
+      '/run/current-system/sw/bin/google-chrome-stable',
       '/usr/bin/chromium',
       '/usr/bin/chromium-browser'
     ],
