@@ -26,6 +26,9 @@ const {
 // Defaults to CHROME_DEBUG_PORT (from env CHROME_WS_PORT or 9222).
 let activePort = CHROME_DEBUG_PORT;
 
+// Set by connectViaDevToolsActivePort(); triggers CDP Target domain path in getTabs/newTab/closeTab
+let browserWsEndpoint = null;
+
 // Port range for dynamic allocation (tried sequentially starting at 9222 for backward compat)
 const PORT_RANGE_START = 9222;
 const PORT_RANGE_END = 12111;
@@ -331,8 +334,7 @@ async function resolveWsUrl(wsUrlOrIndex) {
   // If it's a number (tab index), resolve it
   const index = typeof wsUrlOrIndex === 'number' ? wsUrlOrIndex : parseInt(wsUrlOrIndex);
   if (!isNaN(index)) {
-    const tabs = await chromeHttp('/json');
-    const pageTabs = tabs.filter(t => t.type === 'page');
+    const pageTabs = await getTabs();
 
     // Auto-create tab if none exist (similar to auto-start Chrome behavior)
     if (pageTabs.length === 0) {
@@ -512,9 +514,136 @@ const KEY_DEFINITIONS = {
   'Insert': { key: 'Insert', code: 'Insert', keyCode: 45 },
 };
 
+// Browser-level WS connection for CDP Target domain (autoConnect mode)
+let browserConn = null;
+
+async function getBrowserConnection() {
+  if (browserConn && browserConn.ws.isConnected()) {
+    return browserConn;
+  }
+  if (!browserWsEndpoint) {
+    throw new Error('No browser WebSocket endpoint (not in autoConnect mode)');
+  }
+
+  const ws = new WebSocketClient(browserWsEndpoint);
+  browserConn = { ws, pending: new Map(), nextId: 1 };
+
+  ws.on('message', (msg) => {
+    try {
+      const data = JSON.parse(msg);
+      if (data.id !== undefined) {
+        const p = browserConn.pending.get(data.id);
+        if (p) {
+          clearTimeout(p.timer);
+          browserConn.pending.delete(data.id);
+          data.error ? p.reject(new Error(data.error.message)) : p.resolve(data.result);
+        }
+      }
+    } catch (e) {
+      console.error('Browser CDP parse error:', e);
+    }
+  });
+
+  ws.on('close', () => { browserConn = null; });
+  ws.on('error', (err) => { console.error('Browser WS error:', err.message); });
+
+  await ws.connect();
+  return browserConn;
+}
+
+async function sendBrowserCdpCommand(method, params = {}, timeout = 10000) {
+  const conn = await getBrowserConnection();
+  const id = conn.nextId++;
+
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      conn.pending.delete(id);
+      reject(new Error(`Browser CDP timeout: ${method}`));
+    }, timeout);
+
+    conn.pending.set(id, { resolve, reject, timer });
+    conn.ws.send(JSON.stringify({ id, method, params }));
+  });
+}
+
+async function getTabsViaCdp() {
+  const result = await sendBrowserCdpCommand('Target.getTargets');
+  return (result.targetInfos || [])
+    .filter(t => t.type === 'page')
+    .map(t => ({
+      id: t.targetId,
+      title: t.title,
+      url: t.url,
+      type: t.type,
+      webSocketDebuggerUrl: `ws://${CHROME_DEBUG_HOST}:${activePort}/devtools/page/${t.targetId}`
+    }));
+}
+
+async function newTabViaCdp(url = 'about:blank') {
+  const result = await sendBrowserCdpCommand('Target.createTarget', { url });
+  const targetId = result.targetId;
+  return {
+    id: targetId,
+    url,
+    type: 'page',
+    webSocketDebuggerUrl: `ws://${CHROME_DEBUG_HOST}:${activePort}/devtools/page/${targetId}`
+  };
+}
+
+async function closeTabViaCdp(targetId) {
+  await sendBrowserCdpCommand('Target.closeTarget', { targetId });
+}
+
+function connectViaDevToolsActivePort(userDataDir) {
+  const fs = require('fs');
+  const path = require('path');
+  const os = require('os');
+
+  const defaultDirs = {
+    darwin: path.join(os.homedir(), 'Library', 'Application Support', 'Google', 'Chrome'),
+    win32: path.join(os.homedir(), 'AppData', 'Local', 'Google', 'Chrome', 'User Data'),
+    linux: path.join(os.homedir(), '.config', 'google-chrome')
+  };
+
+  const dataDir = userDataDir || defaultDirs[os.platform()];
+  if (!dataDir) {
+    throw new Error(`Cannot detect Chrome user data dir on ${os.platform()}`);
+  }
+
+  const portFile = path.join(dataDir, 'DevToolsActivePort');
+  let content;
+  try {
+    content = fs.readFileSync(portFile, 'utf8');
+  } catch {
+    throw new Error(
+      `No DevToolsActivePort in ${dataDir}. ` +
+      `Enable remote debugging at chrome://inspect/#remote-debugging`
+    );
+  }
+
+  const lines = content.split('\n').map(l => l.trim()).filter(Boolean);
+  if (lines.length < 2) {
+    throw new Error(`Unexpected DevToolsActivePort format: ${content.trim()}`);
+  }
+
+  const port = parseInt(lines[0], 10);
+  const wsPath = lines[1];
+  if (isNaN(port) || port <= 0 || port > 65535) {
+    throw new Error(`Bad port in DevToolsActivePort: ${lines[0]}`);
+  }
+
+  activePort = port;
+  browserWsEndpoint = `ws://${CHROME_DEBUG_HOST}:${port}${wsPath}`;
+  console.error(`Attached to existing Chrome (port: ${port}, autoConnect)`);
+  return { port, wsPath, browserWsEndpoint };
+}
+
 // API Functions
 
 async function getTabs() {
+  if (browserWsEndpoint) {
+    return getTabsViaCdp();
+  }
   const tabs = await chromeHttp('/json');
   if (!Array.isArray(tabs)) {
     return [];
@@ -528,6 +657,9 @@ async function getTabs() {
 }
 
 async function newTab(url = 'about:blank') {
+  if (browserWsEndpoint) {
+    return newTabViaCdp(url);
+  }
   const encoded = encodeURIComponent(url);
   const tab = await chromeHttp(`/json/new?${encoded}`, 'PUT');
   if (tab && typeof tab === 'object') {
@@ -538,6 +670,13 @@ async function newTab(url = 'about:blank') {
 
 async function closeTab(tabIndexOrWsUrl) {
   const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
+  if (browserWsEndpoint) {
+    const match = wsUrl.match(/\/devtools\/page\/(.+)$/);
+    if (match) {
+      await closeTabViaCdp(match[1]);
+      return;
+    }
+  }
   const tabs = await chromeHttp('/json');
   const tab = tabs.find(t => t.webSocketDebuggerUrl === wsUrl);
   if (tab) {
@@ -2381,6 +2520,7 @@ module.exports = {
 
   // Chrome lifecycle
   startChrome,
+  connectViaDevToolsActivePort,
   killChrome,
   showBrowser,
   hideBrowser,

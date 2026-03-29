@@ -42,15 +42,20 @@ function hasDisplay(): boolean {
   }
 }
 
-// Parse command line arguments for headless mode and port
+// Parse command line arguments for headless mode, port, and autoConnect
 // --headless: Force headless mode
 // --headed: Force headed mode (will fail if no display)
 // --port=N: Use specific CDP port (overrides dynamic allocation)
+// --autoConnect: Attach to an already-running Chrome via DevToolsActivePort
+// --userDataDir=PATH: Chrome user data directory (default: platform default)
 // Default: headless if no display available, headed otherwise
 const forceHeadless = process.argv.includes('--headless');
 const forceHeaded = process.argv.includes('--headed');
 const portArg = process.argv.find(a => a.startsWith('--port='));
 const explicitPort = portArg ? parseInt(portArg.split('=')[1], 10) : undefined;
+const autoConnect = process.argv.includes('--autoConnect');
+const userDataDirArg = process.argv.find(a => a.startsWith('--userDataDir='));
+const userDataDir = userDataDirArg ? userDataDirArg.split('=').slice(1).join('=') : undefined;
 
 let headlessMode: boolean;
 if (forceHeadless) {
@@ -159,13 +164,22 @@ type UseBrowserInput = z.infer<ReturnType<typeof z.object<typeof UseBrowserParam
 
 /**
  * Ensure Chrome is running, auto-start if needed.
- * startChrome() handles meta.json discovery and reconnection to existing
- * Chrome instances, so we delegate entirely to it rather than probing
- * a potentially wrong port with getTabs() first.
+ * With --autoConnect, attaches to an existing Chrome via DevToolsActivePort
+ * instead of launching a new instance.
  */
 async function ensureChromeRunning(): Promise<void> {
   if (chromeStarted) {
     return;
+  }
+
+  if (autoConnect) {
+    try {
+      chromeLib.connectViaDevToolsActivePort(userDataDir);
+      chromeStarted = true;
+      return;
+    } catch (err) {
+      throw new Error(`autoConnect failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   try {

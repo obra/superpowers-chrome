@@ -93,6 +93,33 @@ Ultra-lightweight MCP server with a single `use_browser` tool. Perfect for minim
 }
 ```
 
+**Option 1c: Attach to an already-running Chrome (`--autoConnect`)**
+
+Instead of launching a new Chrome, connect to one you already have open.
+Requires Chrome 136+ with remote debugging enabled at `chrome://inspect/#remote-debugging`.
+
+```json
+{
+  "mcpServers": {
+    "chrome": {
+      "command": "npx",
+      "args": [
+        "github:obra/superpowers-chrome",
+        "--autoConnect"
+      ]
+    }
+  }
+}
+```
+
+This reads Chrome's `DevToolsActivePort` file to find the debugging port and WebSocket path.
+All tab operations go through CDP's Target domain, so no HTTP endpoint is needed.
+
+You can also point to a specific Chrome profile directory:
+```
+"--autoConnect", "--userDataDir=/path/to/chrome/profile"
+```
+
 **Option 2: Git Clone + Local Path (Current)**
 ```bash
 git clone https://github.com/obra/superpowers-chrome.git

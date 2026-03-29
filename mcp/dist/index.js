@@ -13894,6 +13894,9 @@ var forceHeadless = process.argv.includes("--headless");
 var forceHeaded = process.argv.includes("--headed");
 var portArg = process.argv.find((a) => a.startsWith("--port="));
 var explicitPort = portArg ? parseInt(portArg.split("=")[1], 10) : void 0;
+var autoConnect = process.argv.includes("--autoConnect");
+var userDataDirArg = process.argv.find((a) => a.startsWith("--userDataDir="));
+var userDataDir = userDataDirArg ? userDataDirArg.split("=").slice(1).join("=") : void 0;
 var headlessMode;
 if (forceHeadless) {
   headlessMode = true;
@@ -13957,6 +13960,15 @@ var UseBrowserParams = {
 async function ensureChromeRunning() {
   if (chromeStarted) {
     return;
+  }
+  if (autoConnect) {
+    try {
+      chromeLib.connectViaDevToolsActivePort(userDataDir);
+      chromeStarted = true;
+      return;
+    } catch (err) {
+      throw new Error(`autoConnect failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
   try {
     await chromeLib.startChrome(headlessMode, void 0, explicitPort);

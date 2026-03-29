@@ -2,6 +2,16 @@
 
 All notable changes to the superpowers-chrome MCP project.
 
+## [Unreleased] - autoConnect to existing Chrome
+
+### Added
+- **`--autoConnect` flag**: Attach to an already-running Chrome instead of launching a new instance. Reads `DevToolsActivePort` from Chrome's user data directory to find the debugging port and WebSocket path. Requires Chrome 136+ with remote debugging enabled at `chrome://inspect/#remote-debugging`
+- **`--userDataDir=PATH` flag**: Specify Chrome's user data directory for `--autoConnect`. Defaults to the platform's standard location (`~/Library/Application Support/Google/Chrome` on macOS)
+- **CDP-based tab management**: When using `--autoConnect`, tab operations (list, create, close) go through the CDP Target domain over WebSocket instead of HTTP `/json`. This is needed because Chrome's built-in remote debugging server doesn't expose the HTTP endpoint
+- **`connectViaDevToolsActivePort()`**: New function exported from chrome-ws-lib for programmatic use
+
+---
+
 ## [1.8.0] - 2026-02-25 - Viewport Emulation, Full-Page Screenshots, and HiDPI Fix
 
 ### Added
