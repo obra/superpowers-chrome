@@ -84,6 +84,11 @@ enum BrowserAction {
   SET_PROFILE = "set_profile",
   GET_PROFILE = "get_profile",
   HELP = "help",
+  // Mouse actions (CDP-level, bypasses synthetic event restrictions)
+  HOVER = "hover",
+  DRAG_DROP = "drag_drop",
+  MOUSE_MOVE = "mouse_move",
+  SCROLL = "scroll",
   // Special keys (Tab, Enter, Escape, Arrow keys, etc.)
   KEYBOARD_PRESS = "keyboard_press",
   // Viewport control (mobile testing, responsive design)
@@ -108,7 +113,7 @@ const UseBrowserParams = {
     .describe("CSS or XPath selector. XPath must start with / or //. Optional for type (types into current focus)."),
   payload: z.string()
     .optional()
-    .describe("Action-specific data: navigate=URL | type=text (\\t=Tab, \\n=Enter) | extract=format (text|html|markdown) | screenshot=filename | eval=JavaScript | select=option value | attr=attribute name | await_text=text to wait for | keyboard_press=key name (Tab, Enter, Space, Escape, Arrow*, F1-F12)"),
+    .describe("Action-specific data: navigate=URL | type=text (\\t=Tab, \\n=Enter) | extract=format (text|html|markdown) | screenshot=filename | eval=JavaScript | select=option value | attr=attribute name | await_text=text to wait for | keyboard_press=key name (Tab, Enter, Space, Escape, Arrow*, F1-F12) | drag_drop=target CSS selector or JSON {\"x\":N,\"y\":N} | mouse_move=JSON {\"x\":N,\"y\":N} or {\"x\":N,\"y\":N,\"steps\":N,\"fromX\":N,\"fromY\":N} | scroll=JSON {\"deltaX\":N,\"deltaY\":N} or direction (up/down/left/right)"),
   timeout: z.number()
     .int()
     .min(0)
@@ -461,6 +466,115 @@ async function executeBrowserAction(params: UseBrowserInput): Promise<string> {
         profileDir: profileDir
       }, null, 2);
 
+    case BrowserAction.HOVER: {
+      if (!params.selector) {
+        throw new Error("hover requires selector");
+      }
+      const hoverResult = await chromeLib.captureActionWithDiff(
+        tabIndex,
+        'hover',
+        () => chromeLib.hover(tabIndex, params.selector)
+      );
+      return formatCaptureResponse(
+        'Hovered',
+        params.selector,
+        hoverResult.capture
+      );
+    }
+
+    case BrowserAction.DRAG_DROP: {
+      if (!params.selector) {
+        throw new Error("drag_drop requires selector (source element)");
+      }
+      if (!params.payload) {
+        throw new Error("drag_drop requires payload (target selector or JSON coordinates {\"x\":N,\"y\":N})");
+      }
+
+      // Parse target: JSON coordinates or selector string
+      let dragTarget: string | { x: number; y: number } = params.payload;
+      try {
+        const parsed = JSON.parse(params.payload);
+        if (typeof parsed === 'object' && parsed.x !== undefined && parsed.y !== undefined) {
+          dragTarget = { x: parsed.x, y: parsed.y };
+        }
+      } catch {
+        // Not JSON — treat as selector string
+      }
+
+      const dragResult = await chromeLib.captureActionWithDiff(
+        tabIndex,
+        'drag',
+        () => chromeLib.drag(tabIndex, params.selector, dragTarget)
+      );
+      const targetDesc = typeof dragTarget === 'object'
+        ? `(${dragTarget.x}, ${dragTarget.y})`
+        : dragTarget;
+      return formatCaptureResponse(
+        'Dragged',
+        `${params.selector} → ${targetDesc}`,
+        dragResult.capture
+      );
+    }
+
+    case BrowserAction.MOUSE_MOVE: {
+      if (!params.payload) {
+        throw new Error("mouse_move requires payload with JSON coordinates {\"x\":N,\"y\":N}");
+      }
+      let moveParams: any;
+      try {
+        moveParams = JSON.parse(params.payload);
+      } catch {
+        throw new Error("mouse_move payload must be JSON: {\"x\":N,\"y\":N} (optional: steps, fromX, fromY)");
+      }
+      if (moveParams.x === undefined || moveParams.y === undefined) {
+        throw new Error("mouse_move payload must include x and y coordinates");
+      }
+      const moveResult = await chromeLib.mouseMove(tabIndex, moveParams.x, moveParams.y, {
+        steps: moveParams.steps,
+        fromX: moveParams.fromX,
+        fromY: moveParams.fromY
+      });
+      return `Mouse moved to (${moveResult.x}, ${moveResult.y})`;
+    }
+
+    case BrowserAction.SCROLL: {
+      if (!params.payload) {
+        throw new Error("scroll requires payload: direction (up/down/left/right) or JSON {\"deltaX\":N,\"deltaY\":N}");
+      }
+
+      let scrollOpts: { selector?: string; deltaX?: number; deltaY?: number } = {};
+      if (params.selector) {
+        scrollOpts.selector = params.selector;
+      }
+
+      // Parse direction strings or JSON
+      const scrollAmount = 300;
+      const payloadLower = params.payload.toLowerCase().trim();
+      if (payloadLower === 'down') {
+        scrollOpts.deltaY = scrollAmount;
+      } else if (payloadLower === 'up') {
+        scrollOpts.deltaY = -scrollAmount;
+      } else if (payloadLower === 'right') {
+        scrollOpts.deltaX = scrollAmount;
+      } else if (payloadLower === 'left') {
+        scrollOpts.deltaX = -scrollAmount;
+      } else {
+        try {
+          const parsed = JSON.parse(params.payload);
+          scrollOpts.deltaX = parsed.deltaX || 0;
+          scrollOpts.deltaY = parsed.deltaY || 0;
+        } catch {
+          throw new Error("scroll payload must be a direction (up/down/left/right) or JSON {\"deltaX\":N,\"deltaY\":N}");
+        }
+      }
+
+      const scrollResult = await chromeLib.scroll(tabIndex, scrollOpts);
+      const dir = scrollOpts.deltaY && scrollOpts.deltaY > 0 ? 'down' :
+                  scrollOpts.deltaY && scrollOpts.deltaY < 0 ? 'up' :
+                  scrollOpts.deltaX && scrollOpts.deltaX > 0 ? 'right' : 'left';
+      return `Scrolled ${dir} (deltaX: ${scrollResult.deltaX}, deltaY: ${scrollResult.deltaY})${params.selector ? ` at ${params.selector}` : ''}`;
+    }
+
     case BrowserAction.KEYBOARD_PRESS:
       // Press special keys (Tab, Enter, Escape, Arrow keys, etc.)
       if (!params.payload) {
@@ -511,6 +625,7 @@ Auto-starting Chrome with automatic page captures for every DOM action.
 
 ## Actions Overview
 navigate, click, type, keyboard_press, select, eval → Capture page state with before/after DOM diff
+hover, drag_drop, mouse_move, scroll → CDP-level mouse actions (native DnD, bot-detection safe)
 extract, attr, screenshot, screenshot+fullpage → Get content/visuals
 await_element, await_text → Wait for page changes
 list_tabs, new_tab, close_tab → Tab management
@@ -526,6 +641,15 @@ type: {"action": "type", "payload": "text", "selector": "optional"} → Smart \\
 keyboard_press: {"action": "keyboard_press", "payload": "Tab"} → Special keys
 select: {"action": "select", "selector": "select", "payload": "option_value"}
 eval: {"action": "eval", "payload": "JavaScript_code"}
+
+## Mouse Actions (CDP-Level — bypasses synthetic event restrictions)
+hover: {"action": "hover", "selector": "element"} → CSS :hover, tooltips, menus
+drag_drop: {"action": "drag_drop", "selector": "source", "payload": "target_selector"} → Native drag-and-drop
+drag_drop: {"action": "drag_drop", "selector": "source", "payload": "{\\"x\\":300,\\"y\\":200}"} → Drag to coordinates
+mouse_move: {"action": "mouse_move", "payload": "{\\"x\\":100,\\"y\\":200}"} → Move to coordinates
+mouse_move: {"action": "mouse_move", "payload": "{\\"x\\":100,\\"y\\":200,\\"steps\\":10,\\"fromX\\":0,\\"fromY\\":0}"} → Smooth movement
+scroll: {"action": "scroll", "payload": "down"} → Scroll down (also: up, left, right)
+scroll: {"action": "scroll", "selector": ".container", "payload": "{\\"deltaX\\":0,\\"deltaY\\":500}"} → Scroll within element
 
 ## keyboard_press Examples
 {"action": "keyboard_press", "payload": "Tab"} → Move to next field

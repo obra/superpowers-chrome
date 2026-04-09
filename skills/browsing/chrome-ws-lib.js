@@ -722,6 +722,260 @@ async function click(tabIndexOrWsUrl, selector) {
 const cdpClick = click;
 
 // =============================================================================
+// HOVER FUNCTION - CDP mouse move to element
+// =============================================================================
+
+/**
+ * Hover over an element using CDP mouse events.
+ * Triggers CSS :hover, mouseenter/mouseover events, tooltips, dropdown menus.
+ */
+async function hover(tabIndexOrWsUrl, selector) {
+  const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
+
+  const js = `
+    (() => {
+      const el = ${getElementSelector(selector)};
+      if (!el) return { found: false };
+      el.scrollIntoView({ block: 'center', inline: 'center' });
+      const rect = el.getBoundingClientRect();
+      return {
+        x: rect.left + rect.width / 2,
+        y: rect.top + rect.height / 2,
+        found: true
+      };
+    })()
+  `;
+
+  const result = await sendCdpCommand(wsUrl, 'Runtime.evaluate', {
+    expression: js,
+    returnByValue: true
+  });
+
+  if (!result.result.value || !result.result.value.found) {
+    throw new Error(`Element not found: ${selector}`);
+  }
+
+  const { x, y } = result.result.value;
+
+  await sendCdpCommand(wsUrl, 'Input.dispatchMouseEvent', {
+    type: 'mouseMoved',
+    x,
+    y
+  });
+
+  return { hovered: true, x, y };
+}
+
+// =============================================================================
+// DRAG AND DROP - CDP mouse event sequence for native drag-and-drop
+// =============================================================================
+
+/**
+ * Drag from source element to target element or coordinates.
+ * Uses CDP Input.dispatchMouseEvent to trigger native drag-and-drop,
+ * bypassing the DataTransfer restriction on synthetic JS DragEvents.
+ *
+ * @param {number|string} tabIndexOrWsUrl - Tab index or WebSocket URL
+ * @param {string} sourceSelector - CSS/XPath selector for the drag source
+ * @param {string|{x:number,y:number}} target - Target selector string or {x,y} coordinates
+ * @param {object} options - Optional settings
+ * @param {number} options.steps - Number of intermediate mouseMoved steps (default: 8)
+ */
+async function drag(tabIndexOrWsUrl, sourceSelector, target, options = {}) {
+  const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
+  const steps = options.steps || 8;
+
+  // Resolve source element coordinates
+  const sourceJs = `
+    (() => {
+      const el = ${getElementSelector(sourceSelector)};
+      if (!el) return { found: false };
+      el.scrollIntoView({ block: 'center', inline: 'center' });
+      const rect = el.getBoundingClientRect();
+      return {
+        x: rect.left + rect.width / 2,
+        y: rect.top + rect.height / 2,
+        found: true
+      };
+    })()
+  `;
+
+  const sourceResult = await sendCdpCommand(wsUrl, 'Runtime.evaluate', {
+    expression: sourceJs,
+    returnByValue: true
+  });
+
+  if (!sourceResult.result.value || !sourceResult.result.value.found) {
+    throw new Error(`Source element not found: ${sourceSelector}`);
+  }
+
+  const src = sourceResult.result.value;
+
+  // Resolve target coordinates (selector string or {x,y} object)
+  let dst;
+  if (typeof target === 'object' && target.x !== undefined && target.y !== undefined) {
+    dst = { x: target.x, y: target.y };
+  } else {
+    const targetJs = `
+      (() => {
+        const el = ${getElementSelector(target)};
+        if (!el) return { found: false };
+        el.scrollIntoView({ block: 'center', inline: 'center' });
+        const rect = el.getBoundingClientRect();
+        return {
+          x: rect.left + rect.width / 2,
+          y: rect.top + rect.height / 2,
+          found: true
+        };
+      })()
+    `;
+
+    const targetResult = await sendCdpCommand(wsUrl, 'Runtime.evaluate', {
+      expression: targetJs,
+      returnByValue: true
+    });
+
+    if (!targetResult.result.value || !targetResult.result.value.found) {
+      throw new Error(`Target element not found: ${target}`);
+    }
+
+    dst = { x: targetResult.result.value.x, y: targetResult.result.value.y };
+  }
+
+  // 1. Press at source
+  await sendCdpCommand(wsUrl, 'Input.dispatchMouseEvent', {
+    type: 'mousePressed',
+    x: src.x,
+    y: src.y,
+    button: 'left',
+    clickCount: 1
+  });
+
+  // 2. Move in intermediate steps (exceeds browser's ~4px drag detection threshold)
+  for (let i = 1; i <= steps; i++) {
+    const ratio = i / steps;
+    await sendCdpCommand(wsUrl, 'Input.dispatchMouseEvent', {
+      type: 'mouseMoved',
+      x: Math.round(src.x + (dst.x - src.x) * ratio),
+      y: Math.round(src.y + (dst.y - src.y) * ratio),
+      button: 'left'
+    });
+  }
+
+  // 3. Brief pause for apps that process drag events asynchronously
+  await new Promise(resolve => setTimeout(resolve, 50));
+
+  // 4. Release at target
+  await sendCdpCommand(wsUrl, 'Input.dispatchMouseEvent', {
+    type: 'mouseReleased',
+    x: Math.round(dst.x),
+    y: Math.round(dst.y),
+    button: 'left',
+    clickCount: 1
+  });
+
+  return { dragged: true, from: { x: src.x, y: src.y }, to: { x: dst.x, y: dst.y }, steps };
+}
+
+// =============================================================================
+// MOUSE MOVE - Raw coordinate mouse movement
+// =============================================================================
+
+/**
+ * Move mouse to specific coordinates with optional intermediate steps.
+ * Useful for: pre-click mouse patterns (bot detection), captcha puzzles,
+ * hover effects on coordinate-based targets.
+ *
+ * @param {number|string} tabIndexOrWsUrl - Tab index or WebSocket URL
+ * @param {number} x - Target X coordinate (CSS pixels)
+ * @param {number} y - Target Y coordinate (CSS pixels)
+ * @param {object} options
+ * @param {number} options.steps - Intermediate steps for smooth movement (default: 1)
+ * @param {number} options.fromX - Starting X for interpolation
+ * @param {number} options.fromY - Starting Y for interpolation
+ */
+async function mouseMove(tabIndexOrWsUrl, x, y, options = {}) {
+  const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
+  const steps = options.steps || 1;
+
+  if (steps <= 1 || (options.fromX === undefined && options.fromY === undefined)) {
+    await sendCdpCommand(wsUrl, 'Input.dispatchMouseEvent', {
+      type: 'mouseMoved',
+      x: Math.round(x),
+      y: Math.round(y)
+    });
+  } else {
+    const startX = options.fromX || 0;
+    const startY = options.fromY || 0;
+    for (let i = 1; i <= steps; i++) {
+      const ratio = i / steps;
+      await sendCdpCommand(wsUrl, 'Input.dispatchMouseEvent', {
+        type: 'mouseMoved',
+        x: Math.round(startX + (x - startX) * ratio),
+        y: Math.round(startY + (y - startY) * ratio)
+      });
+    }
+  }
+
+  return { moved: true, x, y };
+}
+
+// =============================================================================
+// SCROLL - Mouse wheel events
+// =============================================================================
+
+/**
+ * Scroll using CDP mouse wheel events.
+ * Simulates real mouse wheel input (vs. JavaScript scrollTo which bot detectors flag).
+ *
+ * @param {number|string} tabIndexOrWsUrl - Tab index or WebSocket URL
+ * @param {object} options
+ * @param {string} options.selector - Optional element to scroll within
+ * @param {number} options.deltaX - Horizontal scroll amount (positive = right)
+ * @param {number} options.deltaY - Vertical scroll amount (positive = down)
+ */
+async function scroll(tabIndexOrWsUrl, options = {}) {
+  const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
+
+  // Determine mouse position for the wheel event
+  let x = options.x || 100;
+  let y = options.y || 100;
+
+  if (options.selector) {
+    const js = `
+      (() => {
+        const el = ${getElementSelector(options.selector)};
+        if (!el) return { found: false };
+        const rect = el.getBoundingClientRect();
+        return {
+          x: rect.left + rect.width / 2,
+          y: rect.top + rect.height / 2,
+          found: true
+        };
+      })()
+    `;
+    const result = await sendCdpCommand(wsUrl, 'Runtime.evaluate', {
+      expression: js,
+      returnByValue: true
+    });
+    if (result.result.value && result.result.value.found) {
+      x = result.result.value.x;
+      y = result.result.value.y;
+    }
+  }
+
+  await sendCdpCommand(wsUrl, 'Input.dispatchMouseEvent', {
+    type: 'mouseWheel',
+    x: Math.round(x),
+    y: Math.round(y),
+    deltaX: options.deltaX || 0,
+    deltaY: options.deltaY || 0
+  });
+
+  return { scrolled: true, x, y, deltaX: options.deltaX || 0, deltaY: options.deltaY || 0 };
+}
+
+// =============================================================================
 // TYPE FUNCTION - Smart text input with Tab/Enter handling
 // =============================================================================
 
@@ -2374,6 +2628,12 @@ module.exports = {
   waitForElement,
   waitForText,
   screenshot,
+
+  // Mouse actions (CDP-level, bypasses synthetic event restrictions)
+  hover,            // Move mouse over element (CSS :hover, tooltips)
+  drag,             // Drag-and-drop via native mouse event sequence
+  mouseMove,        // Raw coordinate mouse movement
+  scroll,           // Mouse wheel scrolling
 
   // Keyboard support for special keys (Tab, Enter, Escape, Arrow keys, etc.)
   keyboardPress,
