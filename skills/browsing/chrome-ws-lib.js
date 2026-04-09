@@ -1212,12 +1212,65 @@ async function humanType(tabIndexOrWsUrl, selector, text, options = {}) {
     if (keyDef.special) {
       await keyboardPress(tabIndexOrWsUrl, keyDef.special);
     } else {
-      // Insert character using insertText (reliable across all frameworks).
-      // Combined with per-character delays, this provides the realistic timing
-      // pattern that bot detectors check for (vs instant bulk insertion).
+      // In headed mode, send full keyDown/keyUp events (fires JS keyboard events
+      // for bot detection). In headless mode, rawKeyDown triggers Chrome browser
+      // shortcuts that navigate away from the page, so we skip key events and
+      // rely on insertText + per-character timing for bot-detection resistance.
+      const sendKeyEvents = !chromeHeadless;
+      const modifiers = keyDef.shift ? 8 : 0; // 8 = Shift
+
+      if (sendKeyEvents) {
+        // Press Shift if needed
+        if (keyDef.shift) {
+          await sendCdpCommand(wsUrl, 'Input.dispatchKeyEvent', {
+            type: 'keyDown',
+            key: 'Shift',
+            code: 'ShiftLeft',
+            windowsVirtualKeyCode: 16,
+            nativeVirtualKeyCode: 16,
+            modifiers
+          });
+        }
+
+        // keyDown
+        await sendCdpCommand(wsUrl, 'Input.dispatchKeyEvent', {
+          type: 'rawKeyDown',
+          key: keyDef.key,
+          code: keyDef.code,
+          windowsVirtualKeyCode: keyDef.keyCode,
+          nativeVirtualKeyCode: keyDef.keyCode,
+          modifiers
+        });
+      }
+
+      // insertText for reliable character insertion (works in both modes)
       await sendCdpCommand(wsUrl, 'Input.insertText', {
         text: keyDef.text
       });
+
+      if (sendKeyEvents) {
+        // keyUp
+        await sendCdpCommand(wsUrl, 'Input.dispatchKeyEvent', {
+          type: 'keyUp',
+          key: keyDef.key,
+          code: keyDef.code,
+          windowsVirtualKeyCode: keyDef.keyCode,
+          nativeVirtualKeyCode: keyDef.keyCode,
+          modifiers
+        });
+
+        // Release Shift if needed
+        if (keyDef.shift) {
+          await sendCdpCommand(wsUrl, 'Input.dispatchKeyEvent', {
+            type: 'keyUp',
+            key: 'Shift',
+            code: 'ShiftLeft',
+            windowsVirtualKeyCode: 16,
+            nativeVirtualKeyCode: 16,
+            modifiers: 0
+          });
+        }
+      }
     }
 
     // Variable delay between keystrokes
