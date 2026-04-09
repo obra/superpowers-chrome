@@ -976,6 +976,319 @@ async function scroll(tabIndexOrWsUrl, options = {}) {
 }
 
 // =============================================================================
+// DOUBLE CLICK - clickCount: 2
+// =============================================================================
+
+/**
+ * Double-click an element using CDP mouse events.
+ * Fires mousedown, mouseup, click, mousedown, mouseup, click, dblclick.
+ */
+async function doubleClick(tabIndexOrWsUrl, selector) {
+  const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
+
+  const js = `
+    (() => {
+      const el = ${getElementSelector(selector)};
+      if (!el) return { found: false };
+      el.scrollIntoView({ block: 'center', inline: 'center' });
+      const rect = el.getBoundingClientRect();
+      return {
+        x: rect.left + rect.width / 2,
+        y: rect.top + rect.height / 2,
+        found: true
+      };
+    })()
+  `;
+
+  const result = await sendCdpCommand(wsUrl, 'Runtime.evaluate', {
+    expression: js,
+    returnByValue: true
+  });
+
+  if (!result.result.value || !result.result.value.found) {
+    throw new Error(`Element not found: ${selector}`);
+  }
+
+  const { x, y } = result.result.value;
+
+  // First click
+  await sendCdpCommand(wsUrl, 'Input.dispatchMouseEvent', {
+    type: 'mousePressed', x, y, button: 'left', clickCount: 1
+  });
+  await sendCdpCommand(wsUrl, 'Input.dispatchMouseEvent', {
+    type: 'mouseReleased', x, y, button: 'left', clickCount: 1
+  });
+
+  // Second click (clickCount: 2 triggers dblclick)
+  await sendCdpCommand(wsUrl, 'Input.dispatchMouseEvent', {
+    type: 'mousePressed', x, y, button: 'left', clickCount: 2
+  });
+  await sendCdpCommand(wsUrl, 'Input.dispatchMouseEvent', {
+    type: 'mouseReleased', x, y, button: 'left', clickCount: 2
+  });
+
+  return { doubleClicked: true, x, y };
+}
+
+// =============================================================================
+// RIGHT CLICK - button: 'right', contextmenu
+// =============================================================================
+
+/**
+ * Right-click an element using CDP mouse events.
+ * Fires mousedown (button 2), mouseup (button 2), contextmenu.
+ */
+async function rightClick(tabIndexOrWsUrl, selector) {
+  const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
+
+  const js = `
+    (() => {
+      const el = ${getElementSelector(selector)};
+      if (!el) return { found: false };
+      el.scrollIntoView({ block: 'center', inline: 'center' });
+      const rect = el.getBoundingClientRect();
+      return {
+        x: rect.left + rect.width / 2,
+        y: rect.top + rect.height / 2,
+        found: true
+      };
+    })()
+  `;
+
+  const result = await sendCdpCommand(wsUrl, 'Runtime.evaluate', {
+    expression: js,
+    returnByValue: true
+  });
+
+  if (!result.result.value || !result.result.value.found) {
+    throw new Error(`Element not found: ${selector}`);
+  }
+
+  const { x, y } = result.result.value;
+
+  await sendCdpCommand(wsUrl, 'Input.dispatchMouseEvent', {
+    type: 'mousePressed', x, y, button: 'right', clickCount: 1
+  });
+  await sendCdpCommand(wsUrl, 'Input.dispatchMouseEvent', {
+    type: 'mouseReleased', x, y, button: 'right', clickCount: 1
+  });
+
+  return { rightClicked: true, x, y };
+}
+
+// =============================================================================
+// HUMAN TYPE - Realistic character-by-character keyboard input
+// =============================================================================
+
+// Map characters to their physical key representations for CDP
+// Uppercase letters and shifted symbols need Shift modifier
+const SHIFT_SYMBOLS = {
+  '!': '1', '@': '2', '#': '3', '$': '4', '%': '5',
+  '^': '6', '&': '7', '*': '8', '(': '9', ')': '0',
+  '_': '-', '+': '=', '{': '[', '}': ']', '|': '\\',
+  ':': ';', '"': "'", '<': ',', '>': '.', '?': '/',
+  '~': '`',
+};
+
+function charToKeyDef(char) {
+  // Special characters handled by keyboardPress
+  if (char === '\n') return { special: 'Enter' };
+  if (char === '\t') return { special: 'Tab' };
+
+  // Space
+  if (char === ' ') {
+    return { key: ' ', code: 'Space', keyCode: 32, text: ' ', shift: false };
+  }
+
+  // Uppercase letter
+  if (char >= 'A' && char <= 'Z') {
+    return {
+      key: char,
+      code: 'Key' + char,
+      keyCode: char.charCodeAt(0),
+      text: char,
+      shift: true
+    };
+  }
+
+  // Lowercase letter
+  if (char >= 'a' && char <= 'z') {
+    return {
+      key: char,
+      code: 'Key' + char.toUpperCase(),
+      keyCode: char.toUpperCase().charCodeAt(0),
+      text: char,
+      shift: false
+    };
+  }
+
+  // Digit
+  if (char >= '0' && char <= '9') {
+    return {
+      key: char,
+      code: 'Digit' + char,
+      keyCode: char.charCodeAt(0),
+      text: char,
+      shift: false
+    };
+  }
+
+  // Shifted symbol
+  if (SHIFT_SYMBOLS[char]) {
+    const baseChar = SHIFT_SYMBOLS[char];
+    let code;
+    if (baseChar >= '0' && baseChar <= '9') {
+      code = 'Digit' + baseChar;
+    } else {
+      // Punctuation keys
+      const punctCodes = {
+        '-': 'Minus', '=': 'Equal', '[': 'BracketLeft', ']': 'BracketRight',
+        '\\': 'Backslash', ';': 'Semicolon', "'": 'Quote',
+        ',': 'Comma', '.': 'Period', '/': 'Slash', '`': 'Backquote',
+      };
+      code = punctCodes[baseChar] || 'Unidentified';
+    }
+    return {
+      key: char,
+      code,
+      keyCode: baseChar.charCodeAt(0),
+      text: char,
+      shift: true
+    };
+  }
+
+  // Unshifted punctuation
+  const punctCodes = {
+    '-': 'Minus', '=': 'Equal', '[': 'BracketLeft', ']': 'BracketRight',
+    '\\': 'Backslash', ';': 'Semicolon', "'": 'Quote',
+    ',': 'Comma', '.': 'Period', '/': 'Slash', '`': 'Backquote',
+  };
+  if (punctCodes[char]) {
+    return {
+      key: char,
+      code: punctCodes[char],
+      keyCode: char.charCodeAt(0),
+      text: char,
+      shift: false
+    };
+  }
+
+  // Fallback: use the character directly
+  return {
+    key: char,
+    code: 'Unidentified',
+    keyCode: char.charCodeAt(0),
+    text: char,
+    shift: false
+  };
+}
+
+/**
+ * Type text character-by-character using individual keyDown/keyUp events
+ * with realistic inter-key timing. Simulates hardware keyboard input
+ * that bypasses bot detection (vs. Input.insertText which is instant).
+ *
+ * @param {number|string} tabIndexOrWsUrl - Tab index or WebSocket URL
+ * @param {string|null} selector - Element to focus first (null = current focus)
+ * @param {string} text - Text to type
+ * @param {object} options
+ * @param {number} options.delay - Base delay between keystrokes in ms (default: 80)
+ * @param {number} options.jitter - Random jitter range in ms (default: 80, so 80-160ms total)
+ */
+async function humanType(tabIndexOrWsUrl, selector, text, options = {}) {
+  const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
+  const delay = options.delay !== undefined ? options.delay : 80;
+  const jitter = options.jitter !== undefined ? options.jitter : 80;
+
+  // Click to focus if selector provided
+  if (selector) {
+    await click(tabIndexOrWsUrl, selector);
+  }
+
+  for (const char of text) {
+    const keyDef = charToKeyDef(char);
+
+    // Handle special keys (Enter, Tab)
+    if (keyDef.special) {
+      await keyboardPress(tabIndexOrWsUrl, keyDef.special);
+    } else {
+      // Insert character using insertText (reliable across all frameworks).
+      // Combined with per-character delays, this provides the realistic timing
+      // pattern that bot detectors check for (vs instant bulk insertion).
+      await sendCdpCommand(wsUrl, 'Input.insertText', {
+        text: keyDef.text
+      });
+    }
+
+    // Variable delay between keystrokes
+    if (delay > 0 || jitter > 0) {
+      const wait = delay + Math.random() * jitter;
+      await new Promise(resolve => setTimeout(resolve, wait));
+    }
+  }
+
+  return { typed: text, chars: text.length };
+}
+
+// =============================================================================
+// FILE UPLOAD - Set files on input[type=file] elements
+// =============================================================================
+
+/**
+ * Upload files to an input[type=file] element using DOM.setFileInputFiles.
+ * This is the only way to programmatically set files on a file input
+ * (security restrictions prevent JavaScript from doing it).
+ *
+ * @param {number|string} tabIndexOrWsUrl - Tab index or WebSocket URL
+ * @param {string} selector - CSS/XPath selector for the file input
+ * @param {string[]} filePaths - Array of absolute file paths to upload
+ */
+async function fileUpload(tabIndexOrWsUrl, selector, filePaths) {
+  const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
+
+  // Get the DOM node ID for the file input
+  const docResult = await sendCdpCommand(wsUrl, 'DOM.getDocument', {});
+  const rootNodeId = docResult.root.nodeId;
+
+  // Find the element
+  let nodeId;
+  if (selector.startsWith('/') || selector.startsWith('//')) {
+    // XPath
+    const searchResult = await sendCdpCommand(wsUrl, 'DOM.performSearch', {
+      query: selector
+    });
+    if (searchResult.resultCount === 0) {
+      throw new Error(`File input not found: ${selector}`);
+    }
+    const nodesResult = await sendCdpCommand(wsUrl, 'DOM.getSearchResults', {
+      searchId: searchResult.searchId,
+      fromIndex: 0,
+      toIndex: 1
+    });
+    nodeId = nodesResult.nodeIds[0];
+  } else {
+    // CSS selector
+    const queryResult = await sendCdpCommand(wsUrl, 'DOM.querySelector', {
+      nodeId: rootNodeId,
+      selector: selector
+    });
+    nodeId = queryResult.nodeId;
+  }
+
+  if (!nodeId) {
+    throw new Error(`File input not found: ${selector}`);
+  }
+
+  // Set the files
+  await sendCdpCommand(wsUrl, 'DOM.setFileInputFiles', {
+    files: filePaths,
+    nodeId: nodeId
+  });
+
+  return { uploaded: true, files: filePaths.length };
+}
+
+// =============================================================================
 // TYPE FUNCTION - Smart text input with Tab/Enter handling
 // =============================================================================
 
@@ -2634,6 +2947,14 @@ module.exports = {
   drag,             // Drag-and-drop via native mouse event sequence
   mouseMove,        // Raw coordinate mouse movement
   scroll,           // Mouse wheel scrolling
+  doubleClick,      // Double-click with dblclick event
+  rightClick,       // Right-click with contextmenu event
+
+  // Human-like typing (individual keyDown/keyUp with realistic timing)
+  humanType,
+
+  // File upload (DOM.setFileInputFiles — can't be done via JS)
+  fileUpload,
 
   // Keyboard support for special keys (Tab, Enter, Escape, Arrow keys, etc.)
   keyboardPress,

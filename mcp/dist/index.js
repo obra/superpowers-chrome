@@ -13926,6 +13926,10 @@ var BrowserAction = /* @__PURE__ */ ((BrowserAction2) => {
   BrowserAction2["DRAG_DROP"] = "drag_drop";
   BrowserAction2["MOUSE_MOVE"] = "mouse_move";
   BrowserAction2["SCROLL"] = "scroll";
+  BrowserAction2["DOUBLE_CLICK"] = "double_click";
+  BrowserAction2["RIGHT_CLICK"] = "right_click";
+  BrowserAction2["HUMAN_TYPE"] = "human_type";
+  BrowserAction2["FILE_UPLOAD"] = "file_upload";
   BrowserAction2["KEYBOARD_PRESS"] = "keyboard_press";
   BrowserAction2["SET_VIEWPORT"] = "set_viewport";
   BrowserAction2["CLEAR_VIEWPORT"] = "clear_viewport";
@@ -13937,7 +13941,7 @@ var UseBrowserParams = {
   action: external_exports.nativeEnum(BrowserAction).describe("Action to perform"),
   tab_index: external_exports.number().int().min(0).default(0).describe("Which tab. Indices shift when tabs close."),
   selector: external_exports.string().optional().describe("CSS or XPath selector. XPath must start with / or //. Optional for type (types into current focus)."),
-  payload: external_exports.string().optional().describe('Action-specific data: navigate=URL | type=text (\\t=Tab, \\n=Enter) | extract=format (text|html|markdown) | screenshot=filename | eval=JavaScript | select=option value | attr=attribute name | await_text=text to wait for | keyboard_press=key name (Tab, Enter, Space, Escape, Arrow*, F1-F12) | drag_drop=target CSS selector or JSON {"x":N,"y":N} | mouse_move=JSON {"x":N,"y":N} or {"x":N,"y":N,"steps":N,"fromX":N,"fromY":N} | scroll=JSON {"deltaX":N,"deltaY":N} or direction (up/down/left/right)'),
+  payload: external_exports.string().optional().describe('Action-specific data: navigate=URL | type=text (\\t=Tab, \\n=Enter) | human_type=text (realistic keystroke timing) | extract=format (text|html|markdown) | screenshot=filename | eval=JavaScript | select=option value | attr=attribute name | await_text=text to wait for | keyboard_press=key name (Tab, Enter, Space, Escape, Arrow*, F1-F12) | drag_drop=target CSS selector or JSON {"x":N,"y":N} | mouse_move=JSON {"x":N,"y":N} or {"x":N,"y":N,"steps":N,"fromX":N,"fromY":N} | scroll=JSON {"deltaX":N,"deltaY":N} or direction (up/down/left/right) | file_upload=JSON {"files":["path1","path2"]}'),
   timeout: external_exports.number().int().min(0).max(6e4).default(5e3).describe("Timeout in ms. Only for await actions."),
   // Keyboard modifiers for keyboard_press (Shift+Tab, Ctrl+A, etc.)
   modifiers: external_exports.object({
@@ -14284,6 +14288,76 @@ Result: ${evalResult.result}`);
       const dir = scrollOpts.deltaY && scrollOpts.deltaY > 0 ? "down" : scrollOpts.deltaY && scrollOpts.deltaY < 0 ? "up" : scrollOpts.deltaX && scrollOpts.deltaX > 0 ? "right" : "left";
       return `Scrolled ${dir} (deltaX: ${scrollResult.deltaX}, deltaY: ${scrollResult.deltaY})${params.selector ? ` at ${params.selector}` : ""}`;
     }
+    case "double_click" /* DOUBLE_CLICK */: {
+      if (!params.selector) {
+        throw new Error("double_click requires selector");
+      }
+      const dblClickResult = await chromeLib.captureActionWithDiff(
+        tabIndex,
+        "dblclick",
+        () => chromeLib.doubleClick(tabIndex, params.selector)
+      );
+      return formatCaptureResponse(
+        "Double-clicked",
+        params.selector,
+        dblClickResult.capture
+      );
+    }
+    case "right_click" /* RIGHT_CLICK */: {
+      if (!params.selector) {
+        throw new Error("right_click requires selector");
+      }
+      const rightClickResult = await chromeLib.captureActionWithDiff(
+        tabIndex,
+        "rightclick",
+        () => chromeLib.rightClick(tabIndex, params.selector)
+      );
+      return formatCaptureResponse(
+        "Right-clicked",
+        params.selector,
+        rightClickResult.capture
+      );
+    }
+    case "human_type" /* HUMAN_TYPE */: {
+      if (!params.payload || typeof params.payload !== "string") {
+        throw new Error("human_type requires payload with text to type");
+      }
+      const humanTypeResult = await chromeLib.captureActionWithDiff(
+        tabIndex,
+        "human_type",
+        () => chromeLib.humanType(tabIndex, params.selector || null, params.payload)
+      );
+      return formatCaptureResponse(
+        "Typed (human-like)",
+        params.selector ? `into ${params.selector}` : "into current focus",
+        humanTypeResult.capture
+      );
+    }
+    case "file_upload" /* FILE_UPLOAD */: {
+      if (!params.selector) {
+        throw new Error("file_upload requires selector for the file input element");
+      }
+      if (!params.payload) {
+        throw new Error('file_upload requires payload with JSON {"files":["path1","path2"]}');
+      }
+      let filePaths;
+      try {
+        const parsed = JSON.parse(params.payload);
+        filePaths = Array.isArray(parsed.files) ? parsed.files : Array.isArray(parsed) ? parsed : [params.payload];
+      } catch {
+        filePaths = [params.payload];
+      }
+      const uploadResult = await chromeLib.captureActionWithDiff(
+        tabIndex,
+        "upload",
+        () => chromeLib.fileUpload(tabIndex, params.selector, filePaths)
+      );
+      return formatCaptureResponse(
+        "Uploaded",
+        `${filePaths.length} file(s) to ${params.selector}`,
+        uploadResult.capture
+      );
+    }
     case "keyboard_press" /* KEYBOARD_PRESS */:
       if (!params.payload) {
         throw new Error("keyboard_press requires payload with key name (e.g., Tab, Enter, Escape)");
@@ -14325,7 +14399,9 @@ Auto-starting Chrome with automatic page captures for every DOM action.
 
 ## Actions Overview
 navigate, click, type, keyboard_press, select, eval \u2192 Capture page state with before/after DOM diff
-hover, drag_drop, mouse_move, scroll \u2192 CDP-level mouse actions (native DnD, bot-detection safe)
+hover, drag_drop, mouse_move, scroll, double_click, right_click \u2192 CDP-level mouse actions (native DnD, bot-detection safe)
+human_type \u2192 Realistic keystroke timing (individual keyDown/keyUp, bypasses bot detection)
+file_upload \u2192 Set files on input[type=file] (DOM.setFileInputFiles)
 extract, attr, screenshot, screenshot+fullpage \u2192 Get content/visuals
 await_element, await_text \u2192 Wait for page changes
 list_tabs, new_tab, close_tab \u2192 Tab management
@@ -14350,6 +14426,19 @@ mouse_move: {"action": "mouse_move", "payload": "{\\"x\\":100,\\"y\\":200}"} \u2
 mouse_move: {"action": "mouse_move", "payload": "{\\"x\\":100,\\"y\\":200,\\"steps\\":10,\\"fromX\\":0,\\"fromY\\":0}"} \u2192 Smooth movement
 scroll: {"action": "scroll", "payload": "down"} \u2192 Scroll down (also: up, left, right)
 scroll: {"action": "scroll", "selector": ".container", "payload": "{\\"deltaX\\":0,\\"deltaY\\":500}"} \u2192 Scroll within element
+double_click: {"action": "double_click", "selector": "element"} \u2192 Text selection, open items
+right_click: {"action": "right_click", "selector": "element"} \u2192 Context menu
+
+## Human-Like Typing (Bot-Detection Safe)
+human_type: {"action": "human_type", "selector": "#email", "payload": "user@test.com"} \u2192 Realistic keystrokes
+human_type: {"action": "human_type", "payload": "text"} \u2192 Type into current focus
+
+Uses individual keyDown/keyUp events (not insertText) with variable inter-key timing (~80-160ms per char).
+Handles Shift for uppercase and symbols. Selector is optional (types into current focus if omitted).
+
+## File Upload
+file_upload: {"action": "file_upload", "selector": "#file-input", "payload": "/path/to/file.pdf"} \u2192 Single file
+file_upload: {"action": "file_upload", "selector": "#upload", "payload": "{\\"files\\":[\\"/path/a.pdf\\",\\"/path/b.jpg\\"]}"} \u2192 Multiple files
 
 ## keyboard_press Examples
 {"action": "keyboard_press", "payload": "Tab"} \u2192 Move to next field
