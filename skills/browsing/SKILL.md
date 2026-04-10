@@ -26,7 +26,7 @@ Control Chrome via DevTools Protocol using the `use_browser` MCP tool. Single un
 
 ## Auto-Capture
 
-Every DOM action (navigate, click, type, select, eval, keyboard_press) automatically saves:
+Every DOM action (navigate, click, human_type, type, select, eval, keyboard_press, hover, drag_drop, double_click, right_click, file_upload) automatically saves:
 - `{prefix}.png` — viewport screenshot
 - `{prefix}.md` — page content as structured markdown
 - `{prefix}.html` — full rendered DOM
@@ -66,15 +66,61 @@ Single MCP tool with action-based interface. Chrome auto-starts on first use.
   - `selector`: CSS selector
   - Example: `{action: "click", selector: "button.submit"}`
 
-- **type**: Type text into input (append `\n` to submit)
-  - `selector`: CSS selector
+- **human_type**: PREFERRED for text entry — types character-by-character with realistic timing (~80-160ms/char)
+  - `selector`: Optional — clicks to focus first
   - `payload`: Text to type
+  - In headed mode, fires keyDown/keyUp events per character (bypasses bot detection)
+  - Example: `{action: "human_type", selector: "#email", payload: "user@example.com"}`
+
+- **type**: Fast bulk text input (use when speed matters more than realism)
+  - `selector`: CSS selector
+  - `payload`: Text to type (`\t`=Tab, `\n`=Enter)
   - Example: `{action: "type", selector: "#email", payload: "user@example.com\n"}`
+
+- **double_click**: Double-click element (fires dblclick event)
+  - `selector`: CSS selector
+  - Example: `{action: "double_click", selector: ".item"}`
+
+- **right_click**: Right-click element (fires contextmenu event)
+  - `selector`: CSS selector
+  - Example: `{action: "right_click", selector: ".row"}`
 
 - **select**: Select dropdown option
   - `selector`: CSS selector
   - `payload`: Option value(s)
   - Example: `{action: "select", selector: "select[name=state]", payload: "CA"}`
+
+- **keyboard_press**: Press special keys (Tab, Enter, Escape, Arrow keys, F1-F12)
+  - `payload`: Key name
+  - `modifiers`: Optional {shift, ctrl, alt, meta}
+  - Example: `{action: "keyboard_press", payload: "Tab"}`
+
+### Mouse Actions (CDP-Level)
+These use CDP Input.dispatchMouseEvent, bypassing synthetic event restrictions.
+
+- **hover**: Move mouse over element (CSS :hover, tooltips, menus)
+  - `selector`: CSS selector
+  - Example: `{action: "hover", selector: ".menu-trigger"}`
+
+- **drag_drop**: Drag element to target (native drag-and-drop via CDP)
+  - `selector`: Source element
+  - `payload`: Target selector or JSON coordinates `{"x":N,"y":N}`
+  - Example: `{action: "drag_drop", selector: ".card", payload: ".column-2"}`
+
+- **mouse_move**: Move mouse to coordinates
+  - `payload`: JSON `{"x":N,"y":N}` (optional: `steps`, `fromX`, `fromY` for smooth movement)
+  - Example: `{action: "mouse_move", payload: "{\"x\":100,\"y\":200}"}`
+
+- **scroll**: Scroll via mouse wheel events
+  - `payload`: Direction (up/down/left/right) or JSON `{"deltaX":N,"deltaY":N}`
+  - `selector`: Optional — scroll within element
+  - Example: `{action: "scroll", payload: "down"}`
+
+### File Upload
+- **file_upload**: Set files on input[type=file] elements (can't be done via JavaScript)
+  - `selector`: File input element
+  - `payload`: File path or JSON `{"files":["/path/a.pdf","/path/b.jpg"]}`
+  - Example: `{action: "file_upload", selector: "#upload", payload: "/tmp/doc.pdf"}`
 
 ### Extraction
 - **extract**: Get page content
@@ -192,12 +238,13 @@ Navigate and extract:
 ```
 {action: "navigate", payload: "https://example.com/login"}
 {action: "await_element", selector: "input[name=email]"}
-{action: "type", selector: "input[name=email]", payload: "user@example.com"}
-{action: "type", selector: "input[name=password]", payload: "pass123\n"}
+{action: "human_type", selector: "input[name=email]", payload: "user@example.com"}
+{action: "human_type", selector: "input[name=password]", payload: "pass123"}
+{action: "keyboard_press", payload: "Enter"}
 {action: "await_text", payload: "Welcome"}
 ```
 
-The `\n` at the end of the password submits the form.
+Uses `human_type` for realistic keystroke timing and `keyboard_press` to submit.
 
 ### Multi-Tab Workflow
 ```
@@ -210,7 +257,7 @@ The `\n` at the end of the password submits the form.
 ### Dynamic Content
 ```
 {action: "navigate", payload: "https://example.com"}
-{action: "type", selector: "input[name=q]", payload: "query"}
+{action: "human_type", selector: "input[name=q]", payload: "query"}
 {action: "click", selector: "button.search"}
 {action: "await_element", selector: ".results"}
 {action: "extract", payload: "text", selector: ".result-title"}
@@ -258,10 +305,12 @@ For most logout/reset scenarios, this is sufficient.
 
 ### Scroll Page
 ```
-{action: "eval", payload: "window.scrollTo(0, document.body.scrollHeight); 'Scrolled to bottom'"}
-{action: "eval", payload: "window.scrollTo(0, 0); 'Scrolled to top'"}
-{action: "eval", payload: "document.querySelector('.target').scrollIntoView(); 'Scrolled to element'"}
+{action: "scroll", payload: "down"}
+{action: "scroll", payload: "up"}
+{action: "scroll", selector: ".container", payload: "{\"deltaX\":0,\"deltaY\":500}"}
 ```
+
+Uses real mouse wheel events (vs `eval` + `scrollTo` which bot detectors flag).
 
 ## Tips
 
@@ -291,11 +340,12 @@ Avoid generic selectors that match multiple elements.
 {action: "click", selector: "#login-button"}
 ```
 
-**Submit forms with \n:**
-Append newline to text to submit forms automatically.
+**Submit forms:**
+Use `keyboard_press` with Enter after `human_type`, or append `\n` to `type` payload.
 
 ```
-{action: "type", selector: "#search", payload: "query\n"}
+{action: "human_type", selector: "#search", payload: "query"}
+{action: "keyboard_press", payload: "Enter"}
 ```
 
 **Check content first:**
