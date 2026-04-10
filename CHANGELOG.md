@@ -2,6 +2,26 @@
 
 All notable changes to the superpowers-chrome MCP project.
 
+## [1.9.0] - 2026-04-09 - CDP Mouse Actions, Human-Like Typing, and File Upload
+
+### Added
+- **`hover`**: Move mouse over element via CDP `mouseMoved`. Triggers CSS `:hover`, `mouseenter`/`mouseover` events, tooltips, dropdown menus
+- **`drag_drop`**: Native drag-and-drop via CDP mouse event sequence (`mousePressed` → interpolated `mouseMoved` steps → `mouseReleased`). Fixes the browser restriction where synthetic `DragEvent` objects have neutered `DataTransfer`. Supports selector-to-selector and selector-to-coordinate targets
+- **`mouse_move`**: Raw coordinate mouse movement with optional smooth interpolation. Useful for pre-click mouse patterns (bot detection) and captcha puzzles
+- **`scroll`**: Mouse wheel scrolling via CDP `mouseWheel`. Accepts direction strings (`up`/`down`/`left`/`right`) or JSON `{"deltaX":N,"deltaY":N}`. Simulates real wheel input vs `scrollTo()` which bot detectors flag
+- **`double_click`**: Double-click with `clickCount:2`, fires `dblclick` event
+- **`right_click`**: Right-click with `button:'right'`, fires `contextmenu` event
+- **`human_type`**: Character-by-character text entry with realistic inter-key timing (~80-160ms per character). In headed mode, fires full `keyDown`/`keyUp` event chain per character with Shift handling for uppercase and symbols. In headless mode, uses `insertText` per character (headless Chrome intercepts `rawKeyDown` as browser shortcuts). **Recommended as the default text entry method** — `type` is now for speed-over-realism cases
+- **`file_upload`**: Set files on `input[type=file]` elements via `DOM.setFileInputFiles`. The only way to programmatically upload files (JavaScript security restrictions prevent it)
+
+### Changed
+- Tool description now recommends `human_type` over `type` for text entry
+- Help text lists `human_type` as PREFERRED in main interaction section
+- Essential patterns (login flow) updated to use `human_type` + `keyboard_press Enter`
+- Browsing skill (SKILL.md) fully updated with all new actions, examples, and patterns
+
+---
+
 ## [1.8.0] - 2026-02-25 - Viewport Emulation, Full-Page Screenshots, and HiDPI Fix
 
 ### Added
