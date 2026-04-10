@@ -14413,7 +14413,8 @@ set_profile, get_profile \u2192 Manage Chrome profiles
 ## Navigation & Interaction (Auto-Capture with DOM Diff)
 navigate: {"action": "navigate", "payload": "URL"} \u2192 Before/after HTML + diff
 click: {"action": "click", "selector": "CSS_or_XPath"} \u2192 React-compatible CDP events
-type: {"action": "type", "payload": "text", "selector": "optional"} \u2192 Smart \\t=Tab, \\n=Enter
+human_type: {"action": "human_type", "selector": "#email", "payload": "user@test.com"} \u2192 PREFERRED for text entry
+type: {"action": "type", "payload": "text", "selector": "optional"} \u2192 Fast bulk input (\\t=Tab, \\n=Enter), use when speed > realism
 keyboard_press: {"action": "keyboard_press", "payload": "Tab"} \u2192 Special keys
 select: {"action": "select", "selector": "select", "payload": "option_value"}
 eval: {"action": "eval", "payload": "JavaScript_code"}
@@ -14429,12 +14430,14 @@ scroll: {"action": "scroll", "selector": ".container", "payload": "{\\"deltaX\\"
 double_click: {"action": "double_click", "selector": "element"} \u2192 Text selection, open items
 right_click: {"action": "right_click", "selector": "element"} \u2192 Context menu
 
-## Human-Like Typing (Bot-Detection Safe)
-human_type: {"action": "human_type", "selector": "#email", "payload": "user@test.com"} \u2192 Realistic keystrokes
-human_type: {"action": "human_type", "payload": "text"} \u2192 Type into current focus
+## Human-Like Typing (PREFERRED for text entry)
+human_type is the default choice for entering text. It types character-by-character with realistic
+inter-key timing (~80-160ms per char), which bypasses bot detection that flags instant text insertion.
+In headed mode, it also fires keyDown/keyUp events for each character. Use 'type' only when you need
+speed over realism (e.g., pasting large text blocks).
 
-Uses individual keyDown/keyUp events (not insertText) with variable inter-key timing (~80-160ms per char).
-Handles Shift for uppercase and symbols. Selector is optional (types into current focus if omitted).
+human_type: {"action": "human_type", "selector": "#email", "payload": "user@test.com"} \u2192 Click + type
+human_type: {"action": "human_type", "payload": "text"} \u2192 Type into current focus
 
 ## File Upload
 file_upload: {"action": "file_upload", "selector": "#file-input", "payload": "/path/to/file.pdf"} \u2192 Single file
@@ -14520,8 +14523,9 @@ XPath: "//button[@type='submit']", "//input[@name='email']"
 Login flow (auto-captured - CHECK page.md FIRST):
 {"action": "navigate", "payload": "https://site.com/login"} \u2192 page.md available, check it first!
 {"action": "await_element", "selector": "#email"}
-{"action": "type", "selector": "#email", "payload": "user@test.com"} \u2192 form state saved
-{"action": "type", "selector": "#password", "payload": "pass123\\n"} \u2192 success page saved to page.md
+{"action": "human_type", "selector": "#email", "payload": "user@test.com"} \u2192 realistic typing
+{"action": "human_type", "selector": "#password", "payload": "pass123"}
+{"action": "keyboard_press", "payload": "Enter"} \u2192 submit form
 
 Extract specific content ONLY when auto-capture insufficient:
 {"action": "navigate", "payload": "https://example.com"} \u2192 Full page auto-saved to page.md
@@ -14559,7 +14563,11 @@ Every DOM action (navigate, click, type, select, eval) auto-captures to the sess
 
 Prefer reading these files to using 'extract' or 'screenshot' whenever possible.
 
-Selectors: CSS or XPath (XPath starts with / or //). Append \\n to payload in 'type' to submit forms.`,
+IMPORTANT: Prefer human_type over type for text entry \u2014 it types character-by-character with realistic timing that bypasses bot detection. Use type only when speed matters more than realism.
+
+Selectors: CSS or XPath (XPath starts with / or //). Append \\n to payload in 'type' to submit forms.
+
+Additional actions: hover, drag_drop, mouse_move, scroll, double_click, right_click, file_upload. Use 'help' for full docs.`,
   UseBrowserParams,
   {
     readOnlyHint: false,
