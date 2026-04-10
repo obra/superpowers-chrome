@@ -42,6 +42,12 @@ cd ~/.claude/plugins/cache/superpowers-marketplace/superpowers-chrome/*/skills/b
 
 **Linux/WSL2 tip:** For headed mode (visible browser), the MCP server needs the `DISPLAY` environment variable. If `show_browser` doesn't work, configure `"env": {"DISPLAY": ":0"}` in your MCP server config. See [mcp/README.md](mcp/README.md#linuxwsl2-headed-mode) for details.
 
+**Custom Chrome flags:** Set `CHROME_EXTRA_ARGS` to a whitespace-separated list of flags that will be appended to the Chrome command line on launch. Useful for headless containers that need software WebGL:
+
+```
+CHROME_EXTRA_ARGS="--use-gl=angle --use-angle=swiftshader-webgl --enable-unsafe-swiftshader"
+```
+
 ## Windows Verification (November 7, 2025)
 
 - `node skills/browsing/chrome-ws start` launched Chrome with remote debugging enabled on a fresh Windows 11 Pro install.

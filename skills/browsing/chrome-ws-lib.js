@@ -1892,6 +1892,50 @@ async function downscaleImageIfNeeded(filepath, maxDimension = 1800) {
   }
 }
 
+function buildChromeArgs({ chosenPort, chromeUserDataDir, chromeHeadless }) {
+  const args = [
+    `--remote-debugging-port=${chosenPort}`,
+    `--user-data-dir=${chromeUserDataDir}`,
+    '--no-first-run',
+    '--no-default-browser-check',
+    '--disable-background-networking',
+    '--disable-background-timer-throttling',
+    '--disable-backgrounding-occluded-windows',
+    '--disable-breakpad',
+    '--disable-client-side-phishing-detection',
+    '--disable-component-update',
+    '--disable-default-apps',
+    '--disable-dev-shm-usage',
+    '--disable-extensions',
+    '--disable-features=TranslateUI',
+    '--disable-hang-monitor',
+    '--disable-ipc-flooding-protection',
+    '--disable-popup-blocking',
+    '--disable-prompt-on-repost',
+    '--disable-sync',
+    '--force-color-profile=srgb',
+    '--metrics-recording-only',
+    '--no-sandbox',
+    '--safebrowsing-disable-auto-update',
+    '--disable-blink-features=AutomationControlled'
+  ];
+
+  if (chromeHeadless) {
+    args.push('--headless=new');
+  }
+
+  // CHROME_EXTRA_ARGS: whitespace-separated extra flags to append, e.g. for
+  // software WebGL in headless containers:
+  //   CHROME_EXTRA_ARGS="--use-gl=angle --use-angle=swiftshader-webgl --enable-unsafe-swiftshader"
+  const extraArgs = process.env.CHROME_EXTRA_ARGS;
+  if (extraArgs) {
+    const tokens = extraArgs.split(/\s+/).filter(Boolean);
+    args.push(...tokens);
+  }
+
+  return args;
+}
+
 async function startChrome(headless = null, profileName = null, port = null) {
   const { spawn } = require('child_process');
   const { existsSync, mkdirSync } = require('fs');
@@ -1973,36 +2017,7 @@ async function startChrome(headless = null, profileName = null, port = null) {
   }
 
   // --- Step 4: Launch Chrome with the chosen port ---
-  const args = [
-    `--remote-debugging-port=${chosenPort}`,
-    `--user-data-dir=${chromeUserDataDir}`,
-    '--no-first-run',
-    '--no-default-browser-check',
-    '--disable-background-networking',
-    '--disable-background-timer-throttling',
-    '--disable-backgrounding-occluded-windows',
-    '--disable-breakpad',
-    '--disable-client-side-phishing-detection',
-    '--disable-component-update',
-    '--disable-default-apps',
-    '--disable-dev-shm-usage',
-    '--disable-extensions',
-    '--disable-features=TranslateUI',
-    '--disable-hang-monitor',
-    '--disable-ipc-flooding-protection',
-    '--disable-popup-blocking',
-    '--disable-prompt-on-repost',
-    '--disable-sync',
-    '--force-color-profile=srgb',
-    '--metrics-recording-only',
-    '--no-sandbox',
-    '--safebrowsing-disable-auto-update',
-    '--disable-blink-features=AutomationControlled'
-  ];
-
-  if (chromeHeadless) {
-    args.push('--headless=new');
-  }
+  const args = buildChromeArgs({ chosenPort, chromeUserDataDir, chromeHeadless });
 
   const proc = spawn(chromePath, args, {
     detached: true,
@@ -3015,6 +3030,7 @@ module.exports = {
 
   // Chrome lifecycle
   startChrome,
+  buildChromeArgs,
   killChrome,
   showBrowser,
   hideBrowser,

@@ -2,6 +2,14 @@
 
 All notable changes to the superpowers-chrome MCP project.
 
+## [1.10.0] - 2026-04-10 - Custom Chrome launch flags via `CHROME_EXTRA_ARGS`
+
+### Added
+- **`CHROME_EXTRA_ARGS` env var**: whitespace-separated Chrome launch flags that are appended to the hardcoded flag list in `startChrome()`. Unblocks containerized/headless setups that need to inject flags like `--use-gl=angle --use-angle=swiftshader-webgl --enable-unsafe-swiftshader` for software WebGL (SwiftShader) when no GPU is present. Opt-in: unset = no behavior change (#32)
+- **`buildChromeArgs()`** exported from `chrome-ws-lib` — pure function that assembles the Chrome launch flag list, enabling unit tests and external reuse
+
+---
+
 ## [1.9.0] - 2026-04-09 - CDP Mouse Actions, Human-Like Typing, and File Upload
 
 ### Added
