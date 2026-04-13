@@ -2,6 +2,18 @@
 
 All notable changes to the superpowers-chrome MCP project.
 
+## [1.11.0] - 2026-04-13 - Visibility-aware element selection, async eval, crash fix
+
+### Fixed
+- **Element selection prefers visible elements over hidden ones**: `getElementSelector()` now uses `querySelectorAll()` to find all matches and picks the first with a non-zero bounding rect. Previously, `querySelector()` returned the first DOM match regardless of visibility, causing CDP clicks on responsive pages to hit hidden mobile-layout elements at coordinates (0,0) instead of the visible desktop element. Falls back to first DOM match with a `console.warn` when all matches have zero dimensions
+- **`evaluate()` now awaits async expressions**: Added `awaitPromise: true` to the `Runtime.evaluate` CDP call. Previously, async expressions (fetch, async IIFEs) returned the Promise object as `undefined` or `[object Object]` instead of the resolved value. `evaluateJson()` already had this — now `evaluate()` does too
+- **`tabs.filter is not a function` crash**: `resolveWsUrl()` and `closeTab()` now check `Array.isArray()` before calling `.filter()`/`.find()` on `chromeHttp('/json')` results. When Chrome returns a non-array response (empty object, error), this previously crashed. `getTabs()` already had this guard (#27)
+
+### Added
+- **Test suite**: First project-level tests using Node.js built-in test runner (`node:test`) with jsdom for DOM simulation. Covers element visibility selection, async evaluate behavior, and array guards on CDP responses
+
+---
+
 ## [1.10.0] - 2026-04-10 - Custom Chrome launch flags via `CHROME_EXTRA_ARGS`
 
 ### Added
