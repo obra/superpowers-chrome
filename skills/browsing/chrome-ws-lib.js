@@ -332,6 +332,9 @@ async function resolveWsUrl(wsUrlOrIndex) {
   const index = typeof wsUrlOrIndex === 'number' ? wsUrlOrIndex : parseInt(wsUrlOrIndex);
   if (!isNaN(index)) {
     const tabs = await chromeHttp('/json');
+    if (!Array.isArray(tabs)) {
+      throw new Error('Chrome DevTools returned an invalid response — is Chrome running?');
+    }
     const pageTabs = tabs.filter(t => t.type === 'page');
 
     // Auto-create tab if none exist (similar to auto-start Chrome behavior)
@@ -568,6 +571,7 @@ async function newTab(url = 'about:blank') {
 async function closeTab(tabIndexOrWsUrl) {
   const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
   const tabs = await chromeHttp('/json');
+  if (!Array.isArray(tabs)) return;
   const tab = tabs.find(t => t.webSocketDebuggerUrl === wsUrl);
   if (tab) {
     await chromeHttp(`/json/close/${tab.id}`, 'GET');
