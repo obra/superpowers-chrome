@@ -10,7 +10,8 @@
   "scripts": {
     "build": "cd mcp && npm install && npm run build",
     "prepare": "npm run build",
-    "start": "node mcp/dist/index.js"
+    "start": "node mcp/dist/index.js",
+    "test": "node --test 'test/**/*.test.mjs'"
   },
   "engines": {
     "node": ">=18"
@@ -40,5 +41,8 @@
     "type": "git",
     "url": "https://github.com/obra/superpowers-chrome.git"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "devDependencies": {
+    "jsdom": "^29.0.2"
+  }
 }

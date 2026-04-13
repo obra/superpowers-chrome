@@ -353,21 +353,50 @@ async function resolveWsUrl(wsUrlOrIndex) {
 let messageIdCounter = 1;
 
 // Helper to generate element selection code (supports CSS and XPath)
+// Prefers visible elements (non-zero bounding rect) over hidden ones.
+// Falls back to first DOM match with a console.warn if all matches are hidden.
 // For XPath with text()='...', also tries normalize-space() fallback for mixed content elements
 function getElementSelector(selector) {
   if (selector.startsWith('/') || selector.startsWith('//')) {
-    // XPath selector - with fallback for text()='...' patterns on mixed content elements
-    // (e.g., <a><svg/>Settings</a> won't match text()='Settings' but will match normalize-space()='Settings')
+    // XPath selector - collect all matches, prefer visible
     const hasTextEquals = /text\(\)\s*=\s*['"]/.test(selector);
+    const xpaths = [JSON.stringify(selector)];
     if (hasTextEquals) {
-      // Create fallback XPath using normalize-space() instead of text()
       const fallbackSelector = selector.replace(/text\(\)\s*=\s*(['"])(.*?)\1/g, "normalize-space()=$1$2$1");
-      return `(document.evaluate(${JSON.stringify(selector)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue || document.evaluate(${JSON.stringify(fallbackSelector)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue)`;
+      xpaths.push(JSON.stringify(fallbackSelector));
     }
-    return `document.evaluate(${JSON.stringify(selector)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue`;
+    return `(() => {
+      var all = [];
+      var seen = new Set();
+      [${xpaths.join(', ')}].forEach(function(xpath) {
+        var iter = document.evaluate(xpath, document, null, XPathResult.ORDERED_NODE_ITERATOR_TYPE, null);
+        var node;
+        while (node = iter.iterateNext()) {
+          if (!seen.has(node)) { seen.add(node); all.push(node); }
+        }
+      });
+      if (all.length === 0) return null;
+      var visible = all.find(function(el) {
+        var r = el.getBoundingClientRect();
+        return r.width > 0 && r.height > 0;
+      });
+      if (visible) return visible;
+      console.warn('[superpowers-chrome] All ' + all.length + ' elements matching XPath have zero dimensions; using first match');
+      return all[0];
+    })()`;
   } else {
-    // CSS selector
-    return `document.querySelector(${JSON.stringify(selector)})`;
+    // CSS selector - prefer visible elements
+    return `(() => {
+      var all = document.querySelectorAll(${JSON.stringify(selector)});
+      if (all.length === 0) return null;
+      var visible = Array.from(all).find(function(el) {
+        var r = el.getBoundingClientRect();
+        return r.width > 0 && r.height > 0;
+      });
+      if (visible) return visible;
+      console.warn('[superpowers-chrome] All ' + all.length + ' elements matching ' + ${JSON.stringify(JSON.stringify(selector))} + ' have zero dimensions; using first match');
+      return all[0];
+    })()`;
   }
 }
 
@@ -2994,6 +3023,9 @@ async function clearCookies(tabIndexOrWsUrl) {
 }
 
 module.exports = {
+  // Internal helpers (exported for testing)
+  getElementSelector,
+
   // Core browser actions (click/fill now use CDP events by default for React compatibility)
   getTabs,
   newTab,
