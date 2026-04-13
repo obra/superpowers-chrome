@@ -1604,7 +1604,8 @@ async function evaluate(tabIndexOrWsUrl, expression) {
   const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
   const result = await sendCdpCommand(wsUrl, 'Runtime.evaluate', {
     expression,
-    returnByValue: true
+    returnByValue: true,
+    awaitPromise: true
   });
   return result.result.value;
 }
