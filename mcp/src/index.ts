@@ -91,8 +91,6 @@ enum BrowserAction {
   SCROLL = "scroll",
   DOUBLE_CLICK = "double_click",
   RIGHT_CLICK = "right_click",
-  // Human-like typing (individual keyDown/keyUp with realistic timing)
-  HUMAN_TYPE = "human_type",
   // File upload (DOM.setFileInputFiles)
   FILE_UPLOAD = "file_upload",
   // Special keys (Tab, Enter, Escape, Arrow keys, etc.)
@@ -119,7 +117,7 @@ const UseBrowserParams = {
     .describe("CSS or XPath selector. XPath must start with / or //. Optional for type (types into current focus)."),
   payload: z.string()
     .optional()
-    .describe("Action-specific data: navigate=URL | type=text (\\t=Tab, \\n=Enter) | human_type=text (realistic keystroke timing) | extract=format (text|html|markdown) | screenshot=filename | eval=JavaScript | select=option value | attr=attribute name | await_text=text to wait for | keyboard_press=key name (Tab, Enter, Space, Escape, Arrow*, F1-F12) | drag_drop=target CSS selector or JSON {\"x\":N,\"y\":N} | mouse_move=JSON {\"x\":N,\"y\":N} or {\"x\":N,\"y\":N,\"steps\":N,\"fromX\":N,\"fromY\":N} | scroll=JSON {\"deltaX\":N,\"deltaY\":N} or direction (up/down/left/right) | file_upload=JSON {\"files\":[\"path1\",\"path2\"]}"),
+    .describe("Action-specific data: navigate=URL | type=text (\\t=Tab, \\n=Enter) | extract=format (text|html|markdown) | screenshot=filename | eval=JavaScript | select=option value | attr=attribute name | await_text=text to wait for | keyboard_press=key name (Tab, Enter, Space, Escape, Arrow*, F1-F12) | drag_drop=target CSS selector or JSON {\"x\":N,\"y\":N} | mouse_move=JSON {\"x\":N,\"y\":N} or {\"x\":N,\"y\":N,\"steps\":N,\"fromX\":N,\"fromY\":N} | scroll=JSON {\"deltaX\":N,\"deltaY\":N} or direction (up/down/left/right) | file_upload=JSON {\"files\":[\"path1\",\"path2\"]}"),
   timeout: z.number()
     .int()
     .min(0)
@@ -324,7 +322,7 @@ async function executeBrowserAction(params: UseBrowserInput): Promise<string> {
       const typeResult = await chromeLib.captureActionWithDiff(
         tabIndex,
         'type',
-        () => chromeLib.fill(tabIndex, params.selector || null, params.payload)
+        () => chromeLib.humanType(tabIndex, params.selector || null, params.payload)
       );
       return formatCaptureResponse(
         'Typed',
@@ -613,21 +611,7 @@ async function executeBrowserAction(params: UseBrowserInput): Promise<string> {
       );
     }
 
-    case BrowserAction.HUMAN_TYPE: {
-      if (!params.payload || typeof params.payload !== 'string') {
-        throw new Error("human_type requires payload with text to type");
-      }
-      const humanTypeResult = await chromeLib.captureActionWithDiff(
-        tabIndex,
-        'human_type',
-        () => chromeLib.humanType(tabIndex, params.selector || null, params.payload)
-      );
-      return formatCaptureResponse(
-        'Typed (human-like)',
-        params.selector ? `into ${params.selector}` : 'into current focus',
-        humanTypeResult.capture
-      );
-    }
+
 
     case BrowserAction.FILE_UPLOAD: {
       if (!params.selector) {
@@ -706,8 +690,7 @@ Auto-starting Chrome with automatic page captures for every DOM action.
 
 ## Actions Overview
 navigate, click, type, keyboard_press, select, eval → Capture page state with before/after DOM diff
-hover, drag_drop, mouse_move, scroll, double_click, right_click → CDP-level mouse actions (native DnD, bot-detection safe)
-human_type → Realistic keystroke timing (individual keyDown/keyUp, bypasses bot detection)
+hover, drag_drop, mouse_move, scroll, double_click, right_click → CDP-level mouse actions (native DnD)
 file_upload → Set files on input[type=file] (DOM.setFileInputFiles)
 extract, attr, screenshot, screenshot+fullpage → Get content/visuals
 await_element, await_text → Wait for page changes
@@ -720,8 +703,7 @@ set_profile, get_profile → Manage Chrome profiles
 ## Navigation & Interaction (Auto-Capture with DOM Diff)
 navigate: {"action": "navigate", "payload": "URL"} → Before/after HTML + diff
 click: {"action": "click", "selector": "CSS_or_XPath"} → React-compatible CDP events
-human_type: {"action": "human_type", "selector": "#email", "payload": "user@test.com"} → PREFERRED for text entry
-type: {"action": "type", "payload": "text", "selector": "optional"} → Fast bulk input (\\t=Tab, \\n=Enter), use when speed > realism
+type: {"action": "type", "payload": "text", "selector": "optional"} → Text input (\\t=Tab, \\n=Enter)
 keyboard_press: {"action": "keyboard_press", "payload": "Tab"} → Special keys
 select: {"action": "select", "selector": "select", "payload": "option_value"}
 eval: {"action": "eval", "payload": "JavaScript_code"}
@@ -736,15 +718,6 @@ scroll: {"action": "scroll", "payload": "down"} → Scroll down (also: up, left,
 scroll: {"action": "scroll", "selector": ".container", "payload": "{\\"deltaX\\":0,\\"deltaY\\":500}"} → Scroll within element
 double_click: {"action": "double_click", "selector": "element"} → Text selection, open items
 right_click: {"action": "right_click", "selector": "element"} → Context menu
-
-## Human-Like Typing (PREFERRED for text entry)
-human_type is the default choice for entering text. It types character-by-character with realistic
-inter-key timing (~80-160ms per char), which bypasses bot detection that flags instant text insertion.
-In headed mode, it also fires keyDown/keyUp events for each character. Use 'type' only when you need
-speed over realism (e.g., pasting large text blocks).
-
-human_type: {"action": "human_type", "selector": "#email", "payload": "user@test.com"} → Click + type
-human_type: {"action": "human_type", "payload": "text"} → Type into current focus
 
 ## File Upload
 file_upload: {"action": "file_upload", "selector": "#file-input", "payload": "/path/to/file.pdf"} → Single file
@@ -830,8 +803,8 @@ XPath: "//button[@type='submit']", "//input[@name='email']"
 Login flow (auto-captured - CHECK page.md FIRST):
 {"action": "navigate", "payload": "https://site.com/login"} → page.md available, check it first!
 {"action": "await_element", "selector": "#email"}
-{"action": "human_type", "selector": "#email", "payload": "user@test.com"} → realistic typing
-{"action": "human_type", "selector": "#password", "payload": "pass123"}
+{"action": "type", "selector": "#email", "payload": "user@test.com"}
+{"action": "type", "selector": "#password", "payload": "pass123"}
 {"action": "keyboard_press", "payload": "Enter"} → submit form
 
 Extract specific content ONLY when auto-capture insufficient:
@@ -874,8 +847,6 @@ Every DOM action (navigate, click, type, select, eval) auto-captures to the sess
 - {prefix}-console.txt — browser console messages
 
 Prefer reading these files to using 'extract' or 'screenshot' whenever possible.
-
-IMPORTANT: Prefer human_type over type for text entry — it types character-by-character with realistic timing that bypasses bot detection. Use type only when speed matters more than realism.
 
 Selectors: CSS or XPath (XPath starts with / or //). Append \\n to payload in 'type' to submit forms.
 

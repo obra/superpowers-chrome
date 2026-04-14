@@ -26,7 +26,7 @@ Control Chrome via DevTools Protocol using the `use_browser` MCP tool. Single un
 
 ## Auto-Capture
 
-Every DOM action (navigate, click, human_type, type, select, eval, keyboard_press, hover, drag_drop, double_click, right_click, file_upload) automatically saves:
+Every DOM action (navigate, click, type, select, eval, keyboard_press, hover, drag_drop, double_click, right_click, file_upload) automatically saves:
 - `{prefix}.png` — viewport screenshot
 - `{prefix}.md` — page content as structured markdown
 - `{prefix}.html` — full rendered DOM
@@ -66,16 +66,10 @@ Single MCP tool with action-based interface. Chrome auto-starts on first use.
   - `selector`: CSS selector
   - Example: `{action: "click", selector: "button.submit"}`
 
-- **human_type**: PREFERRED for text entry — types character-by-character with realistic timing (~80-160ms/char)
+- **type**: Text input
   - `selector`: Optional — clicks to focus first
-  - `payload`: Text to type
-  - In headed mode, fires keyDown/keyUp events per character (bypasses bot detection)
-  - Example: `{action: "human_type", selector: "#email", payload: "user@example.com"}`
-
-- **type**: Fast bulk text input (use when speed matters more than realism)
-  - `selector`: CSS selector
   - `payload`: Text to type (`\t`=Tab, `\n`=Enter)
-  - Example: `{action: "type", selector: "#email", payload: "user@example.com\n"}`
+  - Example: `{action: "type", selector: "#email", payload: "user@example.com"}`
 
 - **double_click**: Double-click element (fires dblclick event)
   - `selector`: CSS selector
@@ -238,13 +232,13 @@ Navigate and extract:
 ```
 {action: "navigate", payload: "https://example.com/login"}
 {action: "await_element", selector: "input[name=email]"}
-{action: "human_type", selector: "input[name=email]", payload: "user@example.com"}
-{action: "human_type", selector: "input[name=password]", payload: "pass123"}
+{action: "type", selector: "input[name=email]", payload: "user@example.com"}
+{action: "type", selector: "input[name=password]", payload: "pass123"}
 {action: "keyboard_press", payload: "Enter"}
 {action: "await_text", payload: "Welcome"}
 ```
 
-Uses `human_type` for realistic keystroke timing and `keyboard_press` to submit.
+Uses `keyboard_press` to submit the form.
 
 ### Multi-Tab Workflow
 ```
@@ -257,7 +251,7 @@ Uses `human_type` for realistic keystroke timing and `keyboard_press` to submit.
 ### Dynamic Content
 ```
 {action: "navigate", payload: "https://example.com"}
-{action: "human_type", selector: "input[name=q]", payload: "query"}
+{action: "type", selector: "input[name=q]", payload: "query"}
 {action: "click", selector: "button.search"}
 {action: "await_element", selector: ".results"}
 {action: "extract", payload: "text", selector: ".result-title"}
@@ -341,10 +335,10 @@ Avoid generic selectors that match multiple elements.
 ```
 
 **Submit forms:**
-Use `keyboard_press` with Enter after `human_type`, or append `\n` to `type` payload.
+Use `keyboard_press` with Enter after `type`, or append `\n` to the payload.
 
 ```
-{action: "human_type", selector: "#search", payload: "query"}
+{action: "type", selector: "#search", payload: "query"}
 {action: "keyboard_press", payload: "Enter"}
 ```
 

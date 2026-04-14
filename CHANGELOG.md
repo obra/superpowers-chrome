@@ -2,6 +2,17 @@
 
 All notable changes to the superpowers-chrome MCP project.
 
+## [1.12.0] - 2026-04-14 - Merge human_type into type
+
+### Changed
+- **`type` now uses realistic keystroke timing**: `type` calls `humanType()` internally, typing with natural inter-key delays (~80-160ms/char) and per-keystroke keyDown/keyUp events in headed mode
+- **Removed `human_type` action**: No longer a separate action. Use `type` for all text input
+
+### Removed
+- `human_type` action — `type` now does the same thing
+
+---
+
 ## [1.11.0] - 2026-04-13 - Visibility-aware element selection, async eval, crash fix
 
 ### Fixed
