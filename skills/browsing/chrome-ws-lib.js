@@ -16,15 +16,7 @@
 const http = require('http');
 const crypto = require('crypto');
 
-const {
-  CHROME_DEBUG_HOST,
-  CHROME_DEBUG_PORT,
-  rewriteWsUrl
-} = require('./host-override');
-
-// Dynamic port: updated by startChrome() when Chrome launches or reconnects.
-// Defaults to CHROME_DEBUG_PORT (from env CHROME_WS_PORT or 9222).
-let activePort = CHROME_DEBUG_PORT;
+const { createOverride } = require('./host-override');
 
 // Port range for dynamic allocation (tried sequentially starting at 9222 for backward compat)
 const PORT_RANGE_START = 9222;
@@ -174,6 +166,40 @@ class WebSocketClient {
     }
   }
 }
+
+/**
+ * Build a fresh Chrome session — a state-bag scoped to a single Chrome target.
+ *
+ * Pre-factory, every consumer that required this file shared module-level
+ * state: the connection pool, console-message buffers, the chosen profile
+ * name, the launched Chrome process handle, the active CDP port, and the
+ * host-override config. Two consumers in the same process therefore drove a
+ * single Chrome — fine for the CLI and the MCP server (each owns its
+ * process), but a hazard for any caller that wants to drive multiple Chromes
+ * concurrently from one Node process (different ports, different profiles).
+ *
+ * `createSession({ host, port })` returns a fresh instance with private state
+ * and methods bound to that state. Two instances do not share a connection
+ * pool, console-message map, profile, Chrome process, or host-override —
+ * mutating one (e.g. setProfileName, startChrome) has no effect on the other.
+ * Pass `host`/`port` to seed the host-override; omit them to seed from the
+ * `CHROME_WS_HOST` / `CHROME_WS_PORT` env vars exactly as before.
+ *
+ * The returned object preserves the legacy module-level export shape — the
+ * one-line consumer migration is `require(...)` becomes
+ * `require(...).createSession()`.
+ */
+function createSession({ host, port } = {}) {
+  const hostOverride = createOverride({ host, port });
+  const { rewriteWsUrl } = hostOverride;
+  // Module-load constants used to come from host-override directly; per-session
+  // they're projected from hostOverride so each session sees its own host/port.
+  const CHROME_DEBUG_HOST = hostOverride.getHost();
+  const CHROME_DEBUG_PORT = hostOverride.getPort();
+
+  // Dynamic port: updated by startChrome() when Chrome launches or reconnects.
+  // Defaults to CHROME_DEBUG_PORT (from env CHROME_WS_PORT or 9222).
+  let activePort = CHROME_DEBUG_PORT;
 
 // =============================================================================
 // CONNECTION POOL (JRV-130: Fix focus lost between eval calls)
@@ -3027,7 +3053,7 @@ async function clearCookies(tabIndexOrWsUrl) {
   await sendCdpCommand(wsUrl, 'Network.clearBrowserCookies', {});
 }
 
-module.exports = {
+return {
   // Internal helpers (exported for testing)
   getElementSelector,
 
@@ -3128,3 +3154,6 @@ module.exports = {
   cdpClick: click,
   insertText: fill,
 };
+}
+
+module.exports = { createSession };
