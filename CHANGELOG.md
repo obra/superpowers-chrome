@@ -2,6 +2,21 @@
 
 All notable changes to the superpowers-chrome MCP project.
 
+## [Unreleased] - Per-session chrome-ws-lib factory
+
+### Added
+- **`createSession({ host, port })`** factory in `chrome-ws-lib.js` — returns a fresh state-bag with a private connection pool, console-message map, profile name, Chrome process handle, active CDP port, and host-override. Two sessions in one process don't share state. Unblocks any caller that wants to drive multiple Chromes concurrently from one Node process.
+- **`createOverride({ host, port })`** factory in `host-override.js` — per-instance host/port/override-enabled state with `getHost`, `getPort`, `getBase`, `isOverrideEnabled`, `rewriteWsUrl`, `setDefaults`. Underpins per-session host-override in `createSession()`.
+- **`test/session-isolation.test.mjs`** — regression gate covering distinct-method-identity, per-session profile/port mutation, per-instance `setDefaults`/`rewriteWsUrl`, and back-compat for the legacy module-level constants.
+
+### Changed
+- **Consumer migration**: `mcp/src/index.ts` and `skills/browsing/chrome-ws` now construct a session explicitly — `require(...).createSession()`. Behavior unchanged: each process still drives a single Chrome.
+
+### Compatibility
+- **`host-override.js` is fully back-compatible**: `CHROME_DEBUG_HOST`, `CHROME_DEBUG_PORT`, `CHROME_DEBUG_BASE`, `WS_OVERRIDE_ENABLED`, and the top-level `rewriteWsUrl` are still exported with identical semantics. Only `chrome-ws-lib.js` consumers need to construct a session.
+
+---
+
 ## [1.12.0] - 2026-04-14 - Merge human_type into type
 
 ### Changed
