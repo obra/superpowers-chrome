@@ -3,7 +3,7 @@
  * Run with: node test-cookies.js
  */
 
-const chromeLib = require('./chrome-ws-lib.js');
+const chromeLib = require('./chrome-ws-lib.js').createSession();
 
 async function testCookieFunctionsExist() {
   console.log('Testing that cookie functions are exported...');

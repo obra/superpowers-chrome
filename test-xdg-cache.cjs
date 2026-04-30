@@ -4,7 +4,7 @@
  * Test XDG cache directory functionality
  */
 
-const chromeLib = require('./skills/browsing/chrome-ws-lib.js');
+const chromeLib = require('./skills/browsing/chrome-ws-lib.js').createSession();
 const path = require('path');
 
 console.log('Testing XDG cache directory...\n');

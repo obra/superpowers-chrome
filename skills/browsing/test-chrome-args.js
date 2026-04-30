@@ -16,7 +16,7 @@ function withEnv(env, fn) {
     }
   }
   delete require.cache[require.resolve(modulePath)];
-  const mod = require(modulePath);
+  const mod = require(modulePath).createSession();
   try {
     fn(mod);
   } finally {
