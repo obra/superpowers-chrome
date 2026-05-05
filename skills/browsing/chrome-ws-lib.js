@@ -20,6 +20,7 @@ const { createOverride } = require('./host-override');
 const { getElementSelector, getElementSelectorAll } = require('./lib/element-selector');
 const { KEY_DEFINITIONS, charToKeyDef } = require('./lib/key-definitions');
 const { generateHtmlDiff } = require('./lib/html-diff');
+const { createState } = require('./lib/session-state');
 const {
   PORT_RANGE_START,
   PORT_RANGE_END,
@@ -204,29 +205,22 @@ class WebSocketClient {
  * `require(...).createSession()`.
  */
 function createSession({ host, port } = {}) {
-  const hostOverride = createOverride({ host, port });
-  const { rewriteWsUrl } = hostOverride;
-  // Module-load constants used to come from host-override directly; per-session
-  // they're projected from hostOverride so each session sees its own host/port.
+  const state = createState({ host, port });
+  // Convenience aliases for read-once derived values. The hostOverride that
+  // backs these is on `state` for any extracted module that needs it.
+  const { hostOverride, rewriteWsUrl } = state;
   const CHROME_DEBUG_HOST = hostOverride.getHost();
   const CHROME_DEBUG_PORT = hostOverride.getPort();
-
-  // Dynamic port: updated by startChrome() when Chrome launches or reconnects.
-  // Defaults to CHROME_DEBUG_PORT (from env CHROME_WS_PORT or 9222).
-  let activePort = CHROME_DEBUG_PORT;
 
   // =============================================================================
   // CONNECTION POOL (JRV-130: Fix focus lost between eval calls)
   // =============================================================================
 
-  // Connection pool: maintains persistent WebSocket connections per tab
-  const connectionPool = new Map(); // wsUrl -> { ws: WebSocketClient, pendingRequests: Map, messageIdCounter: number }
-
   /**
    * Get or create a pooled connection for a tab
    */
   async function getPooledConnection(wsUrl) {
-    let conn = connectionPool.get(wsUrl);
+    let conn = state.connectionPool.get(wsUrl);
 
     if (conn && conn.ws.isConnected()) {
       return conn;
@@ -265,7 +259,7 @@ function createSession({ host, port } = {}) {
     });
 
     ws.on('close', () => {
-      connectionPool.delete(wsUrl);
+      state.connectionPool.delete(wsUrl);
       // Reject all pending requests
       for (const [id, pending] of conn.pendingRequests) {
         clearTimeout(pending.timeout);
@@ -279,7 +273,7 @@ function createSession({ host, port } = {}) {
     });
 
     await ws.connect();
-    connectionPool.set(wsUrl, conn);
+    state.connectionPool.set(wsUrl, conn);
 
     return conn;
   }
@@ -306,10 +300,10 @@ function createSession({ host, port } = {}) {
    * Close pooled connection for a tab
    */
   function closePooledConnection(wsUrl) {
-    const conn = connectionPool.get(wsUrl);
+    const conn = state.connectionPool.get(wsUrl);
     if (conn) {
       conn.ws.close();
-      connectionPool.delete(wsUrl);
+      state.connectionPool.delete(wsUrl);
     }
   }
 
@@ -317,36 +311,23 @@ function createSession({ host, port } = {}) {
    * Close all pooled connections
    */
   function closeAllConnections() {
-    for (const [wsUrl, conn] of connectionPool) {
+    for (const [wsUrl, conn] of state.connectionPool) {
       conn.ws.close();
     }
-    connectionPool.clear();
+    state.connectionPool.clear();
   }
 
-  // HTTP helper with explicit host/port — used for probing ports before setting activePort
+  // HTTP helper with explicit host/port — used for probing ports before setting state.activePort
   // Helper to make HTTP requests to Chrome on the active port
   async function chromeHttp(path, method = 'GET') {
-    return chromeHttpAt(CHROME_DEBUG_HOST, activePort, path, method);
+    return chromeHttpAt(CHROME_DEBUG_HOST, state.activePort, path, method);
   }
-
-  // Console message storage per tab
-  const consoleMessages = new Map();
-
-  // Session management - uses XDG cache directories
-  let sessionDir = null;
-  let captureCounter = 0;
-
-  // Chrome process management
-  let chromeProcess = null;
-  let chromeHeadless = true; // Default to headless mode
-  let chromeUserDataDir = null;
-  let chromeProfileName = 'superpowers-chrome'; // Default profile name
 
   // Helper to resolve tab index or ws URL to actual ws URL
   async function resolveWsUrl(wsUrlOrIndex) {
     // If it's already a WebSocket URL, rewrite and return it
     if (typeof wsUrlOrIndex === 'string' && wsUrlOrIndex.startsWith('ws://')) {
-      return rewriteWsUrl(wsUrlOrIndex, CHROME_DEBUG_HOST, activePort);
+      return rewriteWsUrl(wsUrlOrIndex, CHROME_DEBUG_HOST, state.activePort);
     }
 
     // If it's a number (tab index), resolve it
@@ -373,9 +354,6 @@ function createSession({ host, port } = {}) {
     throw new Error(`Invalid tab specifier: ${wsUrlOrIndex}`);
   }
 
-  // Message ID counter for legacy single-use connections
-  let messageIdCounter = 1;
-
   /**
    * Send CDP command using pooled connection (default - maintains focus)
    * Falls back to single-use connection if pool fails
@@ -397,7 +375,7 @@ function createSession({ host, port } = {}) {
     const ws = new WebSocketClient(wsUrl);
 
     return new Promise((resolve, reject) => {
-      const id = messageIdCounter++;
+      const id = state.messageIdCounter++;
       let resolved = false;
 
       ws.on('message', (msg) => {
@@ -445,7 +423,7 @@ function createSession({ host, port } = {}) {
       .filter(tab => tab.type === 'page')
       .map(tab => ({
         ...tab,
-        webSocketDebuggerUrl: rewriteWsUrl(tab.webSocketDebuggerUrl, CHROME_DEBUG_HOST, activePort)
+        webSocketDebuggerUrl: rewriteWsUrl(tab.webSocketDebuggerUrl, CHROME_DEBUG_HOST, state.activePort)
       }));
   }
 
@@ -453,7 +431,7 @@ function createSession({ host, port } = {}) {
     const encoded = encodeURIComponent(url);
     const tab = await chromeHttp(`/json/new?${encoded}`, 'PUT');
     if (tab && typeof tab === 'object') {
-      tab.webSocketDebuggerUrl = rewriteWsUrl(tab.webSocketDebuggerUrl, CHROME_DEBUG_HOST, activePort);
+      tab.webSocketDebuggerUrl = rewriteWsUrl(tab.webSocketDebuggerUrl, CHROME_DEBUG_HOST, state.activePort);
     }
     return tab;
   }
@@ -517,13 +495,13 @@ function createSession({ host, port } = {}) {
             return String(arg.value || arg.description || arg.type);
           }).join(' ');
 
-          const messages = consoleMessages.get(wsUrl) || [];
+          const messages = state.consoleMessages.get(wsUrl) || [];
           messages.push({
             timestamp,
             level,
             text
           });
-          consoleMessages.set(wsUrl, messages);
+          state.consoleMessages.set(wsUrl, messages);
         }
       });
 
@@ -1036,7 +1014,7 @@ function createSession({ host, port } = {}) {
         // for bot detection). In headless mode, rawKeyDown triggers Chrome browser
         // shortcuts that navigate away from the page, so we skip key events and
         // rely on insertText + per-character timing for bot-detection resistance.
-        const sendKeyEvents = !chromeHeadless;
+        const sendKeyEvents = !state.chromeHeadless;
         const modifiers = keyDef.shift ? 8 : 0; // 8 = Shift
 
         if (sendKeyEvents) {
@@ -1751,26 +1729,26 @@ function createSession({ host, port } = {}) {
 
     // Use provided headless parameter, or fall back to current mode
     if (headless !== null) {
-      chromeHeadless = headless;
+      state.chromeHeadless = headless;
     }
 
     // Use provided profile name, or fall back to current profile
     if (profileName !== null) {
-      chromeProfileName = profileName;
+      state.chromeProfileName = profileName;
     }
 
     // --- Step 1: Check meta.json for an already-running Chrome on this profile ---
     // This enables reconnection after MCP restart while Chrome is still alive.
     if (!port) {
-      const meta = readProfileMeta(chromeProfileName);
+      const meta = readProfileMeta(state.chromeProfileName);
       if (meta && meta.port) {
         if (await isPortAlive(CHROME_DEBUG_HOST, meta.port, meta.pid)) {
-          activePort = meta.port;
-          console.error(`Reconnected to existing Chrome (port: ${meta.port}, PID: ${meta.pid}, profile: ${chromeProfileName})`);
+          state.activePort = meta.port;
+          console.error(`Reconnected to existing Chrome (port: ${meta.port}, PID: ${meta.pid}, profile: ${state.chromeProfileName})`);
           return;
         }
         // Stale meta.json — Chrome died without cleanup
-        clearProfileMeta(chromeProfileName);
+        clearProfileMeta(state.chromeProfileName);
       }
     }
 
@@ -1819,13 +1797,17 @@ function createSession({ host, port } = {}) {
     }
 
     // Set up profile directory (persistent across sessions)
-    if (!chromeUserDataDir) {
-      chromeUserDataDir = getChromeProfileDir(chromeProfileName);
-      mkdirSync(chromeUserDataDir, { recursive: true });
+    if (!state.chromeUserDataDir) {
+      state.chromeUserDataDir = getChromeProfileDir(state.chromeProfileName);
+      mkdirSync(state.chromeUserDataDir, { recursive: true });
     }
 
     // --- Step 4: Launch Chrome with the chosen port ---
-    const args = buildChromeArgs({ chosenPort, chromeUserDataDir, chromeHeadless });
+    const args = buildChromeArgs({
+      chosenPort,
+      chromeUserDataDir: state.chromeUserDataDir,
+      chromeHeadless: state.chromeHeadless,
+    });
 
     const proc = spawn(chromePath, args, {
       detached: true,
@@ -1833,28 +1815,28 @@ function createSession({ host, port } = {}) {
     });
 
     proc.unref();
-    chromeProcess = proc;
-    activePort = chosenPort;
+    state.chromeProcess = proc;
+    state.activePort = chosenPort;
 
     // Wait for Chrome to be ready
     await new Promise(resolve => setTimeout(resolve, 2000));
 
     // --- Step 5: Persist port assignment in meta.json ---
-    writeProfileMeta(chromeProfileName, {
+    writeProfileMeta(state.chromeProfileName, {
       port: chosenPort,
       pid: proc.pid,
-      headless: chromeHeadless,
-      profileName: chromeProfileName,
-      userDataDir: chromeUserDataDir,
+      headless: state.chromeHeadless,
+      profileName: state.chromeProfileName,
+      userDataDir: state.chromeUserDataDir,
       startedAt: new Date().toISOString()
     });
 
-    const mode = chromeHeadless ? 'headless' : 'headed';
-    console.error(`Chrome started in ${mode} mode (PID: ${proc.pid}, port: ${chosenPort}, profile: ${chromeProfileName})`);
+    const mode = state.chromeHeadless ? 'headless' : 'headed';
+    console.error(`Chrome started in ${mode} mode (PID: ${proc.pid}, port: ${chosenPort}, profile: ${state.chromeProfileName})`);
   }
 
   async function killChrome() {
-    if (!chromeProcess) {
+    if (!state.chromeProcess) {
       return;
     }
 
@@ -1868,9 +1850,9 @@ function createSession({ host, port } = {}) {
       }
 
       // Force kill if still running
-      if (chromeProcess && chromeProcess.pid) {
+      if (state.chromeProcess && state.chromeProcess.pid) {
         try {
-          process.kill(chromeProcess.pid, 'SIGTERM');
+          process.kill(state.chromeProcess.pid, 'SIGTERM');
           await new Promise(resolve => setTimeout(resolve, 500));
         } catch (e) {
           // Process might already be dead
@@ -1881,13 +1863,13 @@ function createSession({ host, port } = {}) {
     }
 
     // Clean up meta.json so other sessions know this port is free
-    clearProfileMeta(chromeProfileName);
-    chromeProcess = null;
-    activePort = CHROME_DEBUG_PORT;
+    clearProfileMeta(state.chromeProfileName);
+    state.chromeProcess = null;
+    state.activePort = CHROME_DEBUG_PORT;
   }
 
   async function showBrowser() {
-    if (!chromeHeadless) {
+    if (!state.chromeHeadless) {
       return 'Browser is already visible';
     }
 
@@ -1904,7 +1886,7 @@ function createSession({ host, port } = {}) {
     }
 
     // Save port so we reuse it after restart (avoid port churn)
-    const savedPort = activePort;
+    const savedPort = state.activePort;
 
     // Kill current Chrome instance
     await killChrome();
@@ -1928,7 +1910,7 @@ function createSession({ host, port } = {}) {
   }
 
   async function hideBrowser() {
-    if (chromeHeadless) {
+    if (state.chromeHeadless) {
       return 'Browser is already in headless mode';
     }
 
@@ -1945,7 +1927,7 @@ function createSession({ host, port } = {}) {
     }
 
     // Save port so we reuse it after restart
-    const savedPort = activePort;
+    const savedPort = state.activePort;
 
     // Kill current Chrome instance
     await killChrome();
@@ -1970,33 +1952,33 @@ function createSession({ host, port } = {}) {
 
   async function getBrowserMode() {
     return {
-      headless: chromeHeadless,
-      mode: chromeHeadless ? 'headless' : 'headed',
-      running: chromeProcess !== null,
-      pid: chromeProcess ? chromeProcess.pid : null,
-      port: activePort,
-      profile: chromeProfileName,
-      profileDir: chromeUserDataDir
+      headless: state.chromeHeadless,
+      mode: state.chromeHeadless ? 'headless' : 'headed',
+      running: state.chromeProcess !== null,
+      pid: state.chromeProcess ? state.chromeProcess.pid : null,
+      port: state.activePort,
+      profile: state.chromeProfileName,
+      profileDir: state.chromeUserDataDir
     };
   }
 
   function getChromePid() {
-    return chromeProcess ? chromeProcess.pid : null;
+    return state.chromeProcess ? state.chromeProcess.pid : null;
   }
 
   function getProfileName() {
-    return chromeProfileName;
+    return state.chromeProfileName;
   }
 
   function setProfileName(profileName) {
     if (!/^[a-zA-Z0-9_-]+$/.test(profileName)) {
       throw new Error('Invalid profile name. Only alphanumeric characters, hyphens, and underscores are allowed.');
     }
-    if (chromeProcess) {
+    if (state.chromeProcess) {
       throw new Error('Cannot change profile while Chrome is running. Kill Chrome first.');
     }
-    chromeProfileName = profileName;
-    chromeUserDataDir = null; // Reset so next startChrome() uses new profile
+    state.chromeProfileName = profileName;
+    state.chromeUserDataDir = null; // Reset so next startChrome() uses new profile
     return `Profile set to: ${profileName}`;
   }
 
@@ -2005,8 +1987,8 @@ function createSession({ host, port } = {}) {
     const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
 
     // Initialize console messages array for this tab
-    if (!consoleMessages.has(wsUrl)) {
-      consoleMessages.set(wsUrl, []);
+    if (!state.consoleMessages.has(wsUrl)) {
+      state.consoleMessages.set(wsUrl, []);
     }
 
     // Start persistent WebSocket connection for console logging
@@ -2042,13 +2024,13 @@ function createSession({ host, port } = {}) {
             return String(arg.value || arg.description || arg.type);
           }).join(' ');
 
-          const messages = consoleMessages.get(wsUrl) || [];
+          const messages = state.consoleMessages.get(wsUrl) || [];
           messages.push({
             timestamp,
             level,
             text
           });
-          consoleMessages.set(wsUrl, messages);
+          state.consoleMessages.set(wsUrl, messages);
         }
       });
 
@@ -2080,7 +2062,7 @@ function createSession({ host, port } = {}) {
 
   async function getConsoleMessages(tabIndexOrWsUrl, sinceTime = null) {
     const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
-    const messages = consoleMessages.get(wsUrl) || [];
+    const messages = state.consoleMessages.get(wsUrl) || [];
 
     if (!sinceTime) {
       return messages;
@@ -2092,15 +2074,15 @@ function createSession({ host, port } = {}) {
 
   async function clearConsoleMessages(tabIndexOrWsUrl) {
     const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
-    consoleMessages.set(wsUrl, []);
+    state.consoleMessages.set(wsUrl, []);
   }
 
   function getActivePort() {
-    return activePort;
+    return state.activePort;
   }
 
   function initializeSession() {
-    if (!sessionDir) {
+    if (!state.sessionDir) {
       const fs = require('fs');
       const path = require('path');
 
@@ -2110,11 +2092,11 @@ function createSession({ host, port } = {}) {
       const dateStr = now.toISOString().split('T')[0]; // YYYY-MM-DD
       const sessionId = `session-${Date.now()}`;
 
-      sessionDir = path.join(cacheHome, 'superpowers', 'browser', dateStr, sessionId);
-      fs.mkdirSync(sessionDir, { recursive: true });
-      captureCounter = 0;
+      state.sessionDir = path.join(cacheHome, 'superpowers', 'browser', dateStr, sessionId);
+      fs.mkdirSync(state.sessionDir, { recursive: true });
+      state.captureCounter = 0;
 
-      console.error(`Browser session directory: ${sessionDir}`);
+      console.error(`Browser session directory: ${state.sessionDir}`);
 
       // Register cleanup on process exit
       process.on('exit', cleanupSession);
@@ -2127,19 +2109,19 @@ function createSession({ host, port } = {}) {
         process.exit(0);
       });
     }
-    return sessionDir;
+    return state.sessionDir;
   }
 
   function cleanupSession() {
-    if (sessionDir) {
+    if (state.sessionDir) {
       try {
         const fs = require('fs');
-        fs.rmSync(sessionDir, { recursive: true, force: true });
-        console.error(`Cleaned up session directory: ${sessionDir}`);
+        fs.rmSync(state.sessionDir, { recursive: true, force: true });
+        console.error(`Cleaned up session directory: ${state.sessionDir}`);
       } catch (error) {
         console.error(`Failed to cleanup session directory: ${error.message}`);
       }
-      sessionDir = null;
+      state.sessionDir = null;
     }
   }
 
@@ -2148,8 +2130,8 @@ function createSession({ host, port } = {}) {
     initializeSession();
 
     // Create time-ordered prefix for flat file structure
-    captureCounter++;
-    return `${String(captureCounter).padStart(3, '0')}-${actionType}`;
+    state.captureCounter++;
+    return `${String(state.captureCounter).padStart(3, '0')}-${actionType}`;
   }
 
   async function generateDomSummary(tabIndexOrWsUrl) {
