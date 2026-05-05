@@ -19,6 +19,7 @@ const crypto = require('crypto');
 const { createOverride } = require('./host-override');
 const { getElementSelector, getElementSelectorAll } = require('./lib/element-selector');
 const { KEY_DEFINITIONS, charToKeyDef } = require('./lib/key-definitions');
+const { generateHtmlDiff } = require('./lib/html-diff');
 const {
   PORT_RANGE_START,
   PORT_RANGE_END,
@@ -2361,35 +2362,6 @@ function createSession({ host, port } = {}) {
    * Generate a simple text diff between two HTML strings
    * Returns lines that changed (added/removed)
    */
-  function generateHtmlDiff(beforeHtml, afterHtml) {
-    const beforeLines = (beforeHtml || '').split('\n');
-    const afterLines = (afterHtml || '').split('\n');
-
-    const beforeSet = new Set(beforeLines);
-    const afterSet = new Set(afterLines);
-
-    const removed = beforeLines.filter(line => !afterSet.has(line) && line.trim());
-    const added = afterLines.filter(line => !beforeSet.has(line) && line.trim());
-
-    let diff = '';
-    if (removed.length > 0) {
-      diff += '=== REMOVED ===\n';
-      diff += removed.slice(0, 50).map(l => '- ' + l.slice(0, 200)).join('\n');
-      if (removed.length > 50) diff += `\n... and ${removed.length - 50} more removed lines`;
-      diff += '\n\n';
-    }
-    if (added.length > 0) {
-      diff += '=== ADDED ===\n';
-      diff += added.slice(0, 50).map(l => '+ ' + l.slice(0, 200)).join('\n');
-      if (added.length > 50) diff += `\n... and ${added.length - 50} more added lines`;
-    }
-
-    if (!diff) {
-      diff = '(no changes detected)';
-    }
-
-    return diff;
-  }
 
   /**
    * Capture page state before and after an action, with diff
