@@ -22,6 +22,7 @@ const { KEY_DEFINITIONS, charToKeyDef } = require('./lib/key-definitions');
 const { generateHtmlDiff } = require('./lib/html-diff');
 const { createState } = require('./lib/session-state');
 const { attachCookies } = require('./lib/cookies');
+const { attachViewport } = require('./lib/viewport');
 const {
   PORT_RANGE_START,
   PORT_RANGE_END,
@@ -2537,103 +2538,7 @@ function createSession({ host, port } = {}) {
     };
   }
 
-  // =============================================================================
-  // VIEWPORT/DEVICE EMULATION
-  // =============================================================================
-
-  /**
-   * Set device viewport/emulation parameters (CDP: Emulation.setDeviceMetricsOverride)
-   *
-   * @param {number|string} tabIndexOrWsUrl - Tab index (0, 1, etc.) or WebSocket URL
-   * @param {Object} params - Viewport parameters
-   * @param {number} [params.width] - Viewport width in CSS pixels (default: 1200)
-   * @param {number} [params.height] - Viewport height in CSS pixels (default: 800)
-   * @param {number} [params.deviceScaleFactor=1] - DPI multiplier (1=96dpi, 2=192dpi for retina)
-   * @param {boolean} [params.mobile=false] - Enable mobile emulation (touch + mobile UA string)
-   * @returns {Promise<Object>} - Confirmed viewport parameters
-   */
-  async function setViewport(tabIndexOrWsUrl, params) {
-    if (!params || typeof params !== 'object') {
-      throw new Error('setViewport requires a params object');
-    }
-
-    const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
-
-    const viewportParams = {
-      width: params.width ?? 1200,
-      height: params.height ?? 800,
-      deviceScaleFactor: params.deviceScaleFactor !== undefined ? params.deviceScaleFactor : 1,
-      mobile: params.mobile === true
-    };
-
-    if (viewportParams.width < 320 || viewportParams.width > 7680) {
-      throw new Error(`Invalid viewport width ${viewportParams.width} (must be 320-7680)`);
-    }
-    if (viewportParams.height < 200 || viewportParams.height > 4320) {
-      throw new Error(`Invalid viewport height ${viewportParams.height} (must be 200-4320)`);
-    }
-    if (viewportParams.deviceScaleFactor < 0.25 || viewportParams.deviceScaleFactor > 5) {
-      throw new Error(`Invalid deviceScaleFactor ${viewportParams.deviceScaleFactor} (must be 0.25-5)`);
-    }
-
-    await sendCdpCommand(wsUrl, 'Emulation.setDeviceMetricsOverride', viewportParams);
-
-    // Mobile emulation: touch + UA string
-    if (viewportParams.mobile) {
-      await sendCdpCommand(wsUrl, 'Emulation.setTouchEmulationEnabled', { enabled: true });
-      await sendCdpCommand(wsUrl, 'Emulation.setUserAgentOverride', {
-        userAgent: 'Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36'
-      });
-    } else {
-      // Explicitly disable mobile emulation when switching to desktop
-      await sendCdpCommand(wsUrl, 'Emulation.setTouchEmulationEnabled', { enabled: false });
-      // Reset UA to browser default (empty string = use default)
-      await sendCdpCommand(wsUrl, 'Emulation.setUserAgentOverride', { userAgent: '' });
-    }
-
-    return { ...viewportParams, touch: viewportParams.mobile };
-  }
-
-  /**
-   * Clear viewport emulation (reset to browser default)
-   * Clears device metrics, touch emulation, and UA override
-   * @param {number|string} tabIndexOrWsUrl - Tab index (0, 1, etc.) or WebSocket URL
-   * @returns {Promise<void>}
-   */
-  async function clearViewport(tabIndexOrWsUrl) {
-    const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
-    await sendCdpCommand(wsUrl, 'Emulation.clearDeviceMetricsOverride', {});
-    await sendCdpCommand(wsUrl, 'Emulation.setTouchEmulationEnabled', { enabled: false });
-    // Empty string resets UA to browser default (CDP convention)
-    await sendCdpCommand(wsUrl, 'Emulation.setUserAgentOverride', { userAgent: '' });
-  }
-
-  /**
-   * Get current viewport dimensions from browser
-   * @param {number|string} tabIndexOrWsUrl - Tab index (0, 1, etc.) or WebSocket URL
-   * @returns {Promise<Object>} - Object with innerWidth, innerHeight, outerWidth, outerHeight, devicePixelRatio, orientation
-   */
-  async function getViewport(tabIndexOrWsUrl) {
-    const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
-
-    const result = await sendCdpCommand(wsUrl, 'Runtime.evaluate', {
-      expression: `({
-        innerWidth: window.innerWidth,
-        innerHeight: window.innerHeight,
-        outerWidth: window.outerWidth,
-        outerHeight: window.outerHeight,
-        devicePixelRatio: window.devicePixelRatio,
-        orientation: screen.orientation ? screen.orientation.type : 'unknown'
-      })`,
-      returnByValue: true
-    });
-
-    if (result.exceptionDetails) {
-      throw new Error(`getViewport failed: ${result.exceptionDetails.text}`);
-    }
-    return result.result?.value || {};
-  }
-
+  const { setViewport, clearViewport, getViewport } = attachViewport({ resolveWsUrl, sendCdpCommand });
   const { clearCookies } = attachCookies({ resolveWsUrl, sendCdpCommand });
 
   return {
