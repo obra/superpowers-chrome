@@ -18,7 +18,7 @@ const crypto = require('crypto');
 
 const { createOverride } = require('./host-override');
 const { getElementSelector, getElementSelectorAll } = require('./lib/element-selector');
-const { KEY_DEFINITIONS } = require('./lib/key-definitions');
+const { KEY_DEFINITIONS, charToKeyDef } = require('./lib/key-definitions');
 const {
   PORT_RANGE_START,
   PORT_RANGE_END,
@@ -1001,109 +1001,6 @@ function createSession({ host, port } = {}) {
   // =============================================================================
   // HUMAN TYPE - Realistic character-by-character keyboard input
   // =============================================================================
-
-  // Map characters to their physical key representations for CDP
-  // Uppercase letters and shifted symbols need Shift modifier
-  const SHIFT_SYMBOLS = {
-    '!': '1', '@': '2', '#': '3', '$': '4', '%': '5',
-    '^': '6', '&': '7', '*': '8', '(': '9', ')': '0',
-    '_': '-', '+': '=', '{': '[', '}': ']', '|': '\\',
-    ':': ';', '"': "'", '<': ',', '>': '.', '?': '/',
-    '~': '`',
-  };
-
-  function charToKeyDef(char) {
-    // Special characters handled by keyboardPress
-    if (char === '\n') return { special: 'Enter' };
-    if (char === '\t') return { special: 'Tab' };
-
-    // Space
-    if (char === ' ') {
-      return { key: ' ', code: 'Space', keyCode: 32, text: ' ', shift: false };
-    }
-
-    // Uppercase letter
-    if (char >= 'A' && char <= 'Z') {
-      return {
-        key: char,
-        code: 'Key' + char,
-        keyCode: char.charCodeAt(0),
-        text: char,
-        shift: true
-      };
-    }
-
-    // Lowercase letter
-    if (char >= 'a' && char <= 'z') {
-      return {
-        key: char,
-        code: 'Key' + char.toUpperCase(),
-        keyCode: char.toUpperCase().charCodeAt(0),
-        text: char,
-        shift: false
-      };
-    }
-
-    // Digit
-    if (char >= '0' && char <= '9') {
-      return {
-        key: char,
-        code: 'Digit' + char,
-        keyCode: char.charCodeAt(0),
-        text: char,
-        shift: false
-      };
-    }
-
-    // Shifted symbol
-    if (SHIFT_SYMBOLS[char]) {
-      const baseChar = SHIFT_SYMBOLS[char];
-      let code;
-      if (baseChar >= '0' && baseChar <= '9') {
-        code = 'Digit' + baseChar;
-      } else {
-        // Punctuation keys
-        const punctCodes = {
-          '-': 'Minus', '=': 'Equal', '[': 'BracketLeft', ']': 'BracketRight',
-          '\\': 'Backslash', ';': 'Semicolon', "'": 'Quote',
-          ',': 'Comma', '.': 'Period', '/': 'Slash', '`': 'Backquote',
-        };
-        code = punctCodes[baseChar] || 'Unidentified';
-      }
-      return {
-        key: char,
-        code,
-        keyCode: baseChar.charCodeAt(0),
-        text: char,
-        shift: true
-      };
-    }
-
-    // Unshifted punctuation
-    const punctCodes = {
-      '-': 'Minus', '=': 'Equal', '[': 'BracketLeft', ']': 'BracketRight',
-      '\\': 'Backslash', ';': 'Semicolon', "'": 'Quote',
-      ',': 'Comma', '.': 'Period', '/': 'Slash', '`': 'Backquote',
-    };
-    if (punctCodes[char]) {
-      return {
-        key: char,
-        code: punctCodes[char],
-        keyCode: char.charCodeAt(0),
-        text: char,
-        shift: false
-      };
-    }
-
-    // Fallback: use the character directly
-    return {
-      key: char,
-      code: 'Unidentified',
-      keyCode: char.charCodeAt(0),
-      text: char,
-      shift: false
-    };
-  }
 
   /**
    * Type text character-by-character using individual keyDown/keyUp events
