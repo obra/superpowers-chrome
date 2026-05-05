@@ -19,10 +19,21 @@ const crypto = require('crypto');
 const { createOverride } = require('./host-override');
 const { getElementSelector, getElementSelectorAll } = require('./lib/element-selector');
 const { KEY_DEFINITIONS } = require('./lib/key-definitions');
-
-// Port range for dynamic allocation (tried sequentially starting at 9222 for backward compat)
-const PORT_RANGE_START = 9222;
-const PORT_RANGE_END = 12111;
+const {
+  PORT_RANGE_START,
+  PORT_RANGE_END,
+  chromeHttpAt,
+  getXdgCacheHome,
+  getChromeProfileDir,
+  getProfileMetaPath,
+  readProfileMeta,
+  writeProfileMeta,
+  clearProfileMeta,
+  isPortAlive,
+  isPortFree,
+  findAvailablePort,
+  buildChromeArgs,
+} = require('./lib/chrome-launcher-helpers');
 
 // Minimal WebSocket client implementation (dependency-free)
 class WebSocketClient {
@@ -312,25 +323,6 @@ function createSession({ host, port } = {}) {
   }
 
   // HTTP helper with explicit host/port — used for probing ports before setting activePort
-  async function chromeHttpAt(host, port, path, method = 'GET') {
-    return new Promise((resolve, reject) => {
-      const options = { hostname: host, port, path, method };
-
-      const req = http.request(options, (res) => {
-        let data = '';
-        res.on('data', chunk => data += chunk);
-        res.on('end', () => {
-          if (!data) { resolve({}); return; }
-          try { resolve(JSON.parse(data)); }
-          catch (e) { resolve({ message: data }); }
-        });
-      });
-
-      req.on('error', reject);
-      req.end();
-    });
-  }
-
   // Helper to make HTTP requests to Chrome on the active port
   async function chromeHttp(path, method = 'GET') {
     return chromeHttpAt(CHROME_DEBUG_HOST, activePort, path, method);
@@ -1853,49 +1845,6 @@ function createSession({ host, port } = {}) {
     }
   }
 
-  function buildChromeArgs({ chosenPort, chromeUserDataDir, chromeHeadless }) {
-    const args = [
-      `--remote-debugging-port=${chosenPort}`,
-      `--user-data-dir=${chromeUserDataDir}`,
-      '--no-first-run',
-      '--no-default-browser-check',
-      '--disable-background-networking',
-      '--disable-background-timer-throttling',
-      '--disable-backgrounding-occluded-windows',
-      '--disable-breakpad',
-      '--disable-client-side-phishing-detection',
-      '--disable-component-update',
-      '--disable-default-apps',
-      '--disable-dev-shm-usage',
-      '--disable-extensions',
-      '--disable-features=TranslateUI',
-      '--disable-hang-monitor',
-      '--disable-ipc-flooding-protection',
-      '--disable-popup-blocking',
-      '--disable-prompt-on-repost',
-      '--disable-sync',
-      '--force-color-profile=srgb',
-      '--metrics-recording-only',
-      '--no-sandbox',
-      '--safebrowsing-disable-auto-update',
-      '--disable-blink-features=AutomationControlled'
-    ];
-
-    if (chromeHeadless) {
-      args.push('--headless=new');
-    }
-
-    // CHROME_EXTRA_ARGS: whitespace-separated extra flags to append, e.g. for
-    // software WebGL in headless containers:
-    //   CHROME_EXTRA_ARGS="--use-gl=angle --use-angle=swiftshader-webgl --enable-unsafe-swiftshader"
-    const extraArgs = process.env.CHROME_EXTRA_ARGS;
-    if (extraArgs) {
-      const tokens = extraArgs.split(/\s+/).filter(Boolean);
-      args.push(...tokens);
-    }
-
-    return args;
-  }
 
   async function startChrome(headless = null, profileName = null, port = null) {
     const { spawn } = require('child_process');
@@ -2246,117 +2195,6 @@ function createSession({ host, port } = {}) {
   async function clearConsoleMessages(tabIndexOrWsUrl) {
     const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
     consoleMessages.set(wsUrl, []);
-  }
-
-  // Session and directory management
-  function getXdgCacheHome() {
-    const os = require('os');
-    const path = require('path');
-
-    // Check XDG_CACHE_HOME environment variable first
-    if (process.env.XDG_CACHE_HOME) {
-      return process.env.XDG_CACHE_HOME;
-    }
-
-    // Fall back to platform-specific defaults
-    const platform = os.platform();
-    const homeDir = os.homedir();
-
-    if (platform === 'darwin') {
-      return path.join(homeDir, 'Library', 'Caches');
-    } else if (platform === 'win32') {
-      return process.env.LOCALAPPDATA || path.join(homeDir, 'AppData', 'Local');
-    } else {
-      // Linux and other Unix-like systems
-      return path.join(homeDir, '.cache');
-    }
-  }
-
-  function getChromeProfileDir(profileName = 'superpowers-chrome') {
-    const path = require('path');
-    const cacheHome = getXdgCacheHome();
-    return path.join(cacheHome, 'superpowers', 'browser-profiles', profileName);
-  }
-
-  // --- Dynamic port allocation and per-profile meta.json ---
-  //
-  // Each profile gets a sibling meta.json file next to its data directory:
-  //   ~/.cache/superpowers/browser-profiles/superpowers-chrome/       ← profile data
-  //   ~/.cache/superpowers/browser-profiles/superpowers-chrome.meta.json ← port/pid tracking
-  //
-  // This enables:
-  //   - Reconnection to Chrome instances started by previous sessions
-  //   - Multiple parallel Chrome instances (different profiles = different ports)
-  //   - Collision detection (port already in use by another profile or process)
-
-  function getProfileMetaPath(profileName = 'superpowers-chrome') {
-    const path = require('path');
-    const cacheHome = getXdgCacheHome();
-    return path.join(cacheHome, 'superpowers', 'browser-profiles', `${profileName}.meta.json`);
-  }
-
-  function readProfileMeta(profileName = 'superpowers-chrome') {
-    const fs = require('fs');
-    try {
-      const data = fs.readFileSync(getProfileMetaPath(profileName), 'utf8');
-      return JSON.parse(data);
-    } catch {
-      return null;
-    }
-  }
-
-  function writeProfileMeta(profileName, data) {
-    const fs = require('fs');
-    const path = require('path');
-    const metaPath = getProfileMetaPath(profileName);
-    // Ensure parent directory exists
-    fs.mkdirSync(path.dirname(metaPath), { recursive: true });
-    fs.writeFileSync(metaPath, JSON.stringify(data, null, 2) + '\n');
-  }
-
-  function clearProfileMeta(profileName) {
-    const fs = require('fs');
-    try {
-      fs.unlinkSync(getProfileMetaPath(profileName));
-    } catch {
-      // Already absent — nothing to do
-    }
-  }
-
-  // Check if a port has a live Chrome DevTools instance, optionally verify PID
-  async function isPortAlive(host, port, expectedPid = null) {
-    try {
-      const data = await chromeHttpAt(host, port, '/json/version');
-      // Verify it's actually Chrome (not some other service on this port)
-      if (!data || !data.Browser) return false;
-      // If we have an expected PID, verify the process still exists
-      if (expectedPid) {
-        try { process.kill(expectedPid, 0); } // signal 0 = existence check
-        catch { return false; }
-      }
-      return true;
-    } catch {
-      return false;
-    }
-  }
-
-  // Probe whether a port is free (no listener) using a temporary TCP server
-  function isPortFree(port) {
-    const net = require('net');
-    return new Promise((resolve) => {
-      const server = net.createServer();
-      server.once('error', () => resolve(false));
-      server.once('listening', () => { server.close(() => resolve(true)); });
-      server.listen(port, '127.0.0.1');
-    });
-  }
-
-  // Find first available port in range. Starts at PORT_RANGE_START (9222) for backward compat.
-  async function findAvailablePort(start = PORT_RANGE_START, end = PORT_RANGE_END) {
-    for (let port = start; port <= end; port++) {
-      if (await isPortFree(port)) return port;
-    }
-    throw new Error(`No available port in range ${start}-${end}`);
   }
 
   function getActivePort() {
