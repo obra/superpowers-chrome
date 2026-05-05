@@ -13878,7 +13878,7 @@ import { createRequire } from "module";
 var __filename = fileURLToPath(import.meta.url);
 var __dirname = dirname(__filename);
 var require2 = createRequire(import.meta.url);
-var chromeLib = require2(join(__dirname, "../../skills/browsing/chrome-ws-lib.js"));
+var chromeLib = require2(join(__dirname, "../../skills/browsing/chrome-ws-lib.js")).createSession();
 var chromeStarted = false;
 function hasDisplay() {
   const platform = process.platform;

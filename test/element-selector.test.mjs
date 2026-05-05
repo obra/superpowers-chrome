@@ -4,7 +4,8 @@ import { createRequire } from 'node:module';
 import { JSDOM } from 'jsdom';
 
 const require = createRequire(import.meta.url);
-const { getElementSelector } = require('../skills/browsing/chrome-ws-lib.js');
+const { createSession } = require('../skills/browsing/chrome-ws-lib.js');
+const { getElementSelector } = createSession();
 
 // Helper: create a JSDOM document with specified elements, evaluate the
 // generated selector expression, and return the picked element.

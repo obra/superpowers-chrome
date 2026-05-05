@@ -3,7 +3,7 @@
  * Run with: node test-viewport.js
  */
 
-const chromeLib = require('./chrome-ws-lib.js');
+const chromeLib = require('./chrome-ws-lib.js').createSession();
 
 async function testViewportFunctionsExist() {
   console.log('Testing that viewport functions are exported...');
