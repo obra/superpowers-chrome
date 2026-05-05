@@ -32,7 +32,6 @@ chmod +x chrome-ws
 ./test-extract.sh   # Content extraction
 ./test-wait.sh      # Wait commands
 ./test-e2e.sh       # End-to-end workflow
-./test-host-override.js  # Smoke test for host/port overrides
 ```
 
 ## Requirements

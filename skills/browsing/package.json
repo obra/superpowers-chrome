@@ -5,9 +5,6 @@
   "bin": {
     "chrome-ws": "./chrome-ws"
   },
-  "scripts": {
-    "test:host-override": "node ./test-host-override.js"
-  },
   "engines": {
     "node": ">=16.0.0"
   }

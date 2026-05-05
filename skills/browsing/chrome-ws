@@ -8,13 +8,11 @@ const portArg = allArgs.find(a => a.startsWith('--port='));
 const positionalArgs = allArgs.filter(a => !a.startsWith('--port='));
 const [command, wsUrlOrIndex, ...args] = positionalArgs;
 
-const {
-  CHROME_DEBUG_HOST,
-  CHROME_DEBUG_PORT,
-  CHROME_DEBUG_BASE,
-  rewriteWsUrl,
-  WS_OVERRIDE_ENABLED
-} = require('./host-override');
+const hostOverride = require('./host-override').createOverride();
+const CHROME_DEBUG_HOST = hostOverride.getHost();
+const CHROME_DEBUG_PORT = hostOverride.getPort();
+const WS_OVERRIDE_ENABLED = hostOverride.isOverrideEnabled();
+const rewriteWsUrl = hostOverride.rewriteWsUrl;
 
 // Effective port: --port=N flag overrides CHROME_WS_PORT env / default 9222
 const effectivePort = portArg ? parseInt(portArg.split('=')[1], 10) : CHROME_DEBUG_PORT;

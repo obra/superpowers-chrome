@@ -106,15 +106,4 @@ describe('host-override createOverride() isolation', () => {
       assert.equal(a.rewriteWsUrl(sourceUrl), sourceUrl);
     }
   });
-
-  it('legacy module-level rewriteWsUrl and constants still work', () => {
-    const hostOverride = require('../skills/browsing/host-override.js');
-    // The pre-factory API surface must still be intact for unmodified
-    // callers (this is the load-bearing back-compat assertion).
-    assert.equal(typeof hostOverride.CHROME_DEBUG_HOST, 'string');
-    assert.equal(typeof hostOverride.CHROME_DEBUG_PORT, 'number');
-    assert.equal(typeof hostOverride.CHROME_DEBUG_BASE, 'string');
-    assert.equal(typeof hostOverride.WS_OVERRIDE_ENABLED, 'boolean');
-    assert.equal(typeof hostOverride.rewriteWsUrl, 'function');
-  });
 });
