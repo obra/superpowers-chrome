@@ -23,6 +23,7 @@ const { generateHtmlDiff } = require('./lib/html-diff');
 const { createState } = require('./lib/session-state');
 const { attachCookies } = require('./lib/cookies');
 const { attachViewport } = require('./lib/viewport');
+const { attachEvaluation } = require('./lib/evaluation');
 const {
   PORT_RANGE_START,
   PORT_RANGE_END,
@@ -1394,76 +1395,7 @@ function createSession({ host, port } = {}) {
     };
   }
 
-  // =============================================================================
-  // EVALUATE FUNCTIONS (JRV-126: Better return value handling)
-  // =============================================================================
-
-  /**
-   * Legacy evaluate - may return undefined for complex objects
-   */
-  async function evaluate(tabIndexOrWsUrl, expression) {
-    const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
-    const result = await sendCdpCommand(wsUrl, 'Runtime.evaluate', {
-      expression,
-      returnByValue: true,
-      awaitPromise: true
-    });
-    return result.result.value;
-  }
-
-  /**
-   * Enhanced evaluate with automatic JSON serialization (JRV-126)
-   * Handles complex objects, arrays, DOM nodes better
-   */
-  async function evaluateJson(tabIndexOrWsUrl, expression) {
-    const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
-
-    // Wrap in JSON.stringify to handle complex return values
-    const wrappedExpression = `
-      (() => {
-        try {
-          const result = ${expression};
-          if (result === undefined) return { __type: 'undefined' };
-          if (result === null) return null;
-          if (result instanceof Element) {
-            return {
-              __type: 'Element',
-              tagName: result.tagName,
-              id: result.id,
-              className: result.className,
-              textContent: result.textContent?.slice(0, 100)
-            };
-          }
-          if (typeof result === 'function') {
-            return { __type: 'function', name: result.name || 'anonymous' };
-          }
-          return result;
-        } catch (e) {
-          return { __type: 'error', message: e.message };
-        }
-      })()
-    `;
-
-    const result = await sendCdpCommand(wsUrl, 'Runtime.evaluate', {
-      expression: wrappedExpression,
-      returnByValue: true,
-      awaitPromise: true
-    });
-
-    return result.result.value;
-  }
-
-  /**
-   * Get raw CDP result including type information
-   */
-  async function evaluateRaw(tabIndexOrWsUrl, expression) {
-    const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
-    const result = await sendCdpCommand(wsUrl, 'Runtime.evaluate', {
-      expression,
-      returnByValue: false
-    });
-    return result.result;
-  }
+  const { evaluate, evaluateJson, evaluateRaw } = attachEvaluation({ resolveWsUrl, sendCdpCommand });
 
   // =============================================================================
   // NAVIGATION FUNCTIONS (JRV-128: SPA navigation support)
