@@ -21,6 +21,7 @@ const { getElementSelector, getElementSelectorAll } = require('./lib/element-sel
 const { KEY_DEFINITIONS, charToKeyDef } = require('./lib/key-definitions');
 const { generateHtmlDiff } = require('./lib/html-diff');
 const { createState } = require('./lib/session-state');
+const { attachCookies } = require('./lib/cookies');
 const {
   PORT_RANGE_START,
   PORT_RANGE_END,
@@ -2633,15 +2634,7 @@ function createSession({ host, port } = {}) {
     return result.result?.value || {};
   }
 
-  /**
-   * Clear all browser cookies
-   * @param {number|string} tabIndexOrWsUrl - Tab index (0, 1, etc.) or WebSocket URL
-   * @returns {Promise<void>}
-   */
-  async function clearCookies(tabIndexOrWsUrl) {
-    const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
-    await sendCdpCommand(wsUrl, 'Network.clearBrowserCookies', {});
-  }
+  const { clearCookies } = attachCookies({ resolveWsUrl, sendCdpCommand });
 
   return {
     // Internal helpers (exported for testing)
