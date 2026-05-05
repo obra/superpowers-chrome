@@ -13940,7 +13940,7 @@ var UseBrowserParams = {
   action: external_exports.nativeEnum(BrowserAction).describe("Action to perform"),
   tab_index: external_exports.number().int().min(0).default(0).describe("Which tab. Indices shift when tabs close."),
   selector: external_exports.string().optional().describe("CSS or XPath selector. XPath must start with / or //. Optional for type (types into current focus)."),
-  payload: external_exports.string().optional().describe('Action-specific data: navigate=URL | type=text (\\t=Tab, \\n=Enter) | extract=format (text|html|markdown) | screenshot=filename | eval=JavaScript | select=option value | attr=attribute name | await_text=text to wait for | keyboard_press=key name (Tab, Enter, Space, Escape, Arrow*, F1-F12) | drag_drop=target CSS selector or JSON {"x":N,"y":N} | mouse_move=JSON {"x":N,"y":N} or {"x":N,"y":N,"steps":N,"fromX":N,"fromY":N} | scroll=JSON {"deltaX":N,"deltaY":N} or direction (up/down/left/right) | file_upload=JSON {"files":["path1","path2"]}'),
+  payload: external_exports.string().optional().describe('Action-specific data: navigate=URL | type=text (\\t=Tab, \\n=Enter) | extract=format (text|html|markdown) | screenshot=filename | eval=JavaScript | select=option value or visible label, or JSON array of either for <select multiple> | attr=attribute name | await_text=text to wait for | keyboard_press=key name (Tab, Enter, Space, Escape, Arrow*, F1-F12) | drag_drop=target CSS selector or JSON {"x":N,"y":N} | mouse_move=JSON {"x":N,"y":N} or {"x":N,"y":N,"steps":N,"fromX":N,"fromY":N} | scroll=JSON {"deltaX":N,"deltaY":N} or direction (up/down/left/right) | file_upload=JSON {"files":["path1","path2"]}'),
   timeout: external_exports.number().int().min(0).max(6e4).default(5e3).describe("Timeout in ms. Only for await actions."),
   // Keyboard modifiers for keyboard_press (Shift+Tab, Ctrl+A, etc.)
   modifiers: external_exports.object({
@@ -14125,10 +14125,20 @@ async function executeBrowserAction(params) {
         throw new Error("select requires selector");
       }
       if (!params.payload || typeof params.payload !== "string") {
-        throw new Error("select requires payload with option value");
+        throw new Error("select requires payload with option value, label, or JSON array");
       }
-      const selectResult = await chromeLib.selectOptionWithCapture(tabIndex, params.selector, params.payload);
-      return formatActionResponse(selectResult, `Selected "${params.payload}" in: ${params.selector}`);
+      let selectValue = params.payload;
+      if (params.payload.trim().startsWith("[")) {
+        try {
+          const parsed = JSON.parse(params.payload);
+          if (Array.isArray(parsed) && parsed.every((v) => typeof v === "string")) {
+            selectValue = parsed;
+          }
+        } catch {
+        }
+      }
+      const selectResult = await chromeLib.selectOptionWithCapture(tabIndex, params.selector, selectValue);
+      return formatActionResponse(selectResult, `Selected ${JSON.stringify(selectValue)} in: ${params.selector}`);
     case "eval" /* EVAL */:
       if (!params.payload || typeof params.payload !== "string") {
         throw new Error("eval requires payload with JavaScript code");
@@ -14398,7 +14408,8 @@ navigate: {"action": "navigate", "payload": "URL"} \u2192 Before/after HTML + di
 click: {"action": "click", "selector": "CSS_or_XPath"} \u2192 React-compatible CDP events
 type: {"action": "type", "payload": "text", "selector": "optional"} \u2192 Text input (\\t=Tab, \\n=Enter)
 keyboard_press: {"action": "keyboard_press", "payload": "Tab"} \u2192 Special keys
-select: {"action": "select", "selector": "select", "payload": "option_value"}
+select: {"action": "select", "selector": "select", "payload": "value_or_visible_label"}
+select: {"action": "select", "selector": "select[multiple]", "payload": "[\\"opt1\\",\\"opt2\\"]"} \u2192 Multi-select
 eval: {"action": "eval", "payload": "JavaScript_code"}
 
 ## Mouse Actions (CDP-Level \u2014 bypasses synthetic event restrictions)

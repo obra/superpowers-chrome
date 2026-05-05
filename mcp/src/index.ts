@@ -117,7 +117,7 @@ const UseBrowserParams = {
     .describe("CSS or XPath selector. XPath must start with / or //. Optional for type (types into current focus)."),
   payload: z.string()
     .optional()
-    .describe("Action-specific data: navigate=URL | type=text (\\t=Tab, \\n=Enter) | extract=format (text|html|markdown) | screenshot=filename | eval=JavaScript | select=option value | attr=attribute name | await_text=text to wait for | keyboard_press=key name (Tab, Enter, Space, Escape, Arrow*, F1-F12) | drag_drop=target CSS selector or JSON {\"x\":N,\"y\":N} | mouse_move=JSON {\"x\":N,\"y\":N} or {\"x\":N,\"y\":N,\"steps\":N,\"fromX\":N,\"fromY\":N} | scroll=JSON {\"deltaX\":N,\"deltaY\":N} or direction (up/down/left/right) | file_upload=JSON {\"files\":[\"path1\",\"path2\"]}"),
+    .describe("Action-specific data: navigate=URL | type=text (\\t=Tab, \\n=Enter) | extract=format (text|html|markdown) | screenshot=filename | eval=JavaScript | select=option value or visible label, or JSON array of either for <select multiple> | attr=attribute name | await_text=text to wait for | keyboard_press=key name (Tab, Enter, Space, Escape, Arrow*, F1-F12) | drag_drop=target CSS selector or JSON {\"x\":N,\"y\":N} | mouse_move=JSON {\"x\":N,\"y\":N} or {\"x\":N,\"y\":N,\"steps\":N,\"fromX\":N,\"fromY\":N} | scroll=JSON {\"deltaX\":N,\"deltaY\":N} or direction (up/down/left/right) | file_upload=JSON {\"files\":[\"path1\",\"path2\"]}"),
   timeout: z.number()
     .int()
     .min(0)
@@ -389,10 +389,21 @@ async function executeBrowserAction(params: UseBrowserInput): Promise<string> {
         throw new Error("select requires selector");
       }
       if (!params.payload || typeof params.payload !== 'string') {
-        throw new Error("select requires payload with option value");
+        throw new Error("select requires payload with option value, label, or JSON array");
       }
-      const selectResult = await chromeLib.selectOptionWithCapture(tabIndex, params.selector, params.payload);
-      return formatActionResponse(selectResult, `Selected "${params.payload}" in: ${params.selector}`);
+      let selectValue: string | string[] = params.payload;
+      if (params.payload.trim().startsWith('[')) {
+        try {
+          const parsed = JSON.parse(params.payload);
+          if (Array.isArray(parsed) && parsed.every((v: unknown) => typeof v === 'string')) {
+            selectValue = parsed;
+          }
+        } catch {
+          // Not JSON — treat the literal string as a single value
+        }
+      }
+      const selectResult = await chromeLib.selectOptionWithCapture(tabIndex, params.selector, selectValue);
+      return formatActionResponse(selectResult, `Selected ${JSON.stringify(selectValue)} in: ${params.selector}`);
 
     case BrowserAction.EVAL:
       if (!params.payload || typeof params.payload !== 'string') {
@@ -705,7 +716,8 @@ navigate: {"action": "navigate", "payload": "URL"} → Before/after HTML + diff
 click: {"action": "click", "selector": "CSS_or_XPath"} → React-compatible CDP events
 type: {"action": "type", "payload": "text", "selector": "optional"} → Text input (\\t=Tab, \\n=Enter)
 keyboard_press: {"action": "keyboard_press", "payload": "Tab"} → Special keys
-select: {"action": "select", "selector": "select", "payload": "option_value"}
+select: {"action": "select", "selector": "select", "payload": "value_or_visible_label"}
+select: {"action": "select", "selector": "select[multiple]", "payload": "[\\"opt1\\",\\"opt2\\"]"} → Multi-select
 eval: {"action": "eval", "payload": "JavaScript_code"}
 
 ## Mouse Actions (CDP-Level — bypasses synthetic event restrictions)
