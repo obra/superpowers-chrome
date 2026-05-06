@@ -134,7 +134,7 @@ function findPidOnPort(port) {
   const { execSync } = require('child_process');
   try {
     if (process.platform === 'darwin' || process.platform === 'linux') {
-      const out = execSync(`lsof -ti:${port}`, {
+      const out = execSync(`lsof -ti:${port} -sTCP:LISTEN`, {
         encoding: 'utf8',
         stdio: ['ignore', 'pipe', 'ignore']
       }).trim();

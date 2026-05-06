@@ -4,6 +4,7 @@ const {
   clearProfileMeta,
   isPortAlive,
   findAvailablePort,
+  findPidOnPort,
   buildChromeArgs,
   getChromeProfileDir,
 } = require('./chrome-launcher-helpers');
@@ -142,7 +143,23 @@ function attachChromeProcess({ state, chromeHttp, getTabs, newTab }) {
   }
 
   async function killChrome() {
-    if (!state.chromeProcess) {
+    let pidToKill = null;
+
+    if (state.chromeProcess && state.chromeProcess.pid) {
+      pidToKill = state.chromeProcess.pid;
+    } else if (state.activePort) {
+      // We didn't launch this Chrome (or already dropped the handle), but we
+      // know the port. Kill whoever holds it so showBrowser/hideBrowser can
+      // restart cleanly in the target mode.
+      pidToKill = findPidOnPort(state.activePort);
+    }
+
+    if (pidToKill === null) {
+      // Nothing to kill. Still clear meta.json so other sessions don't
+      // think there's a Chrome here.
+      clearProfileMeta(state.chromeProfileName);
+      state.chromeProcess = null;
+      state.activePort = CHROME_DEBUG_PORT;
       return;
     }
 
@@ -155,20 +172,16 @@ function attachChromeProcess({ state, chromeHttp, getTabs, newTab }) {
         // Ignore — Chrome might already be dead.
       }
 
-      // Force kill if still running
-      if (state.chromeProcess && state.chromeProcess.pid) {
-        try {
-          process.kill(state.chromeProcess.pid, 'SIGTERM');
-          await new Promise(resolve => setTimeout(resolve, 500));
-        } catch (_e) {
-          // Process might already be dead.
-        }
+      try {
+        process.kill(pidToKill, 'SIGTERM');
+        await new Promise(resolve => setTimeout(resolve, 500));
+      } catch (_e) {
+        // Process might already be dead.
       }
     } catch (e) {
       console.error(`Error killing Chrome: ${e.message}`);
     }
 
-    // Clean up meta.json so other sessions know this port is free.
     clearProfileMeta(state.chromeProfileName);
     state.chromeProcess = null;
     state.activePort = CHROME_DEBUG_PORT;

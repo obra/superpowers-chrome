@@ -98,4 +98,20 @@ describe('real Chrome smoke', { skip: !CHROME_AVAILABLE && 'Chrome not installed
   it('clearCookies executes without error', async () => {
     await session.clearCookies(0);
   });
+
+  it('hideBrowser kills a Chrome the current session reconnected to', async () => {
+    const s2 = createSession();
+    s2.setProfileName(session.getProfileName());
+
+    // s2 reconnects: state.activePort gets set, state.chromeProcess stays null.
+    // Without the port-lookup fallback, this would fail because the original
+    // Chrome (owned by `session`) holds the port.
+    await s2.startChrome(false /* headed — flips mode if currently headless */);
+
+    assert.equal((await s2.getBrowserMode()).mode, 'headed');
+
+    // s2 owns the new Chrome now; tear it down so the outer after() doesn't
+    // try to kill an already-dead process.
+    await s2.killChrome();
+  });
 });
