@@ -303,8 +303,7 @@ if (command === 'start') {
 
 // Command: pid - print Chrome PID (for X11 window management, etc.)
 if (command === 'pid') {
-  const lib = require('./chrome-ws-lib.js').createSession();
-  const pid = lib.getChromePid();
+  const pid = session.getChromePid();
   if (pid === null) {
     console.error('Chrome is not running (started via MCP). PID is only available when Chrome was started in this process.');
     process.exit(1);
@@ -315,12 +314,11 @@ if (command === 'pid') {
 
 // Command: info - print Chrome info as JSON (pid, mode, profile, port)
 if (command === 'info') {
-  const lib = require('./chrome-ws-lib.js').createSession();
   (async () => {
     try {
-      const mode = await lib.getBrowserMode();
+      const mode = await session.getBrowserMode();
       // Also try to get PID from meta.json if available
-      const meta = lib.readProfileMeta ? lib.readProfileMeta(mode.profile) : null;
+      const meta = session.readProfileMeta ? session.readProfileMeta(mode.profile) : null;
       const info = {
         pid: meta ? meta.pid : mode.pid,
         port: meta ? meta.port : mode.port,
@@ -701,9 +699,9 @@ if (command === 'screenshot') {
   }
   (async () => {
     try {
-      const lib = require('./chrome-ws-lib.js').createSession();
-      const savedPath = await lib.screenshot(wsUrlOrIndex, filename, null, fullPage);
+      const savedPath = await session.screenshot(wsUrlOrIndex, filename, null, fullPage);
       console.log(`Screenshot saved to ${savedPath}`);
+      await session.closeAllConnections();
     } catch (e) {
       console.error('Screenshot failed:', e.message);
       process.exit(1);
