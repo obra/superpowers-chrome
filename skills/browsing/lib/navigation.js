@@ -33,7 +33,7 @@ const CMD_RUNTIME_ENABLE = 101;
  * `attachNavigation({ state, resolveWsUrl, sendCdpCommand,
  * capturePageArtifacts })` returns the bound methods.
  */
-function attachNavigation({ state, resolveWsUrl, sendCdpCommand, capturePageArtifacts }) {
+function attachNavigation({ state, resolveWsUrl, sendCdpCommand, capturePageArtifacts, evaluate }) {
   async function navigate(tabIndexOrWsUrl, url, autoCapture = false) {
     const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
 
@@ -173,13 +173,12 @@ function attachNavigation({ state, resolveWsUrl, sendCdpCommand, capturePageArti
   }
 
   async function waitForElement(tabIndexOrWsUrl, selector, timeout = 5000) {
-    const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
     const js = `
       new Promise((resolve, reject) => {
-        const timeout = setTimeout(() => reject(new Error('Timeout')), ${timeout});
+        const t = setTimeout(() => reject(new Error('waitForElement timeout: ' + ${JSON.stringify(selector)})), ${timeout});
         const check = () => {
           if (${getElementSelector(selector)}) {
-            clearTimeout(timeout);
+            clearTimeout(t);
             resolve(true);
           } else {
             setTimeout(check, 100);
@@ -188,20 +187,16 @@ function attachNavigation({ state, resolveWsUrl, sendCdpCommand, capturePageArti
         check();
       })
     `;
-    await sendCdpCommand(wsUrl, 'Runtime.evaluate', {
-      expression: js,
-      awaitPromise: true
-    });
+    await evaluate(tabIndexOrWsUrl, js);
   }
 
   async function waitForText(tabIndexOrWsUrl, text, timeout = 5000) {
-    const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
     const js = `
       new Promise((resolve, reject) => {
-        const timeout = setTimeout(() => reject(new Error('Timeout')), ${timeout});
+        const t = setTimeout(() => reject(new Error('waitForText timeout: ' + ${JSON.stringify(text)})), ${timeout});
         const check = () => {
           if (document.body.textContent.includes(${JSON.stringify(text)})) {
-            clearTimeout(timeout);
+            clearTimeout(t);
             resolve(true);
           } else {
             setTimeout(check, 100);
@@ -210,10 +205,7 @@ function attachNavigation({ state, resolveWsUrl, sendCdpCommand, capturePageArti
         check();
       })
     `;
-    await sendCdpCommand(wsUrl, 'Runtime.evaluate', {
-      expression: js,
-      awaitPromise: true
-    });
+    await evaluate(tabIndexOrWsUrl, js);
   }
 
   return { navigate, waitForElement, waitForText };

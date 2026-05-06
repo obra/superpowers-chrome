@@ -126,7 +126,7 @@ function createSession({ host, port } = {}) {
   });
 
   const { navigate, waitForElement, waitForText } =
-    attachNavigation({ state, resolveWsUrl, sendCdpCommand, capturePageArtifacts });
+    attachNavigation({ state, resolveWsUrl, sendCdpCommand, capturePageArtifacts, evaluate });
 
   const { setViewport, clearViewport, getViewport } = attachViewport({ resolveWsUrl, sendCdpCommand });
   const { clearCookies } = attachCookies({ resolveWsUrl, sendCdpCommand });
