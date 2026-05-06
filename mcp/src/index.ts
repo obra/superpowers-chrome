@@ -67,7 +67,7 @@ if (forceHeadless) {
 enum BrowserAction {
   NAVIGATE = "navigate",
   CLICK = "click",              // Uses CDP mouse events (works with React)
-  TYPE = "type",                // Uses CDP insertText (works with React)
+  TYPE = "type",                // Uses CDP fill (works with React)
   EXTRACT = "extract",
   SCREENSHOT = "screenshot",
   EVAL = "eval",
