@@ -1,6 +1,6 @@
-import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
 import { createRequire } from 'node:module';
+import { describe, it } from 'node:test';
 
 const require = createRequire(import.meta.url);
 const { KEY_DEFINITIONS, charToKeyDef } = require('../../skills/browsing/lib/key-definitions.js');
