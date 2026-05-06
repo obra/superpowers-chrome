@@ -106,13 +106,25 @@ async function isPortAlive(host, port, expectedPid = null) {
 }
 
 // Probe whether a port is free (no listener) using a temporary TCP server.
-function isPortFree(port) {
+// "Free" means free on BOTH IPv4 and IPv6 — Chrome may bind ::1 only on
+// some macOS configurations, and a port bound on ::1 still appears free
+// from a 127.0.0.1 probe. Without checking both, we'd start a second
+// Chrome that races the first for the same port number on different
+// stacks, with non-deterministic answers to /json HTTP requests.
+function isPortFreeOn(host, port) {
   return new Promise((resolve) => {
     const server = net.createServer();
     server.once('error', () => resolve(false));
     server.once('listening', () => { server.close(() => resolve(true)); });
-    server.listen(port, '127.0.0.1');
+    server.listen(port, host);
   });
+}
+
+async function isPortFree(port) {
+  const v4 = await isPortFreeOn('127.0.0.1', port);
+  if (!v4) return false;
+  const v6 = await isPortFreeOn('::1', port);
+  return v6;
 }
 
 // Port range tried sequentially, starting at 9222 for backward compat.
