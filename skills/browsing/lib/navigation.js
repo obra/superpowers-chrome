@@ -10,6 +10,11 @@ const NAVIGATE_TIMEOUT_MS = 30000;
 // captured before we close the socket.
 const CONSOLE_LINGER_MS = 1000;
 
+// Fixed CDP request ids for the listener-WS setup commands. Scoped to one
+// connection's lifetime — there's nothing else on this WS sending requests.
+const CMD_PAGE_ENABLE = 100;
+const CMD_RUNTIME_ENABLE = 101;
+
 /**
  * Navigation: page-level navigation, SPA pushState navigation, and the
  * "wait for" predicates.
@@ -45,36 +50,41 @@ function attachNavigation({ state, resolveWsUrl, sendCdpCommand, capturePageArti
     // the load event would fire before the listener was ready, causing every
     // call to wait for the full 30-second hard cap.
     let navigateResult;
-    await new Promise((resolve) => {
+    await new Promise((resolve, reject) => {
       const ws = new WebSocketClient(wsUrl);
       let pageLoaded = false;
-
-      // Track setup state: we need Page.enable confirmed before we navigate.
-      const CMD_PAGE_ENABLE = 100;
-      const CMD_RUNTIME_ENABLE = 101;
       let pageEnableConfirmed = false;
       let runtimeEnableConfirmed = !autoCapture; // skip if not needed
+
+      function startNavigateIfReady() {
+        if (!pageEnableConfirmed || !runtimeEnableConfirmed) return;
+        sendCdpCommand(wsUrl, 'Page.navigate', { url })
+          .then((navResult) => { navigateResult = navResult; })
+          .catch((err) => { ws.close(); reject(err); });
+      }
 
       ws.on('message', (msg) => {
         const data = JSON.parse(msg);
 
         // Wait for our setup commands to be confirmed before navigating.
         if (data.id === CMD_PAGE_ENABLE) {
-          pageEnableConfirmed = true;
-          if (pageEnableConfirmed && runtimeEnableConfirmed) {
-            sendCdpCommand(wsUrl, 'Page.navigate', { url }).then((navResult) => {
-              navigateResult = navResult;
-            }).catch(() => {});
+          if (data.error) {
+            ws.close();
+            reject(new Error(`Page.enable failed: ${data.error.message || JSON.stringify(data.error)}`));
+            return;
           }
+          pageEnableConfirmed = true;
+          startNavigateIfReady();
           return;
         }
         if (data.id === CMD_RUNTIME_ENABLE) {
-          runtimeEnableConfirmed = true;
-          if (pageEnableConfirmed && runtimeEnableConfirmed) {
-            sendCdpCommand(wsUrl, 'Page.navigate', { url }).then((navResult) => {
-              navigateResult = navResult;
-            }).catch(() => {});
+          if (data.error) {
+            ws.close();
+            reject(new Error(`Runtime.enable failed: ${data.error.message || JSON.stringify(data.error)}`));
+            return;
           }
+          runtimeEnableConfirmed = true;
+          startNavigateIfReady();
           return;
         }
 
@@ -119,7 +129,7 @@ function attachNavigation({ state, resolveWsUrl, sendCdpCommand, capturePageArti
         if (autoCapture) {
           ws.send(JSON.stringify({ id: CMD_RUNTIME_ENABLE, method: 'Runtime.enable' }));
         }
-      });
+      }).catch((err) => { reject(err); });
 
       // Hard cap on the wait — slow servers, hung pages.
       setTimeout(() => {
