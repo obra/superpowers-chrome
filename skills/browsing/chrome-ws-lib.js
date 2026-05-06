@@ -228,9 +228,6 @@ function createSession({ host, port } = {}) {
     // Cookie management
     clearCookies,
 
-    // Legacy aliases (for backwards compatibility)
-    cdpClick: click,
-    insertText: fill,
   };
 }
 

@@ -63,27 +63,6 @@ function attachKeyboardInput({ state, resolveWsUrl, sendCdpCommand, click }) {
   }
 
   /**
-   * Type text character-by-character using insertText, escaping out to
-   * keyboardPress for \n and \t. Less realistic than humanType but doesn't
-   * synthesize key events — useful for headless contexts.
-   */
-  async function keyboardType(tabIndexOrWsUrl, text) {
-    const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
-
-    for (const char of text) {
-      if (char === '\n') {
-        await keyboardPress(tabIndexOrWsUrl, 'Enter');
-      } else if (char === '\t') {
-        await keyboardPress(tabIndexOrWsUrl, 'Tab');
-      } else {
-        await sendCdpCommand(wsUrl, 'Input.insertText', { text: char });
-      }
-    }
-
-    return { typed: text };
-  }
-
-  /**
    * Smart text input. If `selector` is supplied, focuses the element
    * (via JS focus to avoid mouse-click side effects). Then types the
    * value, treating \t as Tab, \n as Enter (unless current focus is a
@@ -257,7 +236,7 @@ function attachKeyboardInput({ state, resolveWsUrl, sendCdpCommand, click }) {
     return { typed: text, chars: text.length };
   }
 
-  return { keyboardPress, keyboardType, fill, humanType };
+  return { keyboardPress, fill, humanType };
 }
 
 module.exports = { attachKeyboardInput };

@@ -15,6 +15,7 @@ All notable changes to the superpowers-chrome MCP project.
 ### Removed
 - Legacy module-level exports from `host-override.js`: `CHROME_DEBUG_HOST`, `CHROME_DEBUG_PORT`, `CHROME_DEBUG_BASE`, `WS_OVERRIDE_ENABLED`, and top-level `rewriteWsUrl`. Use `createOverride()` instead. Keeping them alongside the factory was a footgun — load-time-baked constants can only describe one Chrome target, re-introducing the single-instance limitation the factory was added to fix.
 - `skills/browsing/test-host-override.js` smoke test (covered by `test/session-isolation.test.mjs`).
+- Legacy method aliases on the session object: `cdpClick` (use `click`), `insertText` (use `fill`). Two functions defined inside the lib closure but never publicly exported (`keyboardType`, `spaNavigate`, `hrefNavigate`) also removed. The MCP server and CLI never used the aliases; external consumers should migrate to the canonical names.
 
 ---
 

@@ -131,65 +131,6 @@ function attachNavigation({ state, resolveWsUrl, sendCdpCommand, capturePageArti
     return result.frameId;
   }
 
-  /**
-   * SPA-compatible navigation using history.pushState (JRV-128).
-   * Doesn't reload the page — works with React Router / Vue Router /
-   * etc. Pass `dispatchPopstate: false` to skip the popstate event if
-   * the consumer router doesn't want it.
-   */
-  async function spaNavigate(tabIndexOrWsUrl, path, options = {}) {
-    const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
-
-    const { state: pushState = {}, title = '', dispatchPopstate = true } = options;
-
-    const js = `
-      (() => {
-        const path = ${JSON.stringify(path)};
-        const state = ${JSON.stringify(pushState)};
-        const title = ${JSON.stringify(title)};
-
-        history.pushState(state, title, path);
-        ${dispatchPopstate ? `window.dispatchEvent(new PopStateEvent('popstate', { state }));` : ''}
-
-        return {
-          success: true,
-          path,
-          href: window.location.href
-        };
-      })()
-    `;
-
-    const result = await sendCdpCommand(wsUrl, 'Runtime.evaluate', {
-      expression: js,
-      returnByValue: true
-    });
-
-    return result.result.value;
-  }
-
-  /**
-   * Navigate using location.href — triggers a full page reload (not SPA).
-   * Provided as an alternative to `navigate` when the caller wants the
-   * browser-side navigation semantics (e.g. for back-button history).
-   */
-  async function hrefNavigate(tabIndexOrWsUrl, url) {
-    const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
-
-    const js = `
-      (() => {
-        window.location.href = ${JSON.stringify(url)};
-        return { navigating: true, url: ${JSON.stringify(url)} };
-      })()
-    `;
-
-    const result = await sendCdpCommand(wsUrl, 'Runtime.evaluate', {
-      expression: js,
-      returnByValue: true
-    });
-
-    return result.result.value;
-  }
-
   async function waitForElement(tabIndexOrWsUrl, selector, timeout = 5000) {
     const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
     const js = `
@@ -234,7 +175,7 @@ function attachNavigation({ state, resolveWsUrl, sendCdpCommand, capturePageArti
     });
   }
 
-  return { navigate, spaNavigate, hrefNavigate, waitForElement, waitForText };
+  return { navigate, waitForElement, waitForText };
 }
 
 module.exports = { attachNavigation };
