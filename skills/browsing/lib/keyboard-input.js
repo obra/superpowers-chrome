@@ -1,0 +1,263 @@
+const { KEY_DEFINITIONS, charToKeyDef } = require('./key-definitions');
+const { getElementSelector } = require('./element-selector');
+
+/**
+ * Keyboard and text-input actions: keyboardPress (named keys + modifiers),
+ * fill (smart text input with \t/\n handling), humanType (realistic
+ * per-keystroke timing for bot-detection-resistant input), and the simpler
+ * keyboardType helper.
+ *
+ * The headless/headed split inside humanType is load-bearing: in headed
+ * mode we send full keyDown/keyUp events so JS keyboard event handlers
+ * fire (and bot-detection sees them), but in headless mode rawKeyDown
+ * triggers Chrome browser shortcuts that navigate away from the page —
+ * so headless skips key events and relies on `Input.insertText` plus
+ * per-character timing for whatever realism it can offer.
+ *
+ * `attachKeyboardInput({ state, resolveWsUrl, sendCdpCommand, click })`
+ * returns the bound API. `click` is the mouse-side click — humanType
+ * uses it to focus a target before typing.
+ */
+function attachKeyboardInput({ state, resolveWsUrl, sendCdpCommand, click }) {
+  /**
+   * Press a named key (Tab, Enter, F1-F12, arrows, etc.) with optional
+   * modifiers. Sends both keyDown and keyUp; if the key has a `text`
+   * field (Tab → '\t', Enter → '\r'), it's included on keyDown so the
+   * browser fires the matching `input`/`keypress` events that form
+   * submission depends on.
+   */
+  async function keyboardPress(tabIndexOrWsUrl, keyName, modifiers = {}) {
+    const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
+
+    const keyDef = KEY_DEFINITIONS[keyName];
+    if (!keyDef) {
+      throw new Error(`Unknown key: ${keyName}. Supported keys: ${Object.keys(KEY_DEFINITIONS).join(', ')}`);
+    }
+
+    let modifierFlags = 0;
+    if (modifiers.alt) modifierFlags |= 1;
+    if (modifiers.ctrl) modifierFlags |= 2;
+    if (modifiers.meta) modifierFlags |= 4;
+    if (modifiers.shift) modifierFlags |= 8;
+
+    await sendCdpCommand(wsUrl, 'Input.dispatchKeyEvent', {
+      type: 'keyDown',
+      key: keyDef.key,
+      code: keyDef.code,
+      windowsVirtualKeyCode: keyDef.keyCode,
+      nativeVirtualKeyCode: keyDef.keyCode,
+      modifiers: modifierFlags,
+      ...(keyDef.text && { text: keyDef.text })
+    });
+
+    await sendCdpCommand(wsUrl, 'Input.dispatchKeyEvent', {
+      type: 'keyUp',
+      key: keyDef.key,
+      code: keyDef.code,
+      windowsVirtualKeyCode: keyDef.keyCode,
+      nativeVirtualKeyCode: keyDef.keyCode,
+      modifiers: modifierFlags
+    });
+
+    return { pressed: keyName, modifiers };
+  }
+
+  /**
+   * Type text character-by-character using insertText, escaping out to
+   * keyboardPress for \n and \t. Less realistic than humanType but doesn't
+   * synthesize key events — useful for headless contexts.
+   */
+  async function keyboardType(tabIndexOrWsUrl, text) {
+    const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
+
+    for (const char of text) {
+      if (char === '\n') {
+        await keyboardPress(tabIndexOrWsUrl, 'Enter');
+      } else if (char === '\t') {
+        await keyboardPress(tabIndexOrWsUrl, 'Tab');
+      } else {
+        await sendCdpCommand(wsUrl, 'Input.insertText', { text: char });
+      }
+    }
+
+    return { typed: text };
+  }
+
+  /**
+   * Smart text input. If `selector` is supplied, focuses the element
+   * (via JS focus to avoid mouse-click side effects). Then types the
+   * value, treating \t as Tab, \n as Enter (unless current focus is a
+   * <textarea>, in which case \n is inserted as a literal newline). Buffers
+   * runs of plain characters into single insertText calls — that batches
+   * fewer events and is faster than per-character.
+   *
+   * Special characters in `value`: \t = Tab, \n = Enter (or newline in textarea).
+   * Literal "\\t" / "\\n" in the input are also normalised — MCP payloads
+   * often arrive with the escapes un-evaluated.
+   */
+  async function fill(tabIndexOrWsUrl, selector, value) {
+    const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
+
+    if (selector) {
+      const focusJs = `
+        (() => {
+          const el = ${getElementSelector(selector)};
+          if (!el) return { success: false, error: 'Element not found' };
+          el.focus();
+          return { success: true, focused: document.activeElement === el };
+        })()
+      `;
+      const focusResult = await sendCdpCommand(wsUrl, 'Runtime.evaluate', {
+        expression: focusJs,
+        returnByValue: true
+      });
+      if (!focusResult.result?.value?.success) {
+        throw new Error(focusResult.result?.value?.error || 'Failed to focus element');
+      }
+    }
+
+    // Normalise literal escape sequences from MCP payloads.
+    const processedValue = value
+      .replace(/\\t/g, '\t')
+      .replace(/\\n/g, '\n');
+
+    const settle = (ms = 50) => new Promise(r => setTimeout(r, ms));
+
+    let buffer = '';
+
+    for (let i = 0; i < processedValue.length; i++) {
+      const char = processedValue[i];
+
+      if (char === '\t') {
+        if (buffer) {
+          await sendCdpCommand(wsUrl, 'Input.insertText', { text: buffer });
+          await settle();
+          buffer = '';
+        }
+        await keyboardPress(tabIndexOrWsUrl, 'Tab');
+        await settle();
+      } else if (char === '\n') {
+        if (buffer) {
+          await sendCdpCommand(wsUrl, 'Input.insertText', { text: buffer });
+          await settle();
+          buffer = '';
+        }
+        // Re-check focus — Tab may have shifted it to a different element type.
+        const currentFocus = await sendCdpCommand(wsUrl, 'Runtime.evaluate', {
+          expression: `({ isTextarea: document.activeElement?.tagName === 'TEXTAREA' })`,
+          returnByValue: true
+        });
+        const currentlyInTextarea = currentFocus.result?.value?.isTextarea || false;
+
+        if (currentlyInTextarea) {
+          await sendCdpCommand(wsUrl, 'Input.insertText', { text: '\n' });
+        } else {
+          await keyboardPress(tabIndexOrWsUrl, 'Enter');
+        }
+        await settle();
+      } else {
+        buffer += char;
+      }
+    }
+
+    if (buffer) {
+      await sendCdpCommand(wsUrl, 'Input.insertText', { text: buffer });
+    }
+
+    return { typed: true, value };
+  }
+
+  /**
+   * Type text character-by-character with realistic per-keystroke timing.
+   * In headed mode, sends keyDown/keyUp around each insertText so JS
+   * keyboard events fire — important for bot-detection-resistant input.
+   * In headless mode, skips key events because rawKeyDown is interpreted
+   * as a browser shortcut and navigates away from the page; relies on
+   * insertText + per-character delay for whatever realism it can offer.
+   *
+   * @param {object} options
+   * @param {number} [options.delay=80] - Base delay between keystrokes (ms)
+   * @param {number} [options.jitter=80] - Random jitter range (ms) — total ~80–160ms/char
+   */
+  async function humanType(tabIndexOrWsUrl, selector, text, options = {}) {
+    const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
+    const delay = options.delay !== undefined ? options.delay : 80;
+    const jitter = options.jitter !== undefined ? options.jitter : 80;
+
+    if (selector) {
+      await click(tabIndexOrWsUrl, selector);
+    }
+
+    for (const char of text) {
+      const keyDef = charToKeyDef(char);
+
+      if (keyDef.special) {
+        // \n / \t — delegate to keyboardPress for the named-key path.
+        await keyboardPress(tabIndexOrWsUrl, keyDef.special);
+      } else {
+        const sendKeyEvents = !state.chromeHeadless;
+        const modifiers = keyDef.shift ? 8 : 0; // 8 = Shift
+
+        if (sendKeyEvents) {
+          if (keyDef.shift) {
+            await sendCdpCommand(wsUrl, 'Input.dispatchKeyEvent', {
+              type: 'keyDown',
+              key: 'Shift',
+              code: 'ShiftLeft',
+              windowsVirtualKeyCode: 16,
+              nativeVirtualKeyCode: 16,
+              modifiers
+            });
+          }
+
+          await sendCdpCommand(wsUrl, 'Input.dispatchKeyEvent', {
+            type: 'rawKeyDown',
+            key: keyDef.key,
+            code: keyDef.code,
+            windowsVirtualKeyCode: keyDef.keyCode,
+            nativeVirtualKeyCode: keyDef.keyCode,
+            modifiers
+          });
+        }
+
+        // insertText drives the character into the field reliably in both modes.
+        await sendCdpCommand(wsUrl, 'Input.insertText', {
+          text: keyDef.text
+        });
+
+        if (sendKeyEvents) {
+          await sendCdpCommand(wsUrl, 'Input.dispatchKeyEvent', {
+            type: 'keyUp',
+            key: keyDef.key,
+            code: keyDef.code,
+            windowsVirtualKeyCode: keyDef.keyCode,
+            nativeVirtualKeyCode: keyDef.keyCode,
+            modifiers
+          });
+
+          if (keyDef.shift) {
+            await sendCdpCommand(wsUrl, 'Input.dispatchKeyEvent', {
+              type: 'keyUp',
+              key: 'Shift',
+              code: 'ShiftLeft',
+              windowsVirtualKeyCode: 16,
+              nativeVirtualKeyCode: 16,
+              modifiers: 0
+            });
+          }
+        }
+      }
+
+      if (delay > 0 || jitter > 0) {
+        const wait = delay + Math.random() * jitter;
+        await new Promise(resolve => setTimeout(resolve, wait));
+      }
+    }
+
+    return { typed: text, chars: text.length };
+  }
+
+  return { keyboardPress, keyboardType, fill, humanType };
+}
+
+module.exports = { attachKeyboardInput };
