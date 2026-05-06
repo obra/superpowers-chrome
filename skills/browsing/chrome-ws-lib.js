@@ -30,6 +30,7 @@ const { attachNavigation } = require('./lib/navigation');
 const { attachKeyboardInput } = require('./lib/keyboard-input');
 const { attachExtraction } = require('./lib/extraction');
 const { attachScreenshot } = require('./lib/screenshot');
+const { attachTabs } = require('./lib/tabs');
 const {
   PORT_RANGE_START,
   PORT_RANGE_END,
@@ -181,42 +182,7 @@ function createSession({ host, port } = {}) {
     state.connectionPool.clear();
   }
 
-  // HTTP helper with explicit host/port — used for probing ports before setting state.activePort
-  // Helper to make HTTP requests to Chrome on the active port
-  async function chromeHttp(path, method = 'GET') {
-    return chromeHttpAt(CHROME_DEBUG_HOST, state.activePort, path, method);
-  }
-
-  // Helper to resolve tab index or ws URL to actual ws URL
-  async function resolveWsUrl(wsUrlOrIndex) {
-    // If it's already a WebSocket URL, rewrite and return it
-    if (typeof wsUrlOrIndex === 'string' && wsUrlOrIndex.startsWith('ws://')) {
-      return rewriteWsUrl(wsUrlOrIndex, CHROME_DEBUG_HOST, state.activePort);
-    }
-
-    // If it's a number (tab index), resolve it
-    const index = typeof wsUrlOrIndex === 'number' ? wsUrlOrIndex : parseInt(wsUrlOrIndex);
-    if (!isNaN(index)) {
-      const tabs = await chromeHttp('/json');
-      if (!Array.isArray(tabs)) {
-        throw new Error('Chrome DevTools returned an invalid response — is Chrome running?');
-      }
-      const pageTabs = tabs.filter(t => t.type === 'page');
-
-      // Auto-create tab if none exist (similar to auto-start Chrome behavior)
-      if (pageTabs.length === 0) {
-        const newTabInfo = await newTab();
-        return newTabInfo.webSocketDebuggerUrl;
-      }
-
-      if (index < 0 || index >= pageTabs.length) {
-        throw new Error(`Tab index ${index} out of range (0-${pageTabs.length - 1})`);
-      }
-      return pageTabs[index].webSocketDebuggerUrl;
-    }
-
-    throw new Error(`Invalid tab specifier: ${wsUrlOrIndex}`);
-  }
+  const { chromeHttp, resolveWsUrl, getTabs, newTab, closeTab } = attachTabs({ state });
 
   /**
    * Send CDP command using pooled connection (default - maintains focus)
@@ -276,39 +242,6 @@ function createSession({ host, port } = {}) {
     });
   }
 
-  // API Functions
-
-  async function getTabs() {
-    const tabs = await chromeHttp('/json');
-    if (!Array.isArray(tabs)) {
-      return [];
-    }
-    return tabs
-      .filter(tab => tab.type === 'page')
-      .map(tab => ({
-        ...tab,
-        webSocketDebuggerUrl: rewriteWsUrl(tab.webSocketDebuggerUrl, CHROME_DEBUG_HOST, state.activePort)
-      }));
-  }
-
-  async function newTab(url = 'about:blank') {
-    const encoded = encodeURIComponent(url);
-    const tab = await chromeHttp(`/json/new?${encoded}`, 'PUT');
-    if (tab && typeof tab === 'object') {
-      tab.webSocketDebuggerUrl = rewriteWsUrl(tab.webSocketDebuggerUrl, CHROME_DEBUG_HOST, state.activePort);
-    }
-    return tab;
-  }
-
-  async function closeTab(tabIndexOrWsUrl) {
-    const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
-    const tabs = await chromeHttp('/json');
-    if (!Array.isArray(tabs)) return;
-    const tab = tabs.find(t => t.webSocketDebuggerUrl === wsUrl);
-    if (tab) {
-      await chromeHttp(`/json/close/${tab.id}`, 'GET');
-    }
-  }
 
 
   const { click, hover, drag, mouseMove, scroll, doubleClick, rightClick } =
