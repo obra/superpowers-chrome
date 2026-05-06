@@ -26,6 +26,7 @@ const { attachMouse } = require('./lib/mouse');
 const { attachChromeProcess } = require('./lib/chrome-process');
 const { attachCapture } = require('./lib/capture');
 const { WebSocketClient } = require('./lib/websocket-client');
+const { attachNavigation } = require('./lib/navigation');
 const {
   PORT_RANGE_START,
   PORT_RANGE_END,
@@ -306,114 +307,6 @@ function createSession({ host, port } = {}) {
     }
   }
 
-  async function navigate(tabIndexOrWsUrl, url, autoCapture = false) {
-    const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
-
-    // Clear previous console messages if auto-capture is on
-    const startTime = new Date();
-    if (autoCapture) {
-      await clearConsoleMessages(tabIndexOrWsUrl);
-    }
-
-    const result = await sendCdpCommand(wsUrl, 'Page.navigate', { url });
-
-    // Wait for page load with console logging enabled if needed
-    await new Promise((resolve) => {
-      const ws = new WebSocketClient(wsUrl);
-      let pageLoaded = false;
-
-      ws.on('message', (msg) => {
-        const data = JSON.parse(msg);
-
-        if (data.method === 'Page.loadEventFired' && !pageLoaded) {
-          pageLoaded = true;
-          // Keep connection alive a bit longer for console messages if auto-capture is on
-          if (autoCapture) {
-            setTimeout(() => {
-              ws.close();
-              resolve();
-            }, 1000); // Wait 1 second for console messages
-          } else {
-            ws.close();
-            resolve();
-          }
-        }
-
-        // Capture console messages during navigation if auto-capture is on
-        if (autoCapture && data.method === 'Runtime.consoleAPICalled') {
-          const entry = data.params;
-          const timestamp = new Date().toISOString();
-          const level = entry.type || 'log';
-          const args = entry.args || [];
-
-          // Extract text from arguments
-          const text = args.map(arg => {
-            if (arg.type === 'string') return arg.value;
-            if (arg.type === 'number') return String(arg.value);
-            if (arg.type === 'boolean') return String(arg.value);
-            if (arg.type === 'object') return arg.description || '[Object]';
-            return String(arg.value || arg.description || arg.type);
-          }).join(' ');
-
-          const messages = state.consoleMessages.get(wsUrl) || [];
-          messages.push({
-            timestamp,
-            level,
-            text
-          });
-          state.consoleMessages.set(wsUrl, messages);
-        }
-      });
-
-      ws.connect().then(() => {
-        // Enable both Page and Runtime domains
-        sendCdpCommand(wsUrl, 'Page.enable');
-        if (autoCapture) {
-          sendCdpCommand(wsUrl, 'Runtime.enable');
-        }
-      });
-
-      // Timeout after 30s
-      setTimeout(() => {
-        if (!pageLoaded) {
-          ws.close();
-          resolve();
-        }
-      }, 30000);
-    });
-
-    // Auto-capture if requested
-    if (autoCapture) {
-      try {
-        const artifacts = await capturePageArtifacts(tabIndexOrWsUrl, 'navigate');
-
-        // TODO: Fix console logging - currently returns empty array
-        // The console logging needs a persistent WebSocket connection which
-        // conflicts with the current single-use connection pattern
-        const consoleLog = []; // Placeholder for now
-
-        return {
-          frameId: result.frameId,
-          url,
-          pageSize: artifacts.pageSize,
-          capturePrefix: artifacts.capturePrefix,
-          sessionDir: artifacts.sessionDir,
-          files: artifacts.files,
-          domSummary: artifacts.domSummary,
-          consoleLog
-        };
-      } catch (error) {
-        // If auto-capture fails, still return success but with error note
-        return {
-          frameId: result.frameId,
-          url,
-          error: `Auto-capture failed: ${error.message}`
-        };
-      }
-    }
-
-    return result.frameId;
-  }
 
   const { click, hover, drag, mouseMove, scroll, doubleClick, rightClick } =
     attachMouse({ resolveWsUrl, sendCdpCommand });
@@ -838,66 +731,6 @@ function createSession({ host, port } = {}) {
   const { evaluate, evaluateJson, evaluateRaw } = attachEvaluation({ resolveWsUrl, sendCdpCommand });
 
   // =============================================================================
-  // NAVIGATION FUNCTIONS (JRV-128: SPA navigation support)
-  // =============================================================================
-
-  /**
-   * SPA-compatible navigation using history.pushState (JRV-128)
-   * Doesn't reload the page, works with client-side routers
-   */
-  async function spaNavigate(tabIndexOrWsUrl, path, options = {}) {
-    const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
-
-    const { state = {}, title = '', dispatchPopstate = true } = options;
-
-    const js = `
-      (() => {
-        const path = ${JSON.stringify(path)};
-        const state = ${JSON.stringify(state)};
-        const title = ${JSON.stringify(title)};
-
-        // Use pushState for SPA navigation
-        history.pushState(state, title, path);
-
-        // Dispatch popstate event so React Router / Vue Router / etc. picks it up
-        ${dispatchPopstate ? `window.dispatchEvent(new PopStateEvent('popstate', { state }));` : ''}
-
-        return {
-          success: true,
-          path,
-          href: window.location.href
-        };
-      })()
-    `;
-
-    const result = await sendCdpCommand(wsUrl, 'Runtime.evaluate', {
-      expression: js,
-      returnByValue: true
-    });
-
-    return result.result.value;
-  }
-
-  /**
-   * Navigate using location.href (triggers page reload)
-   */
-  async function hrefNavigate(tabIndexOrWsUrl, url) {
-    const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
-
-    const js = `
-      (() => {
-        window.location.href = ${JSON.stringify(url)};
-        return { navigating: true, url: ${JSON.stringify(url)} };
-      })()
-    `;
-
-    const result = await sendCdpCommand(wsUrl, 'Runtime.evaluate', {
-      expression: js,
-      returnByValue: true
-    });
-
-    return result.result.value;
-  }
 
   async function extractText(tabIndexOrWsUrl, selector) {
     const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
@@ -931,49 +764,6 @@ function createSession({ host, port } = {}) {
     return result.result.value;
   }
 
-  async function waitForElement(tabIndexOrWsUrl, selector, timeout = 5000) {
-    const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
-    const js = `
-      new Promise((resolve, reject) => {
-        const timeout = setTimeout(() => reject(new Error('Timeout')), ${timeout});
-        const check = () => {
-          if (${getElementSelector(selector)}) {
-            clearTimeout(timeout);
-            resolve(true);
-          } else {
-            setTimeout(check, 100);
-          }
-        };
-        check();
-      })
-    `;
-    await sendCdpCommand(wsUrl, 'Runtime.evaluate', {
-      expression: js,
-      awaitPromise: true
-    });
-  }
-
-  async function waitForText(tabIndexOrWsUrl, text, timeout = 5000) {
-    const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
-    const js = `
-      new Promise((resolve, reject) => {
-        const timeout = setTimeout(() => reject(new Error('Timeout')), ${timeout});
-        const check = () => {
-          if (document.body.textContent.includes(${JSON.stringify(text)})) {
-            clearTimeout(timeout);
-            resolve(true);
-          } else {
-            setTimeout(check, 100);
-          }
-        };
-        check();
-      })
-    `;
-    await sendCdpCommand(wsUrl, 'Runtime.evaluate', {
-      expression: js,
-      awaitPromise: true
-    });
-  }
 
   async function screenshot(tabIndexOrWsUrl, filename, selector = null, fullPage = false) {
     const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
@@ -1214,6 +1004,9 @@ function createSession({ host, port } = {}) {
     screenshot,
     actions: { click, fill, selectOption, evaluate },
   });
+
+  const { navigate, spaNavigate, hrefNavigate, waitForElement, waitForText } =
+    attachNavigation({ state, resolveWsUrl, sendCdpCommand, capturePageArtifacts });
 
   const { setViewport, clearViewport, getViewport } = attachViewport({ resolveWsUrl, sendCdpCommand });
   const { clearCookies } = attachCookies({ resolveWsUrl, sendCdpCommand });
