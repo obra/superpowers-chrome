@@ -33,6 +33,7 @@ const { attachScreenshot } = require('./lib/screenshot');
 const { attachTabs } = require('./lib/tabs');
 const { attachFileUpload } = require('./lib/file-upload');
 const { attachCdpConnection } = require('./lib/cdp-connection');
+const { attachConsoleLogging } = require('./lib/console-logging');
 const {
   PORT_RANGE_START,
   PORT_RANGE_END,
@@ -202,100 +203,8 @@ function createSession({ host, port } = {}) {
   const { startChrome, killChrome, showBrowser, hideBrowser, getBrowserMode, getChromePid, getActivePort, getProfileName, setProfileName } =
     attachChromeProcess({ state, chromeHttp, getTabs, newTab });
 
-  // Console logging utilities
-  async function enableConsoleLogging(tabIndexOrWsUrl) {
-    const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
-
-    // Initialize console messages array for this tab
-    if (!state.consoleMessages.has(wsUrl)) {
-      state.consoleMessages.set(wsUrl, []);
-    }
-
-    // Start persistent WebSocket connection for console logging
-    const ws = new WebSocketClient(wsUrl);
-
-    return new Promise((resolve, reject) => {
-      let enabledRuntime = false;
-
-      ws.on('message', (msg) => {
-        const data = JSON.parse(msg);
-
-        // Handle Runtime.enable response
-        if (data.id === 999999 && !enabledRuntime) {
-          enabledRuntime = true;
-          // Don't close the WebSocket - keep it open for console messages
-          resolve();
-          return;
-        }
-
-        // Capture console messages
-        if (data.method === 'Runtime.consoleAPICalled') {
-          const entry = data.params;
-          const timestamp = new Date().toISOString();
-          const level = entry.type || 'log';
-          const args = entry.args || [];
-
-          // Extract text from arguments
-          const text = args.map(arg => {
-            if (arg.type === 'string') return arg.value;
-            if (arg.type === 'number') return String(arg.value);
-            if (arg.type === 'boolean') return String(arg.value);
-            if (arg.type === 'object') return arg.description || '[Object]';
-            return String(arg.value || arg.description || arg.type);
-          }).join(' ');
-
-          const messages = state.consoleMessages.get(wsUrl) || [];
-          messages.push({
-            timestamp,
-            level,
-            text
-          });
-          state.consoleMessages.set(wsUrl, messages);
-        }
-      });
-
-      ws.on('error', (err) => {
-        if (!enabledRuntime) {
-          reject(err);
-        }
-      });
-
-      ws.connect()
-        .then(() => {
-          // Enable Runtime domain to receive console messages
-          ws.send(JSON.stringify({
-            id: 999999, // Use fixed ID to identify this response
-            method: 'Runtime.enable'
-          }));
-        })
-        .catch(reject);
-
-      // Timeout after 5s
-      setTimeout(() => {
-        if (!enabledRuntime) {
-          ws.close();
-          reject(new Error('Console logging enable timeout'));
-        }
-      }, 5000);
-    });
-  }
-
-  async function getConsoleMessages(tabIndexOrWsUrl, sinceTime = null) {
-    const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
-    const messages = state.consoleMessages.get(wsUrl) || [];
-
-    if (!sinceTime) {
-      return messages;
-    }
-
-    // Filter messages since the specified time
-    return messages.filter(msg => new Date(msg.timestamp) > sinceTime);
-  }
-
-  async function clearConsoleMessages(tabIndexOrWsUrl) {
-    const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
-    state.consoleMessages.set(wsUrl, []);
-  }
+  const { enableConsoleLogging, getConsoleMessages, clearConsoleMessages } =
+    attachConsoleLogging({ state, resolveWsUrl });
 
   const {
     initializeSession,
