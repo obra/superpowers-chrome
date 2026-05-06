@@ -9,6 +9,7 @@ const {
   buildChromeArgs,
   getXdgCacheHome,
   getChromeProfileDir,
+  findPidOnPort,
 } = require('../../skills/browsing/lib/chrome-launcher-helpers.js');
 
 describe('chrome-launcher-helpers', () => {
@@ -61,5 +62,24 @@ describe('chrome-launcher-helpers', () => {
   it('getChromeProfileDir composes profile name into XDG path', () => {
     const dir = getChromeProfileDir('myprofile');
     assert.match(dir, /superpowers\/browser-profiles\/myprofile$/);
+  });
+
+  it('findPidOnPort returns null for an unbound port', async () => {
+    const pid = await findPidOnPort(64999);
+    assert.equal(pid, null);
+  });
+
+  it('findPidOnPort returns the current process PID for a port we bound', async () => {
+    const net = await import('node:net');
+    const server = net.default.createServer();
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+    const { port } = server.address();
+    try {
+      const pid = await findPidOnPort(port);
+      assert.equal(typeof pid, 'number');
+      assert.equal(pid, process.pid);
+    } finally {
+      server.close();
+    }
   });
 });

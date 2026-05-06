@@ -127,6 +127,39 @@ async function findAvailablePort(start = PORT_RANGE_START, end = PORT_RANGE_END)
   throw new Error(`No available port in range ${start}-${end}`);
 }
 
+// Find the PID of the process holding `port`, or null if none.
+// Uses platform-native tools — lsof on macOS/Linux, netstat on Windows.
+// Returns null on any failure (parsing, missing tool, no listener).
+function findPidOnPort(port) {
+  const { execSync } = require('child_process');
+  try {
+    if (process.platform === 'darwin' || process.platform === 'linux') {
+      const out = execSync(`lsof -ti:${port}`, {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore']
+      }).trim();
+      if (!out) return null;
+      const first = out.split('\n')[0];
+      const pid = parseInt(first, 10);
+      return Number.isFinite(pid) ? pid : null;
+    }
+    if (process.platform === 'win32') {
+      const out = execSync(`netstat -ano | findstr :${port}`, {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore']
+      });
+      const lines = out.split(/\r?\n/).filter(l => /LISTENING/i.test(l));
+      if (!lines.length) return null;
+      const cols = lines[0].trim().split(/\s+/);
+      const pid = parseInt(cols[cols.length - 1], 10);
+      return Number.isFinite(pid) ? pid : null;
+    }
+  } catch (_e) {
+    return null;
+  }
+  return null;
+}
+
 function buildChromeArgs({ chosenPort, chromeUserDataDir, chromeHeadless }) {
   const args = [
     `--remote-debugging-port=${chosenPort}`,
@@ -184,5 +217,6 @@ module.exports = {
   isPortAlive,
   isPortFree,
   findAvailablePort,
+  findPidOnPort,
   buildChromeArgs,
 };
