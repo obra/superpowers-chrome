@@ -581,16 +581,8 @@ if (command === 'eval') {
   }
   (async () => {
     try {
-      const wsUrl = await resolveWsUrl(wsUrlOrIndex);
-      const result = await sendCdpCommand(wsUrl, 'Runtime.evaluate', {
-        expression,
-        returnByValue: true
-      });
-      if (result.exceptionDetails) {
-        console.error('JavaScript error:', result.exceptionDetails.exception.description);
-        process.exit(1);
-      }
-      console.log(JSON.stringify(result.result.value, null, 2));
+      const value = await session.evaluate(wsUrlOrIndex, expression);
+      console.log(JSON.stringify(value, null, 2));
     } catch (e) {
       console.error('Eval failed:', e.message);
       process.exit(1);
