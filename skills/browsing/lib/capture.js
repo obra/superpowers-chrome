@@ -5,6 +5,25 @@ const { generateHtmlDiff } = require('./html-diff');
 const markdownScript = require('./page-scripts/markdown');
 const domSummaryScript = require('./page-scripts/dom-summary');
 
+// Module-level registry of active session-cleanup callbacks.
+// Per-session initializeSession adds its bound cleanup to the set;
+// cleanupSession removes itself when it runs.
+//
+// Process exit handlers are registered exactly once for the whole module
+// (not per session), so multiple ChromeSession instances in one process
+// don't accumulate N×3 handlers.
+const activeCleanups = new Set();
+let processHandlersRegistered = false;
+
+function ensureProcessHandlersRegistered() {
+  if (processHandlersRegistered) return;
+  processHandlersRegistered = true;
+  const runAll = () => { for (const fn of activeCleanups) fn(); };
+  process.on('exit', runAll);
+  process.on('SIGINT', () => { runAll(); process.exit(0); });
+  process.on('SIGTERM', () => { runAll(); process.exit(0); });
+}
+
 /**
  * Auto-capture: every DOM-mutating action drops a {prefix}.html / .md / .png /
  * -console.txt set into the session directory so the user (or model) can
@@ -39,9 +58,8 @@ function attachCapture({ state, resolveWsUrl, sendCdpCommand, getHtml, screensho
 
       console.error(`Browser session directory: ${state.sessionDir}`);
 
-      process.on('exit', cleanupSession);
-      process.on('SIGINT', () => { cleanupSession(); process.exit(0); });
-      process.on('SIGTERM', () => { cleanupSession(); process.exit(0); });
+      ensureProcessHandlersRegistered();
+      activeCleanups.add(cleanupSession);
     }
     return state.sessionDir;
   }
@@ -56,6 +74,7 @@ function attachCapture({ state, resolveWsUrl, sendCdpCommand, getHtml, screensho
       }
       state.sessionDir = null;
     }
+    activeCleanups.delete(cleanupSession);
   }
 
   function createCapturePrefix(actionType = 'navigate') {
