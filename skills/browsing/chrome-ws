@@ -649,30 +649,30 @@ if (command === 'html') {
 
 // Command: wait-text - wait for text to appear
 if (command === 'wait-text') {
-  const text = args.join(' ');
-  if (!wsUrlOrIndex || !text) {
-    console.error('Usage: chrome-ws wait-text <tab-index-or-ws-url> <text>');
+  // Last positional arg is treated as timeout if it parses as a non-negative
+  // integer; otherwise everything is text. This handles both:
+  //   wait-text 0 "the text" 3000
+  //   wait-text 0 "text without timeout"
+  if (!wsUrlOrIndex || args.length === 0) {
+    console.error('Usage: chrome-ws wait-text <tab-index-or-ws-url> <text> [timeout-ms]');
+    process.exit(1);
+  }
+  let textArgs = args;
+  let timeout = 5000;
+  const last = args[args.length - 1];
+  const parsedLast = parseInt(last, 10);
+  if (args.length >= 2 && Number.isFinite(parsedLast) && parsedLast >= 0 && String(parsedLast) === last.trim()) {
+    timeout = parsedLast;
+    textArgs = args.slice(0, -1);
+  }
+  const text = textArgs.join(' ');
+  if (!text) {
+    console.error('Usage: chrome-ws wait-text <tab-index-or-ws-url> <text> [timeout-ms]');
     process.exit(1);
   }
   (async () => {
     try {
-      const wsUrl = await resolveWsUrl(wsUrlOrIndex);
-      const js = `
-        new Promise(resolve => {
-          const check = () => {
-            if (document.body.textContent.includes(${JSON.stringify(text)})) {
-              resolve(true);
-            } else {
-              setTimeout(check, 100);
-            }
-          };
-          check();
-        });
-      `;
-      await sendCdpCommand(wsUrl, 'Runtime.evaluate', {
-        expression: js,
-        awaitPromise: true
-      });
+      await session.waitForText(wsUrlOrIndex, text, timeout);
       console.log(`Text found: ${text}`);
     } catch (e) {
       console.error('Wait failed:', e.message);
