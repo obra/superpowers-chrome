@@ -1,5 +1,14 @@
 const { WebSocketClient } = require('./websocket-client');
 
+// Fixed CDP request id used to mark the Runtime.enable response so the
+// message handler can distinguish setup-acknowledged from runtime-event
+// without tracking ids generally.
+const RUNTIME_ENABLE_REQUEST_ID = 999999;
+
+// How long to wait for Runtime.enable to acknowledge before failing the
+// console-logging setup.
+const ENABLE_TIMEOUT_MS = 5000;
+
 /**
  * Page console-message capture.
  *
@@ -35,9 +44,9 @@ function attachConsoleLogging({ state, resolveWsUrl }) {
       ws.on('message', (msg) => {
         const data = JSON.parse(msg);
 
-        // Fixed id 999999 marks the Runtime.enable response; everything
+        // Fixed id marks the Runtime.enable response; everything
         // after that is event traffic.
-        if (data.id === 999999 && !enabledRuntime) {
+        if (data.id === RUNTIME_ENABLE_REQUEST_ID && !enabledRuntime) {
           enabledRuntime = true;
           resolve();
           return;
@@ -72,7 +81,7 @@ function attachConsoleLogging({ state, resolveWsUrl }) {
       ws.connect()
         .then(() => {
           ws.send(JSON.stringify({
-            id: 999999,
+            id: RUNTIME_ENABLE_REQUEST_ID,
             method: 'Runtime.enable'
           }));
         })
@@ -83,7 +92,7 @@ function attachConsoleLogging({ state, resolveWsUrl }) {
           ws.close();
           reject(new Error('Console logging enable timeout'));
         }
-      }, 5000);
+      }, ENABLE_TIMEOUT_MS);
     });
   }
 
