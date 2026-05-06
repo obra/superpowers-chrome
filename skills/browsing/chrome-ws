@@ -463,30 +463,19 @@ if (command === 'navigate') {
 
 // Command: wait-for - wait for selector to appear
 if (command === 'wait-for') {
-  const [selector] = args;
+  const [selector, timeoutArg] = args;
   if (!wsUrlOrIndex || !selector) {
-    console.error('Usage: chrome-ws wait-for <tab-index-or-ws-url> <selector>');
+    console.error('Usage: chrome-ws wait-for <tab-index-or-ws-url> <selector> [timeout-ms]');
+    process.exit(1);
+  }
+  const timeout = timeoutArg ? parseInt(timeoutArg, 10) : 5000;
+  if (Number.isNaN(timeout) || timeout < 0) {
+    console.error(`Invalid timeout: ${timeoutArg}`);
     process.exit(1);
   }
   (async () => {
     try {
-      const wsUrl = await resolveWsUrl(wsUrlOrIndex);
-      const js = `
-        new Promise(resolve => {
-          const check = () => {
-            if (document.querySelector(${JSON.stringify(selector)})) {
-              resolve(true);
-            } else {
-              setTimeout(check, 100);
-            }
-          };
-          check();
-        });
-      `;
-      await sendCdpCommand(wsUrl, 'Runtime.evaluate', {
-        expression: js,
-        awaitPromise: true
-      });
+      await session.waitForElement(wsUrlOrIndex, selector, timeout);
       console.log(`Element found: ${selector}`);
     } catch (e) {
       console.error('Wait failed:', e.message);
