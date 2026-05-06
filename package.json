@@ -13,7 +13,7 @@
     "start": "node mcp/dist/index.js",
     "lint": "biome lint .",
     "lint:fix": "biome lint --write .",
-    "test": "npm run lint && node --test 'test/**/*.test.mjs'"
+    "test": "npm run lint && ./scripts/check-bundle-fresh.sh && node --test 'test/**/*.test.mjs'"
   },
   "engines": {
     "node": ">=18"
