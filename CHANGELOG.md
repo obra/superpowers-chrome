@@ -8,14 +8,25 @@ All notable changes to the superpowers-chrome MCP project.
 - **`createSession({ host, port })`** factory in `chrome-ws-lib.js` — returns a fresh state-bag with a private connection pool, console-message map, profile name, Chrome process handle, active CDP port, and host-override. Two sessions in one process don't share state. Unblocks any caller that wants to drive multiple Chromes concurrently from one Node process.
 - **`createOverride({ host, port })`** factory in `host-override.js` — per-instance host/port/override-enabled state with `getHost`, `getPort`, `getBase`, `isOverrideEnabled`, `rewriteWsUrl`, `setDefaults`. Underpins per-session host-override in `createSession()`.
 - **`test/session-isolation.test.mjs`** — regression gate covering distinct-method-identity, per-session profile/port mutation, and per-instance `setDefaults`/`rewriteWsUrl`.
+- **Three-tier test suite** (132 tests, up from 23): per-lib unit tests with mocked `sendCdpCommand`/`resolveWsUrl`, jsdom-backed integration tests for `select-option` and the page-side scripts, and a real-Chrome smoke suite gated on Chrome being installed.
+- **Bundle drift detection** in `npm test`: a regex-scrape of `chromeLib.X(` calls in the bundle vs. the lib's actual exports, a subprocess test that the bundle responds to MCP `initialize`, and a pre-build-commit guard that fails CI if `mcp/dist/` would change after a fresh build.
+- **Biome lint** with a minimal correctness/style ruleset, wired into `npm test`.
+
+### Fixed
+- **`navigate()` no longer hangs for the full 30-second timeout on fast-loading pages.** `Page.enable` was being sent on the pooled connection but Chrome scopes Page events per-connection, so the listener WebSocket never received `Page.loadEventFired`. `navigate()` now sends `Page.enable` on the listener connection itself, waits for the ack, then issues `Page.navigate`. Page.navigate failures and enable-ack errors propagate to the caller (previously swallowed).
+- **`startChrome()` polls Chrome's debug port instead of sleeping a fixed 2 seconds.** On slower machines or busy systems Chrome can take longer than 2s to open the port, causing every subsequent CDP call to fail with `ECONNREFUSED`. Now polls every 200ms up to a 15-second deadline.
+- **`generateHtmlDiff()` correctly detects reordered identical lines.** The previous set-based logic treated any HTML where the line set was unchanged as "no changes detected" — including pure reorderings. Replaced with a hand-rolled Myers line diff.
+- **Process exit handlers no longer leak per-session.** Previously every `initializeSession()` registered three new `process.on(...)` handlers; with N concurrent sessions in one process this meant 3N handlers. Now a module-level registry registers the handlers once and iterates a Set of active session-cleanup callbacks.
 
 ### Changed
 - **Consumer migration**: `mcp/src/index.ts` and `skills/browsing/chrome-ws` now construct sessions explicitly — `require('./chrome-ws-lib').createSession()` and `require('./host-override').createOverride()`.
+- **Page-side scripts extracted** from `lib/capture.js` into `lib/page-scripts/markdown.js` and `lib/page-scripts/dom-summary.js`. Same behavior; the scripts can now be linted and tested directly against jsdom.
 
 ### Removed
 - Legacy module-level exports from `host-override.js`: `CHROME_DEBUG_HOST`, `CHROME_DEBUG_PORT`, `CHROME_DEBUG_BASE`, `WS_OVERRIDE_ENABLED`, and top-level `rewriteWsUrl`. Use `createOverride()` instead. Keeping them alongside the factory was a footgun — load-time-baked constants can only describe one Chrome target, re-introducing the single-instance limitation the factory was added to fix.
 - `skills/browsing/test-host-override.js` smoke test (covered by `test/session-isolation.test.mjs`).
 - Legacy method aliases on the session object: `cdpClick` (use `click`), `insertText` (use `fill`). Two functions defined inside the lib closure but never publicly exported (`keyboardType`, `spaNavigate`, `hrefNavigate`) also removed. The MCP server and CLI never used the aliases; external consumers should migrate to the canonical names.
+- `state.messageIdCounter` from session state. CDP message ids are scoped per-connection; the single-use connection sends exactly one request, so `id = 1` always works.
 
 ---
 
