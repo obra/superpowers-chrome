@@ -1,5 +1,9 @@
 const { WebSocketClient } = require('./websocket-client');
 
+// Default per-CDP-call timeout. Caller can override via the `timeout`
+// parameter on sendCdpCommand.
+const DEFAULT_CDP_TIMEOUT_MS = 30000;
+
 /**
  * CDP transport — pooled WebSocket connections to Chrome's debugger.
  *
@@ -85,7 +89,7 @@ function attachCdpConnection({ state }) {
     return conn;
   }
 
-  async function sendCdpCommandPooled(wsUrl, method, params = {}, timeout = 30000) {
+  async function sendCdpCommandPooled(wsUrl, method, params = {}, timeout = DEFAULT_CDP_TIMEOUT_MS) {
     const conn = await getPooledConnection(wsUrl);
     const id = conn.messageIdCounter++;
 
@@ -104,7 +108,7 @@ function attachCdpConnection({ state }) {
   // fresh connection, sends one request, waits for the matching id,
   // closes. Less efficient (re-handshakes per call) but recovers from
   // broken pooled connections without wedging the rest of the session.
-  async function sendCdpCommandSingle(wsUrl, method, params = {}, timeout = 30000) {
+  async function sendCdpCommandSingle(wsUrl, method, params = {}, timeout = DEFAULT_CDP_TIMEOUT_MS) {
     const ws = new WebSocketClient(wsUrl);
 
     return new Promise((resolve, reject) => {
@@ -145,7 +149,7 @@ function attachCdpConnection({ state }) {
     });
   }
 
-  async function sendCdpCommand(wsUrl, method, params = {}, timeout = 30000) {
+  async function sendCdpCommand(wsUrl, method, params = {}, timeout = DEFAULT_CDP_TIMEOUT_MS) {
     try {
       return await sendCdpCommandPooled(wsUrl, method, params, timeout);
     } catch (e) {
