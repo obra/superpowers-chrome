@@ -9,6 +9,8 @@ const positionalArgs = allArgs.filter(a => !a.startsWith('--port='));
 const [command, wsUrlOrIndex, ...args] = positionalArgs;
 
 const hostOverride = require('./host-override').createOverride();
+const { createSession } = require('./chrome-ws-lib');
+const session = createSession();
 const CHROME_DEBUG_HOST = hostOverride.getHost();
 const CHROME_DEBUG_PORT = hostOverride.getPort();
 const WS_OVERRIDE_ENABLED = hostOverride.isOverrideEnabled();
