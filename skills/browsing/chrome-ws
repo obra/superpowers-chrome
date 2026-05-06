@@ -548,22 +548,24 @@ if (command === 'fill') {
 // Command: select - select dropdown option
 if (command === 'select') {
   const [selector, value] = args;
-  if (!wsUrlOrIndex || !selector || !value) {
-    console.error('Usage: chrome-ws select <tab-index-or-ws-url> <selector> <value>');
+  if (!wsUrlOrIndex || !selector || value === undefined) {
+    console.error('Usage: chrome-ws select <tab-index-or-ws-url> <selector> <value-or-label-or-json-array>');
     process.exit(1);
   }
   (async () => {
     try {
-      const wsUrl = await resolveWsUrl(wsUrlOrIndex);
-      const js = `
-        (() => {
-          const el = document.querySelector(${JSON.stringify(selector)});
-          el.value = ${JSON.stringify(value)};
-          el.dispatchEvent(new Event('change', { bubbles: true }));
-        })()
-      `;
-      await sendCdpCommand(wsUrl, 'Runtime.evaluate', { expression: js });
-      console.log(`Selected: ${selector} = ${value}`);
+      // Accept JSON array (multi-select) or plain string (value or label).
+      let selectValue = value;
+      if (typeof value === 'string' && value.trim().startsWith('[')) {
+        try {
+          const parsed = JSON.parse(value);
+          if (Array.isArray(parsed) && parsed.every(v => typeof v === 'string')) {
+            selectValue = parsed;
+          }
+        } catch (_e) { /* not JSON, treat as plain string */ }
+      }
+      const result = await session.selectOption(wsUrlOrIndex, selector, selectValue);
+      console.log(JSON.stringify(result.matched.map(o => o.value)));
     } catch (e) {
       console.error('Select failed:', e.message);
       process.exit(1);
