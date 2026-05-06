@@ -29,6 +29,7 @@ const { WebSocketClient } = require('./lib/websocket-client');
 const { attachNavigation } = require('./lib/navigation');
 const { attachKeyboardInput } = require('./lib/keyboard-input');
 const { attachExtraction } = require('./lib/extraction');
+const { attachScreenshot } = require('./lib/screenshot');
 const {
   PORT_RANGE_START,
   PORT_RANGE_END,
@@ -470,125 +471,7 @@ function createSession({ host, port } = {}) {
   const { extractText, getHtml, getAttribute } = attachExtraction({ resolveWsUrl, sendCdpCommand });
 
 
-  async function screenshot(tabIndexOrWsUrl, filename, selector = null, fullPage = false) {
-    const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
-
-    let clip = undefined;
-    if (fullPage) {
-      // Full-page capture: get total content dimensions via layout metrics,
-      // then capture beyond the visible viewport.
-      const metrics = await sendCdpCommand(wsUrl, 'Page.getLayoutMetrics');
-      const { width, height } = metrics.contentSize;
-      clip = { x: 0, y: 0, width, height, scale: 1 };
-    } else if (selector) {
-      // Element capture: use element's CSS bounding rect
-      const js = `
-        (() => {
-          const el = ${getElementSelector(selector)};
-          if (!el) return null;
-          const rect = el.getBoundingClientRect();
-          return {
-            x: rect.left,
-            y: rect.top,
-            width: rect.width,
-            height: rect.height,
-            scale: 1
-          };
-        })()
-      `;
-      const result = await sendCdpCommand(wsUrl, 'Runtime.evaluate', {
-        expression: js,
-        returnByValue: true
-      });
-      clip = result.result.value;
-    } else {
-      // Viewport capture: explicitly clip to CSS pixel dimensions.
-      // Without an explicit clip, Chrome uses its internal (DPI-scaled) dimensions,
-      // which produces oversized screenshots on Linux HiDPI displays.
-      const vpResult = await sendCdpCommand(wsUrl, 'Runtime.evaluate', {
-        expression: '({ width: window.innerWidth, height: window.innerHeight })',
-        returnByValue: true
-      });
-      const { width, height } = vpResult.result.value;
-      clip = { x: 0, y: 0, width, height, scale: 1 };
-    }
-
-    const result = await sendCdpCommand(wsUrl, 'Page.captureScreenshot', {
-      format: 'png',
-      fromSurface: true,
-      captureBeyondViewport: fullPage,
-      clip
-    });
-
-    const fs = require('fs');
-    const path = require('path');
-    const buffer = Buffer.from(result.data, 'base64');
-    fs.writeFileSync(filename, buffer);
-
-    // Auto-downscale if image exceeds safe dimensions for Claude API
-    // (Claude's many-image mode limits to 2000px max dimension)
-    await downscaleImageIfNeeded(filename, 1800);
-
-    // Return absolute path so caller knows exactly where file is
-    return path.resolve(filename);
-  }
-
-  /**
-   * Downscale image if any dimension exceeds maxDimension
-   * Uses platform-native tools (sips on macOS, ImageMagick on Linux)
-   * @param {string} filepath - Path to image file
-   * @param {number} maxDimension - Maximum allowed dimension (default 1800)
-   */
-  async function downscaleImageIfNeeded(filepath, maxDimension = 1800) {
-    const { execSync } = require('child_process');
-    const os = require('os');
-    const fs = require('fs');
-
-    // Read image dimensions using platform-native tools
-    const platform = os.platform();
-
-    try {
-      let width, height;
-
-      if (platform === 'darwin') {
-        // macOS: use sips to get dimensions
-        const output = execSync(`sips -g pixelWidth -g pixelHeight "${filepath}" 2>/dev/null`, { encoding: 'utf8' });
-        const widthMatch = output.match(/pixelWidth:\s*(\d+)/);
-        const heightMatch = output.match(/pixelHeight:\s*(\d+)/);
-        width = widthMatch ? parseInt(widthMatch[1]) : 0;
-        height = heightMatch ? parseInt(heightMatch[1]) : 0;
-      } else if (platform === 'linux') {
-        // Linux: try ImageMagick identify
-        try {
-          const output = execSync(`identify -format "%w %h" "${filepath}" 2>/dev/null`, { encoding: 'utf8' });
-          [width, height] = output.trim().split(' ').map(Number);
-        } catch {
-          // ImageMagick not available, skip downscaling
-          return;
-        }
-      } else {
-        // Windows or other: skip for now
-        return;
-      }
-
-      // Check if downscaling is needed
-      if (width <= maxDimension && height <= maxDimension) {
-        return; // No downscaling needed
-      }
-
-      // Downscale to fit within maxDimension box
-      if (platform === 'darwin') {
-        // macOS: sips -Z scales to fit in a square box
-        execSync(`sips -Z ${maxDimension} "${filepath}" 2>/dev/null`);
-      } else if (platform === 'linux') {
-        // Linux: ImageMagick convert with resize
-        execSync(`convert "${filepath}" -resize ${maxDimension}x${maxDimension}\\> "${filepath}" 2>/dev/null`);
-      }
-    } catch (e) {
-      // Silently ignore downscaling failures - better to have large image than no image
-      // Could log to stderr for debugging: console.error(`Downscaling failed: ${e.message}`);
-    }
-  }
+  const { screenshot } = attachScreenshot({ resolveWsUrl, sendCdpCommand });
 
   const { startChrome, killChrome, showBrowser, hideBrowser, getBrowserMode, getChromePid, getActivePort, getProfileName, setProfileName } =
     attachChromeProcess({ state, chromeHttp, getTabs, newTab });
