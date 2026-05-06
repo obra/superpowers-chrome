@@ -7,6 +7,9 @@ const {
   buildChromeArgs,
   getChromeProfileDir,
 } = require('./chrome-launcher-helpers');
+const { spawn } = require('child_process');
+const { existsSync, mkdirSync } = require('fs');
+const os = require('os');
 
 /**
  * Chrome process lifecycle + profile management. Reads and writes session
@@ -24,10 +27,6 @@ function attachChromeProcess({ state, chromeHttp, getTabs, newTab }) {
   const CHROME_DEBUG_PORT = state.hostOverride.getPort();
 
   async function startChrome(headless = null, profileName = null, port = null) {
-    const { spawn } = require('child_process');
-    const { existsSync, mkdirSync } = require('fs');
-    const os = require('os');
-
     if (headless !== null) {
       state.chromeHeadless = headless;
     }
