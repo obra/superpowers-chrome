@@ -34,6 +34,7 @@ const { attachTabs } = require('./lib/tabs');
 const { attachFileUpload } = require('./lib/file-upload');
 const { attachCdpConnection } = require('./lib/cdp-connection');
 const { attachConsoleLogging } = require('./lib/console-logging');
+const { attachSelectOption } = require('./lib/select-option');
 const {
   PORT_RANGE_START,
   PORT_RANGE_END,
@@ -106,90 +107,7 @@ function createSession({ host, port } = {}) {
 
   const { fileUpload } = attachFileUpload({ resolveWsUrl, sendCdpCommand });
 
-  // =============================================================================
-  // SELECT FUNCTION (JRV-129: Multi-element warning)
-  // =============================================================================
-
-  /**
-   * Select dropdown option(s).
-   *
-   * `value` is a string or array of strings. Each entry matches an <option> by
-   * value attribute first, then by trimmed visible label. Arrays require
-   * <select multiple>. Replaces the current selection (does not append).
-   */
-  async function selectOption(tabIndexOrWsUrl, selector, value, index = 0) {
-    const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
-    const values = Array.isArray(value) ? value : [value];
-
-    // Check how many elements match and warn if multiple
-    const countJs = `${getElementSelectorAll(selector)}.length`;
-    const countResult = await sendCdpCommand(wsUrl, 'Runtime.evaluate', {
-      expression: countJs,
-      returnByValue: true
-    });
-    const matchCount = countResult.result.value || 0;
-
-    let warning = null;
-    if (matchCount > 1) {
-      warning = `Selector "${selector}" matches ${matchCount} elements. Using element at index ${index}. Use a more specific selector or pass index parameter.`;
-      console.error(`WARNING: ${warning}`);
-    }
-
-    const js = `
-      (() => {
-        const elements = ${getElementSelectorAll(selector)};
-        const el = elements[${index}];
-        if (!el) return { success: false, error: 'Element not found at index ${index}' };
-        if (el.tagName !== 'SELECT') return { success: false, error: 'Element is not a SELECT' };
-
-        const requested = ${JSON.stringify(values)};
-        if (requested.length > 1 && !el.multiple) {
-          return { success: false, error: 'Cannot select multiple values on a non-multiple <select>' };
-        }
-
-        const options = Array.from(el.options);
-        const matched = [];
-        const unmatched = [];
-        for (const v of requested) {
-          const opt = options.find(o => o.value === v) ||
-                      options.find(o => o.textContent.trim() === v);
-          if (opt) matched.push(opt);
-          else unmatched.push(v);
-        }
-        if (unmatched.length) {
-          return { success: false, error: 'No matching option for: ' + JSON.stringify(unmatched) };
-        }
-
-        for (const o of options) o.selected = false;
-        for (const o of matched) o.selected = true;
-        el.dispatchEvent(new Event('change', { bubbles: true }));
-
-        return {
-          success: true,
-          matchCount: elements.length,
-          matched: matched.map(o => ({ value: o.value, text: o.textContent.trim() }))
-        };
-      })()
-    `;
-
-    const result = await sendCdpCommand(wsUrl, 'Runtime.evaluate', {
-      expression: js,
-      returnByValue: true
-    });
-
-    const resultValue = result.result.value;
-    if (!resultValue.success) {
-      throw new Error(resultValue.error);
-    }
-
-    return {
-      success: true,
-      matchCount: resultValue.matchCount,
-      matched: resultValue.matched,
-      warning,
-      selectedIndex: index
-    };
-  }
+  const { selectOption } = attachSelectOption({ resolveWsUrl, sendCdpCommand });
 
   const { evaluate, evaluateJson, evaluateRaw } = attachEvaluation({ resolveWsUrl, sendCdpCommand });
 
