@@ -520,22 +520,13 @@ if (command === 'click') {
 // Command: fill
 if (command === 'fill') {
   const [selector, value] = args;
-  if (!wsUrlOrIndex || !selector || !value) {
+  if (!wsUrlOrIndex || !selector || value === undefined) {
     console.error('Usage: chrome-ws fill <tab-index-or-ws-url> <selector> <value>');
     process.exit(1);
   }
   (async () => {
     try {
-      const wsUrl = await resolveWsUrl(wsUrlOrIndex);
-      const js = `
-        (() => {
-          const el = document.querySelector(${JSON.stringify(selector)});
-          el.value = ${JSON.stringify(value)};
-          el.dispatchEvent(new Event('input', { bubbles: true }));
-          el.dispatchEvent(new Event('change', { bubbles: true }));
-        })()
-      `;
-      await sendCdpCommand(wsUrl, 'Runtime.evaluate', { expression: js });
+      await session.fill(wsUrlOrIndex, selector, value);
       console.log(`Filled: ${selector}`);
     } catch (e) {
       console.error('Fill failed:', e.message);
