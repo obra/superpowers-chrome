@@ -46,4 +46,55 @@ describe('evaluation', () => {
     await evaluateRaw(0, 'x');
     assert.equal(sendCdpCommand.calls[0].params.returnByValue, false);
   });
+
+  it('evaluate throws when Runtime.evaluate returns exceptionDetails', async () => {
+    const sendCdpCommand = makeCdpSpy({
+      'Runtime.evaluate': () => ({
+        result: { type: 'undefined' },
+        exceptionDetails: {
+          text: 'Uncaught (in promise)',
+          exception: { description: 'Error: timeout fired' }
+        }
+      })
+    });
+    const { evaluate } = attachEvaluation({
+      resolveWsUrl: makeResolveWsUrl(),
+      sendCdpCommand
+    });
+    await assert.rejects(() => evaluate(0, 'whatever'), /timeout fired/);
+  });
+
+  it('evaluateJson throws when Runtime.evaluate returns exceptionDetails', async () => {
+    const sendCdpCommand = makeCdpSpy({
+      'Runtime.evaluate': () => ({
+        result: { type: 'undefined' },
+        exceptionDetails: {
+          text: 'Uncaught',
+          exception: { description: 'ReferenceError: x is not defined' }
+        }
+      })
+    });
+    const { evaluateJson } = attachEvaluation({
+      resolveWsUrl: makeResolveWsUrl(),
+      sendCdpCommand
+    });
+    await assert.rejects(() => evaluateJson(0, 'x'), /ReferenceError/);
+  });
+
+  it('evaluateRaw throws when Runtime.evaluate returns exceptionDetails', async () => {
+    const sendCdpCommand = makeCdpSpy({
+      'Runtime.evaluate': () => ({
+        result: { type: 'undefined' },
+        exceptionDetails: {
+          text: 'Uncaught',
+          exception: { description: 'TypeError: cannot read property' }
+        }
+      })
+    });
+    const { evaluateRaw } = attachEvaluation({
+      resolveWsUrl: makeResolveWsUrl(),
+      sendCdpCommand
+    });
+    await assert.rejects(() => evaluateRaw(0, 'foo.bar'), /TypeError/);
+  });
 });

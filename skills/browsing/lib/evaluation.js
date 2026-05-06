@@ -19,6 +19,14 @@
  * session via the helpers' closure capture.
  */
 function attachEvaluation({ resolveWsUrl, sendCdpCommand }) {
+  function throwIfExceptionDetails(result) {
+    if (!result.exceptionDetails) return;
+    const desc = result.exceptionDetails.exception?.description
+      || result.exceptionDetails.text
+      || 'unknown evaluation error';
+    throw new Error(`evaluate failed: ${desc}`);
+  }
+
   async function evaluate(tabIndexOrWsUrl, expression) {
     const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
     const result = await sendCdpCommand(wsUrl, 'Runtime.evaluate', {
@@ -26,6 +34,7 @@ function attachEvaluation({ resolveWsUrl, sendCdpCommand }) {
       returnByValue: true,
       awaitPromise: true
     });
+    throwIfExceptionDetails(result);
     return result.result.value;
   }
 
@@ -62,7 +71,7 @@ function attachEvaluation({ resolveWsUrl, sendCdpCommand }) {
       returnByValue: true,
       awaitPromise: true
     });
-
+    throwIfExceptionDetails(result);
     return result.result.value;
   }
 
@@ -72,6 +81,7 @@ function attachEvaluation({ resolveWsUrl, sendCdpCommand }) {
       expression,
       returnByValue: false
     });
+    throwIfExceptionDetails(result);
     return result.result;
   }
 
