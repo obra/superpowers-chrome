@@ -32,6 +32,7 @@ const { attachExtraction } = require('./lib/extraction');
 const { attachScreenshot } = require('./lib/screenshot');
 const { attachTabs } = require('./lib/tabs');
 const { attachFileUpload } = require('./lib/file-upload');
+const { attachCdpConnection } = require('./lib/cdp-connection');
 const {
   PORT_RANGE_START,
   PORT_RANGE_END,
@@ -79,169 +80,16 @@ function createSession({ host, port } = {}) {
   const CHROME_DEBUG_PORT = hostOverride.getPort();
 
   // =============================================================================
-  // CONNECTION POOL (JRV-130: Fix focus lost between eval calls)
-  // =============================================================================
-
-  /**
-   * Get or create a pooled connection for a tab
-   */
-  async function getPooledConnection(wsUrl) {
-    let conn = state.connectionPool.get(wsUrl);
-
-    if (conn && conn.ws.isConnected()) {
-      return conn;
-    }
-
-    // Create new connection
-    const ws = new WebSocketClient(wsUrl);
-    conn = {
-      ws,
-      pendingRequests: new Map(), // id -> { resolve, reject, timeout }
-      messageIdCounter: 1
-    };
-
-    ws.on('message', (msg) => {
-      try {
-        const data = JSON.parse(msg);
-        if (data.id !== undefined) {
-          const pending = conn.pendingRequests.get(data.id);
-          if (pending) {
-            clearTimeout(pending.timeout);
-            conn.pendingRequests.delete(data.id);
-            if (data.error) {
-              pending.reject(new Error(data.error.message || JSON.stringify(data.error)));
-            } else {
-              pending.resolve(data.result);
-            }
-          }
-        }
-        // Handle events (console messages, etc.)
-        if (data.method && conn.eventHandler) {
-          conn.eventHandler(data);
-        }
-      } catch (e) {
-        console.error('Error processing CDP message:', e);
-      }
-    });
-
-    ws.on('close', () => {
-      state.connectionPool.delete(wsUrl);
-      // Reject all pending requests
-      for (const [id, pending] of conn.pendingRequests) {
-        clearTimeout(pending.timeout);
-        pending.reject(new Error('Connection closed'));
-      }
-      conn.pendingRequests.clear();
-    });
-
-    ws.on('error', (err) => {
-      console.error('WebSocket error:', err);
-    });
-
-    await ws.connect();
-    state.connectionPool.set(wsUrl, conn);
-
-    return conn;
-  }
-
-  /**
-   * Send CDP command using pooled connection (maintains focus/state)
-   */
-  async function sendCdpCommandPooled(wsUrl, method, params = {}, timeout = 30000) {
-    const conn = await getPooledConnection(wsUrl);
-    const id = conn.messageIdCounter++;
-
-    return new Promise((resolve, reject) => {
-      const timeoutHandle = setTimeout(() => {
-        conn.pendingRequests.delete(id);
-        reject(new Error(`CDP command timeout: ${method}`));
-      }, timeout);
-
-      conn.pendingRequests.set(id, { resolve, reject, timeout: timeoutHandle });
-      conn.ws.send(JSON.stringify({ id, method, params }));
-    });
-  }
-
-  /**
-   * Close pooled connection for a tab
-   */
-  function closePooledConnection(wsUrl) {
-    const conn = state.connectionPool.get(wsUrl);
-    if (conn) {
-      conn.ws.close();
-      state.connectionPool.delete(wsUrl);
-    }
-  }
-
-  /**
-   * Close all pooled connections
-   */
-  function closeAllConnections() {
-    for (const [wsUrl, conn] of state.connectionPool) {
-      conn.ws.close();
-    }
-    state.connectionPool.clear();
-  }
+  const {
+    getPooledConnection,
+    sendCdpCommand,
+    sendCdpCommandPooled,
+    sendCdpCommandSingle,
+    closePooledConnection,
+    closeAllConnections,
+  } = attachCdpConnection({ state });
 
   const { chromeHttp, resolveWsUrl, getTabs, newTab, closeTab } = attachTabs({ state });
-
-  /**
-   * Send CDP command using pooled connection (default - maintains focus)
-   * Falls back to single-use connection if pool fails
-   */
-  async function sendCdpCommand(wsUrl, method, params = {}, timeout = 30000) {
-    try {
-      return await sendCdpCommandPooled(wsUrl, method, params, timeout);
-    } catch (e) {
-      // Fallback to single-use connection for reliability
-      console.error('Pooled connection failed, using single-use:', e.message);
-      return await sendCdpCommandSingle(wsUrl, method, params, timeout);
-    }
-  }
-
-  /**
-   * Legacy single-use connection (for backwards compatibility)
-   */
-  async function sendCdpCommandSingle(wsUrl, method, params = {}, timeout = 30000) {
-    const ws = new WebSocketClient(wsUrl);
-
-    return new Promise((resolve, reject) => {
-      const id = state.messageIdCounter++;
-      let resolved = false;
-
-      ws.on('message', (msg) => {
-        const data = JSON.parse(msg);
-        if (data.id === id) {
-          resolved = true;
-          ws.close();
-          if (data.error) {
-            reject(new Error(data.error.message || JSON.stringify(data.error)));
-          } else {
-            resolve(data.result);
-          }
-        }
-      });
-
-      ws.on('error', (err) => {
-        if (!resolved) {
-          reject(err);
-        }
-      });
-
-      ws.connect()
-        .then(() => {
-          ws.send(JSON.stringify({ id, method, params }));
-        })
-        .catch(reject);
-
-      setTimeout(() => {
-        if (!resolved) {
-          ws.close();
-          reject(new Error('CDP command timeout'));
-        }
-      }, timeout);
-    });
-  }
 
 
 
