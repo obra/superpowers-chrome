@@ -2,31 +2,46 @@
 
 All notable changes to the superpowers-chrome MCP project.
 
-## [Unreleased] - Per-session chrome-ws-lib factory
+## [2.0.0] - 2026-05-06 - Per-session factory, three-tier test suite, and correctness fixes
+
+Major release. Breaking changes for any external consumer of the lib's pre-factory module-level state or the legacy method aliases. The MCP server and CLI bundled with this plugin are unaffected — they use the canonical names.
 
 ### Added
 - **`createSession({ host, port })`** factory in `chrome-ws-lib.js` — returns a fresh state-bag with a private connection pool, console-message map, profile name, Chrome process handle, active CDP port, and host-override. Two sessions in one process don't share state. Unblocks any caller that wants to drive multiple Chromes concurrently from one Node process.
 - **`createOverride({ host, port })`** factory in `host-override.js` — per-instance host/port/override-enabled state with `getHost`, `getPort`, `getBase`, `isOverrideEnabled`, `rewriteWsUrl`, `setDefaults`. Underpins per-session host-override in `createSession()`.
-- **`test/session-isolation.test.mjs`** — regression gate covering distinct-method-identity, per-session profile/port mutation, and per-instance `setDefaults`/`rewriteWsUrl`.
-- **Three-tier test suite** (132 tests, up from 23): per-lib unit tests with mocked `sendCdpCommand`/`resolveWsUrl`, jsdom-backed integration tests for `select-option` and the page-side scripts, and a real-Chrome smoke suite gated on Chrome being installed.
+- **Three-tier test suite** (140 tests, up from 23): per-lib unit tests with mocked `sendCdpCommand`/`resolveWsUrl`, jsdom-backed integration tests for `select-option` and the page-side scripts, and a real-Chrome smoke suite gated on Chrome being installed.
 - **Bundle drift detection** in `npm test`: a regex-scrape of `chromeLib.X(` calls in the bundle vs. the lib's actual exports, a subprocess test that the bundle responds to MCP `initialize`, and a pre-build-commit guard that fails CI if `mcp/dist/` would change after a fresh build.
 - **Biome lint** with a minimal correctness/style ruleset, wired into `npm test`.
+- **`findPidOnPort(port)`** cross-platform helper (lsof on macOS/Linux, netstat on Windows).
+- **`test/session-isolation.test.mjs`** — regression gate covering per-session state isolation.
 
 ### Fixed
-- **`navigate()` no longer hangs for the full 30-second timeout on fast-loading pages.** `Page.enable` was being sent on the pooled connection but Chrome scopes Page events per-connection, so the listener WebSocket never received `Page.loadEventFired`. `navigate()` now sends `Page.enable` on the listener connection itself, waits for the ack, then issues `Page.navigate`. Page.navigate failures and enable-ack errors propagate to the caller (previously swallowed).
-- **`startChrome()` polls Chrome's debug port instead of sleeping a fixed 2 seconds.** On slower machines or busy systems Chrome can take longer than 2s to open the port, causing every subsequent CDP call to fail with `ECONNREFUSED`. Now polls every 200ms up to a 15-second deadline.
-- **`generateHtmlDiff()` correctly detects reordered identical lines.** The previous set-based logic treated any HTML where the line set was unchanged as "no changes detected" — including pure reorderings. Replaced with a hand-rolled Myers line diff.
-- **Process exit handlers no longer leak per-session.** Previously every `initializeSession()` registered three new `process.on(...)` handlers; with N concurrent sessions in one process this meant 3N handlers. Now a module-level registry registers the handlers once and iterates a Set of active session-cleanup callbacks.
+- **`evaluate()` now throws on JavaScript errors.** Previously, `evaluate`/`evaluateJson`/`evaluateRaw` returned `undefined` when the page-side JS threw or a Promise rejected — the `result.exceptionDetails` on the CDP response was never inspected. **This is a behavior change for callers**: code that relied on getting `undefined` for a failed evaluation will now see thrown errors. The MCP `eval` action and CLI `eval` command surface the error to the caller.
+- **`waitForElement()` and `waitForText()` actually honor their timeout.** Both built their own `Runtime.evaluate` payload with a `setTimeout(reject)` for the timeout case but bypassed the `exceptionDetails` check, so the rejection was silently swallowed and the wait resolved as if the element/text was found. Now route through `evaluate()` so the timeout properly rejects. The MCP `await_element` and `await_text` actions inherit the fix.
+- **`navigate()` no longer hangs 30 seconds on fast-loading pages.** `Page.enable` was being sent on the pooled connection, but Chrome scopes Page events per-connection — the listener WebSocket never received `Page.loadEventFired`. Now sends `Page.enable` on the listener connection itself. `Page.navigate` failures and enable-ack errors propagate to the caller (previously swallowed).
+- **`startChrome()` polls Chrome's debug port instead of sleeping a fixed 2 seconds.** On slower machines Chrome can take longer than 2s to open the port; every subsequent CDP call would fail with `ECONNREFUSED`. Now polls every 200ms up to a 15-second deadline.
+- **`killChrome()` works for sessions that reconnected to a Chrome they didn't launch.** Previously it early-returned when `state.chromeProcess` was null, leaving `showBrowser`/`hideBrowser` unable to free the port. Now falls back to `findPidOnPort(state.activePort)` and SIGTERMs the holder.
+- **`generateHtmlDiff()` detects reordered identical lines.** Previous set-based logic returned "no changes" for any HTML where the line set was unchanged. Replaced with a hand-rolled Myers line diff.
+- **Process exit handlers no longer leak per-session.** Previously every `initializeSession()` registered three new `process.on(...)` handlers; N sessions meant 3N handlers. Now registered once at module scope, iterating a Set of active session-cleanup callbacks.
+- **CLI `chrome-ws eval` awaits Promises.** Previously called `Runtime.evaluate` without `awaitPromise:true`, so async expressions returned `{}` instead of resolved values.
+- **CLI `chrome-ws select` supports labels and multi-select.** Previously did `el.value = X` directly with no support for visible-label match or JSON-array multi-select.
+- **CLI `chrome-ws fill` errors on missing element.** Previously silent success with exit 0 when the selector didn't match.
+- **CLI `chrome-ws wait-for [timeout-ms]` honors the timeout argument.** Previously ignored, falling through to the 30s CDP cap.
+- **CLI `chrome-ws wait-text [timeout-ms]` honors the timeout argument.** Previously consumed the timeout into the search-text via `args.join(' ')`.
+- **CLI `chrome-ws --port=N` actually targets that Chrome.** Previously the CLI's session was constructed without `--port`, so all delegating commands hit the env-default port.
+- **CLI commands exit cleanly.** Previously hung indefinitely after success because pooled WebSocket connections kept Node alive; now `closeAllConnections()` runs on the success path.
 
 ### Changed
 - **Consumer migration**: `mcp/src/index.ts` and `skills/browsing/chrome-ws` now construct sessions explicitly — `require('./chrome-ws-lib').createSession()` and `require('./host-override').createOverride()`.
+- **CLI buggy commands delegate to the lib.** `eval`, `select`, `fill`, `wait-for`, `wait-text` now call `session.<method>` instead of constructing their own `Runtime.evaluate` payload. The CLI now inherits the lib's correctness fixes.
 - **Page-side scripts extracted** from `lib/capture.js` into `lib/page-scripts/markdown.js` and `lib/page-scripts/dom-summary.js`. Same behavior; the scripts can now be linted and tested directly against jsdom.
+- **CLI is now linted by Biome.** The CLI was previously excluded from the lint includes because it has no file extension; now in scope.
 
 ### Removed
-- Legacy module-level exports from `host-override.js`: `CHROME_DEBUG_HOST`, `CHROME_DEBUG_PORT`, `CHROME_DEBUG_BASE`, `WS_OVERRIDE_ENABLED`, and top-level `rewriteWsUrl`. Use `createOverride()` instead. Keeping them alongside the factory was a footgun — load-time-baked constants can only describe one Chrome target, re-introducing the single-instance limitation the factory was added to fix.
-- `skills/browsing/test-host-override.js` smoke test (covered by `test/session-isolation.test.mjs`).
-- Legacy method aliases on the session object: `cdpClick` (use `click`), `insertText` (use `fill`). Two functions defined inside the lib closure but never publicly exported (`keyboardType`, `spaNavigate`, `hrefNavigate`) also removed. The MCP server and CLI never used the aliases; external consumers should migrate to the canonical names.
-- `state.messageIdCounter` from session state. CDP message ids are scoped per-connection; the single-use connection sends exactly one request, so `id = 1` always works.
+- **Legacy module-level exports from `host-override.js`**: `CHROME_DEBUG_HOST`, `CHROME_DEBUG_PORT`, `CHROME_DEBUG_BASE`, `WS_OVERRIDE_ENABLED`, and top-level `rewriteWsUrl`. Use `createOverride()` instead.
+- **Legacy method aliases on the session object**: `cdpClick` (use `click`), `insertText` (use `fill`). Internal-only `keyboardType`, `spaNavigate`, `hrefNavigate` also removed. External consumers should migrate to the canonical names.
+- **`state.messageIdCounter`** from session state. CDP message ids are scoped per-connection; `id = 1` works for the single-use connection.
+- **`skills/browsing/test-host-override.js`** smoke test (covered by `test/session-isolation.test.mjs`).
 
 ---
 
