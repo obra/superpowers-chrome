@@ -18,6 +18,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const require = createRequire(import.meta.url);
 const chromeLib = require(join(__dirname, "../../skills/browsing/chrome-ws-lib.js")).createSession();
+const SERVER_VERSION = require(join(__dirname, "../package.json")).version;
 
 // Track if Chrome has been started
 let chromeStarted = false;
@@ -844,7 +845,7 @@ Chrome auto-starts. All DOM actions provide rich context via automatic captures.
 // Create MCP server instance
 const server = new McpServer({
   name: "chrome-mcp-server",
-  version: "1.0.0"
+  version: SERVER_VERSION
 });
 
 // Register the use_browser tool

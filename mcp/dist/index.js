@@ -13879,6 +13879,7 @@ var __filename = fileURLToPath(import.meta.url);
 var __dirname = dirname(__filename);
 var require2 = createRequire(import.meta.url);
 var chromeLib = require2(join(__dirname, "../../skills/browsing/chrome-ws-lib.js")).createSession();
+var SERVER_VERSION = require2(join(__dirname, "../package.json")).version;
 var chromeStarted = false;
 function hasDisplay() {
   const platform = process.platform;
@@ -14533,7 +14534,7 @@ Chrome auto-starts. All DOM actions provide rich context via automatic captures.
 }
 var server = new McpServer({
   name: "chrome-mcp-server",
-  version: "1.0.0"
+  version: SERVER_VERSION
 });
 server.tool(
   "use_browser",
