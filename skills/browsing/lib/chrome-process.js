@@ -115,8 +115,17 @@ function attachChromeProcess({ state, chromeHttp, getTabs, newTab }) {
     state.chromeProcess = proc;
     state.activePort = chosenPort;
 
-    // Wait for Chrome to be ready
-    await new Promise(resolve => setTimeout(resolve, 2000));
+    // Poll until Chrome's debug port is accepting connections (or 15s timeout).
+    const POLL_INTERVAL_MS = 200;
+    const POLL_TIMEOUT_MS = 15000;
+    const deadline = Date.now() + POLL_TIMEOUT_MS;
+    while (Date.now() < deadline) {
+      if (await isPortAlive(CHROME_DEBUG_HOST, chosenPort)) break;
+      await new Promise(resolve => setTimeout(resolve, POLL_INTERVAL_MS));
+    }
+    if (!(await isPortAlive(CHROME_DEBUG_HOST, chosenPort))) {
+      throw new Error(`Chrome did not become ready on port ${chosenPort} within ${POLL_TIMEOUT_MS}ms`);
+    }
 
     // --- Step 5: Persist port assignment in meta.json ---
     writeProfileMeta(state.chromeProfileName, {

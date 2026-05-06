@@ -39,17 +39,44 @@ function attachNavigation({ state, resolveWsUrl, sendCdpCommand, capturePageArti
       state.consoleMessages.set(wsUrl, []);
     }
 
-    const result = await sendCdpCommand(wsUrl, 'Page.navigate', { url });
-
-    // Open a second WebSocket purely to listen for Page.loadEventFired and,
-    // when auto-capture is on, Runtime.consoleAPICalled. Keeping this off
-    // the pooled connection avoids polluting the request/response flow.
+    // Open a second WebSocket to listen for Page.loadEventFired before
+    // issuing Page.navigate — this order matters for fast-loading pages
+    // (e.g. data: URLs) that complete synchronously: if we navigated first
+    // the load event would fire before the listener was ready, causing every
+    // call to wait for the full 30-second hard cap.
+    let navigateResult;
     await new Promise((resolve) => {
       const ws = new WebSocketClient(wsUrl);
       let pageLoaded = false;
 
+      // Track setup state: we need Page.enable confirmed before we navigate.
+      const CMD_PAGE_ENABLE = 100;
+      const CMD_RUNTIME_ENABLE = 101;
+      let pageEnableConfirmed = false;
+      let runtimeEnableConfirmed = !autoCapture; // skip if not needed
+
       ws.on('message', (msg) => {
         const data = JSON.parse(msg);
+
+        // Wait for our setup commands to be confirmed before navigating.
+        if (data.id === CMD_PAGE_ENABLE) {
+          pageEnableConfirmed = true;
+          if (pageEnableConfirmed && runtimeEnableConfirmed) {
+            sendCdpCommand(wsUrl, 'Page.navigate', { url }).then((navResult) => {
+              navigateResult = navResult;
+            }).catch(() => {});
+          }
+          return;
+        }
+        if (data.id === CMD_RUNTIME_ENABLE) {
+          runtimeEnableConfirmed = true;
+          if (pageEnableConfirmed && runtimeEnableConfirmed) {
+            sendCdpCommand(wsUrl, 'Page.navigate', { url }).then((navResult) => {
+              navigateResult = navResult;
+            }).catch(() => {});
+          }
+          return;
+        }
 
         if (data.method === 'Page.loadEventFired' && !pageLoaded) {
           pageLoaded = true;
@@ -84,9 +111,13 @@ function attachNavigation({ state, resolveWsUrl, sendCdpCommand, capturePageArti
       });
 
       ws.connect().then(() => {
-        sendCdpCommand(wsUrl, 'Page.enable');
+        // Send Page.enable (and Runtime.enable if auto-capturing) on THIS
+        // connection — Chrome scopes events per-connection, so the pooled
+        // sendCdpCommand won't receive Page events here.  Page.navigate is
+        // sent from the message handler above once both enables are confirmed.
+        ws.send(JSON.stringify({ id: CMD_PAGE_ENABLE, method: 'Page.enable' }));
         if (autoCapture) {
-          sendCdpCommand(wsUrl, 'Runtime.enable');
+          ws.send(JSON.stringify({ id: CMD_RUNTIME_ENABLE, method: 'Runtime.enable' }));
         }
       });
 
@@ -108,7 +139,7 @@ function attachNavigation({ state, resolveWsUrl, sendCdpCommand, capturePageArti
         const consoleLog = [];
 
         return {
-          frameId: result.frameId,
+          frameId: navigateResult?.frameId,
           url,
           pageSize: artifacts.pageSize,
           capturePrefix: artifacts.capturePrefix,
@@ -121,14 +152,14 @@ function attachNavigation({ state, resolveWsUrl, sendCdpCommand, capturePageArti
         // Auto-capture failed (e.g. screenshot failed) — return success
         // with an error note so the navigation itself isn't reported as failed.
         return {
-          frameId: result.frameId,
+          frameId: navigateResult?.frameId,
           url,
           error: `Auto-capture failed: ${error.message}`
         };
       }
     }
 
-    return result.frameId;
+    return navigateResult?.frameId;
   }
 
   async function waitForElement(tabIndexOrWsUrl, selector, timeout = 5000) {
