@@ -10,7 +10,6 @@ const [command, wsUrlOrIndex, ...args] = positionalArgs;
 
 const hostOverride = require('./host-override').createOverride();
 const { createSession } = require('./chrome-ws-lib');
-const session = createSession();
 const CHROME_DEBUG_HOST = hostOverride.getHost();
 const CHROME_DEBUG_PORT = hostOverride.getPort();
 const WS_OVERRIDE_ENABLED = hostOverride.isOverrideEnabled();
@@ -18,6 +17,10 @@ const rewriteWsUrl = hostOverride.rewriteWsUrl;
 
 // Effective port: --port=N flag overrides CHROME_WS_PORT env / default 9222
 const effectivePort = portArg ? parseInt(portArg.split('=')[1], 10) : CHROME_DEBUG_PORT;
+
+// Session pointed at the effective port. Built after effectivePort is known
+// so the lib's pooled connections target the right Chrome instance.
+const session = createSession({ host: CHROME_DEBUG_HOST, port: effectivePort });
 
 // Minimal WebSocket client implementation (dependency-free)
 class WebSocketClient {
@@ -477,6 +480,7 @@ if (command === 'wait-for') {
     try {
       await session.waitForElement(wsUrlOrIndex, selector, timeout);
       console.log(`Element found: ${selector}`);
+      await session.closeAllConnections();
     } catch (e) {
       console.error('Wait failed:', e.message);
       process.exit(1);
@@ -517,6 +521,7 @@ if (command === 'fill') {
     try {
       await session.fill(wsUrlOrIndex, selector, value);
       console.log(`Filled: ${selector}`);
+      await session.closeAllConnections();
     } catch (e) {
       console.error('Fill failed:', e.message);
       process.exit(1);
@@ -546,6 +551,7 @@ if (command === 'select') {
       }
       const result = await session.selectOption(wsUrlOrIndex, selector, selectValue);
       console.log(JSON.stringify(result.matched.map(o => o.value)));
+      await session.closeAllConnections();
     } catch (e) {
       console.error('Select failed:', e.message);
       process.exit(1);
@@ -565,6 +571,7 @@ if (command === 'eval') {
     try {
       const value = await session.evaluate(wsUrlOrIndex, expression);
       console.log(JSON.stringify(value, null, 2));
+      await session.closeAllConnections();
     } catch (e) {
       console.error('Eval failed:', e.message);
       process.exit(1);
@@ -674,6 +681,7 @@ if (command === 'wait-text') {
     try {
       await session.waitForText(wsUrlOrIndex, text, timeout);
       console.log(`Text found: ${text}`);
+      await session.closeAllConnections();
     } catch (e) {
       console.error('Wait failed:', e.message);
       process.exit(1);
