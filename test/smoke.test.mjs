@@ -28,10 +28,12 @@ const CHROME_AVAILABLE = detectChrome();
 describe('real Chrome smoke', { skip: !CHROME_AVAILABLE && 'Chrome not installed' }, () => {
   let session;
   let tmpProfileDir;
+  let originalXdgCacheHome;
 
   before(async () => {
     // Use a unique profile so we don't clobber the user's normal profile.
     tmpProfileDir = fs.mkdtempSync(path.join(os.tmpdir(), 'chrome-smoke-'));
+    originalXdgCacheHome = process.env.XDG_CACHE_HOME;
     process.env.XDG_CACHE_HOME = tmpProfileDir;
     session = createSession();
     session.setProfileName(`smoke-${Date.now()}`);
@@ -41,6 +43,11 @@ describe('real Chrome smoke', { skip: !CHROME_AVAILABLE && 'Chrome not installed
   after(async () => {
     try { await session.killChrome(); } catch {}
     try { fs.rmSync(tmpProfileDir, { recursive: true, force: true }); } catch {}
+    if (originalXdgCacheHome === undefined) {
+      delete process.env.XDG_CACHE_HOME;
+    } else {
+      process.env.XDG_CACHE_HOME = originalXdgCacheHome;
+    }
   });
 
   it('navigate + extractText returns expected content', async () => {

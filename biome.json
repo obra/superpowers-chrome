@@ -5,6 +5,7 @@
     "includes": [
       "skills/browsing/**/*.js",
       "skills/browsing/**/*.cjs",
+      "skills/browsing/chrome-ws",
       "test/**/*.mjs",
       "test/**/*.js",
       "mcp/src/**/*.ts"
