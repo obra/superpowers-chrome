@@ -53,15 +53,34 @@ function attachNavigation({ state, resolveWsUrl, sendCdpCommand, capturePageArti
     await new Promise((resolve, reject) => {
       const ws = new WebSocketClient(wsUrl);
       let pageLoaded = false;
+      let settled = false; // guard against double-resolve from race between events
       let pageEnableConfirmed = false;
       let runtimeEnableConfirmed = !autoCapture; // skip if not needed
+
+      function settle(action) {
+        if (settled) return;
+        settled = true;
+        try { ws.close(); } catch (_e) { /* ignore */ }
+        action();
+      }
 
       function startNavigateIfReady() {
         if (!pageEnableConfirmed || !runtimeEnableConfirmed) return;
         sendCdpCommand(wsUrl, 'Page.navigate', { url })
           .then((navResult) => { navigateResult = navResult; })
-          .catch((err) => { ws.close(); reject(err); });
+          .catch((err) => settle(() => reject(err)));
       }
+
+      // Listener WS errors / unexpected close → reject the navigate. Without
+      // this, a dropped WS mid-flight hangs until the hard-cap timeout.
+      ws.on('error', (err) => {
+        settle(() => reject(new Error(`navigate listener WebSocket error: ${err.message || err}`)));
+      });
+      ws.on('close', () => {
+        if (!pageLoaded) {
+          settle(() => reject(new Error('navigate listener WebSocket closed before Page.loadEventFired')));
+        }
+      });
 
       ws.on('message', (msg) => {
         const data = JSON.parse(msg);
@@ -69,8 +88,7 @@ function attachNavigation({ state, resolveWsUrl, sendCdpCommand, capturePageArti
         // Wait for our setup commands to be confirmed before navigating.
         if (data.id === CMD_PAGE_ENABLE) {
           if (data.error) {
-            ws.close();
-            reject(new Error(`Page.enable failed: ${data.error.message || JSON.stringify(data.error)}`));
+            settle(() => reject(new Error(`Page.enable failed: ${data.error.message || JSON.stringify(data.error)}`)));
             return;
           }
           pageEnableConfirmed = true;
@@ -79,8 +97,7 @@ function attachNavigation({ state, resolveWsUrl, sendCdpCommand, capturePageArti
         }
         if (data.id === CMD_RUNTIME_ENABLE) {
           if (data.error) {
-            ws.close();
-            reject(new Error(`Runtime.enable failed: ${data.error.message || JSON.stringify(data.error)}`));
+            settle(() => reject(new Error(`Runtime.enable failed: ${data.error.message || JSON.stringify(data.error)}`)));
             return;
           }
           runtimeEnableConfirmed = true;
@@ -93,10 +110,9 @@ function attachNavigation({ state, resolveWsUrl, sendCdpCommand, capturePageArti
           if (autoCapture) {
             // Linger so any console messages emitted during the load
             // event handler get captured before we close the socket.
-            setTimeout(() => { ws.close(); resolve(); }, CONSOLE_LINGER_MS);
+            setTimeout(() => settle(() => resolve()), CONSOLE_LINGER_MS);
           } else {
-            ws.close();
-            resolve();
+            settle(() => resolve());
           }
         }
 
@@ -129,13 +145,13 @@ function attachNavigation({ state, resolveWsUrl, sendCdpCommand, capturePageArti
         if (autoCapture) {
           ws.send(JSON.stringify({ id: CMD_RUNTIME_ENABLE, method: 'Runtime.enable' }));
         }
-      }).catch((err) => { reject(err); });
+      }).catch((err) => settle(() => reject(err)));
 
-      // Hard cap on the wait — slow servers, hung pages.
+      // Hard cap on the wait — slow servers, hung pages. Reject (don't
+      // silently resolve) so the caller knows the page never loaded.
       setTimeout(() => {
         if (!pageLoaded) {
-          ws.close();
-          resolve();
+          settle(() => reject(new Error(`navigate timeout: ${url} did not fire Page.loadEventFired within ${NAVIGATE_TIMEOUT_MS}ms`)));
         }
       }, NAVIGATE_TIMEOUT_MS);
     });
