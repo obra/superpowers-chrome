@@ -1,4 +1,5 @@
 const { getElementSelector } = require('./element-selector');
+const { throwIfExceptionDetails } = require('./cdp-utils');
 
 /**
  * Single-element extraction primitives — text content, HTML, attributes.
@@ -20,6 +21,7 @@ function attachExtraction({ resolveWsUrl, sendCdpCommand }) {
       expression: js,
       returnByValue: true
     });
+    throwIfExceptionDetails(result);
     return result.result.value;
   }
 
@@ -32,6 +34,7 @@ function attachExtraction({ resolveWsUrl, sendCdpCommand }) {
       expression: js,
       returnByValue: true
     });
+    throwIfExceptionDetails(result);
     return result.result.value;
   }
 
@@ -42,6 +45,7 @@ function attachExtraction({ resolveWsUrl, sendCdpCommand }) {
       expression: js,
       returnByValue: true
     });
+    throwIfExceptionDetails(result);
     return result.result.value;
   }
 

@@ -1,4 +1,5 @@
 const { getElementSelector } = require('./element-selector');
+const { throwIfExceptionDetails } = require('./cdp-utils');
 
 // Brief pause between the last mouseMoved step and mouseReleased so apps
 // that process drag events asynchronously have time to commit.
@@ -38,6 +39,7 @@ function attachMouse({ resolveWsUrl, sendCdpCommand }) {
       expression: js,
       returnByValue: true
     });
+    throwIfExceptionDetails(result);
     if (!result.result.value || !result.result.value.found) {
       throw new Error(`${label} not found: ${selector}`);
     }
@@ -66,7 +68,8 @@ function attachMouse({ resolveWsUrl, sendCdpCommand }) {
     } catch (_e) {
       // Fallback for edge cases (e.g., hidden elements with zero bounding rect).
       const js = `${getElementSelector(selector)}?.click()`;
-      await sendCdpCommand(wsUrl, 'Runtime.evaluate', { expression: js });
+      const fallbackResult = await sendCdpCommand(wsUrl, 'Runtime.evaluate', { expression: js });
+      throwIfExceptionDetails(fallbackResult);
       return { clicked: true, fallback: true };
     }
   }
@@ -205,6 +208,7 @@ function attachMouse({ resolveWsUrl, sendCdpCommand }) {
         expression: js,
         returnByValue: true
       });
+      throwIfExceptionDetails(result);
       if (result.result.value && result.result.value.found) {
         x = result.result.value.x;
         y = result.result.value.y;

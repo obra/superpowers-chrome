@@ -3,6 +3,7 @@ const path = require('path');
 const { execSync } = require('child_process');
 const os = require('os');
 const { getElementSelector } = require('./element-selector');
+const { throwIfExceptionDetails } = require('./cdp-utils');
 
 // Auto-downscale cap so screenshots fit Claude's many-image mode size limit
 // (max 2000px). Headroom of 200px keeps us safely under.
@@ -96,6 +97,7 @@ function attachScreenshot({ resolveWsUrl, sendCdpCommand }) {
         expression: js,
         returnByValue: true
       });
+      throwIfExceptionDetails(result);
       clip = result.result.value;
     } else {
       // Explicit viewport clip — required for correct sizing on Linux HiDPI.
@@ -103,6 +105,7 @@ function attachScreenshot({ resolveWsUrl, sendCdpCommand }) {
         expression: '({ width: window.innerWidth, height: window.innerHeight })',
         returnByValue: true
       });
+      throwIfExceptionDetails(vpResult);
       const { width, height } = vpResult.result.value;
       clip = { x: 0, y: 0, width, height, scale: 1 };
     }

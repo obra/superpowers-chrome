@@ -2,6 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const { getXdgCacheHome } = require('./chrome-launcher-helpers');
 const { generateHtmlDiff } = require('./html-diff');
+const { throwIfExceptionDetails } = require('./cdp-utils');
 const markdownScript = require('./page-scripts/markdown');
 const domSummaryScript = require('./page-scripts/dom-summary');
 
@@ -92,6 +93,7 @@ function attachCapture({ state, resolveWsUrl, sendCdpCommand, getHtml, screensho
       expression: domSummaryScript,
       returnByValue: true
     });
+    throwIfExceptionDetails(result);
     return result.result.value;
   }
 
@@ -109,6 +111,7 @@ function attachCapture({ state, resolveWsUrl, sendCdpCommand, getHtml, screensho
       expression: js,
       returnByValue: true
     });
+    throwIfExceptionDetails(result);
     return result.result.value;
   }
 
@@ -121,6 +124,7 @@ function attachCapture({ state, resolveWsUrl, sendCdpCommand, getHtml, screensho
       expression: markdownScript,
       returnByValue: true
     });
+    throwIfExceptionDetails(result);
     return result.result.value;
   }
 
@@ -197,6 +201,7 @@ function attachCapture({ state, resolveWsUrl, sendCdpCommand, getHtml, screensho
         `,
         returnByValue: true
       });
+      throwIfExceptionDetails(result);
       return result.result?.value;
     }
 
@@ -220,9 +225,10 @@ function attachCapture({ state, resolveWsUrl, sendCdpCommand, getHtml, screensho
         })()`;
       }
       if (selector) {
-        await sendCdpCommand(wsUrl, 'Runtime.evaluate', {
+        const restoreResult = await sendCdpCommand(wsUrl, 'Runtime.evaluate', {
           expression: `(() => { const el = ${selector}; if (el) el.focus(); })()`
         });
+        throwIfExceptionDetails(restoreResult);
       }
     }
 

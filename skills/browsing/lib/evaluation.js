@@ -18,15 +18,9 @@
  * `attachEvaluation({ resolveWsUrl, sendCdpCommand })` binds them to a
  * session via the helpers' closure capture.
  */
-function attachEvaluation({ resolveWsUrl, sendCdpCommand }) {
-  function throwIfExceptionDetails(result) {
-    if (!result.exceptionDetails) return;
-    const desc = result.exceptionDetails.exception?.description
-      || result.exceptionDetails.text
-      || 'unknown evaluation error';
-    throw new Error(`evaluate failed: ${desc}`);
-  }
+const { throwIfExceptionDetails } = require('./cdp-utils');
 
+function attachEvaluation({ resolveWsUrl, sendCdpCommand }) {
   async function evaluate(tabIndexOrWsUrl, expression) {
     const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
     const result = await sendCdpCommand(wsUrl, 'Runtime.evaluate', {

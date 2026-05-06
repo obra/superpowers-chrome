@@ -1,5 +1,6 @@
 const { KEY_DEFINITIONS, charToKeyDef } = require('./key-definitions');
 const { getElementSelector } = require('./element-selector');
+const { throwIfExceptionDetails } = require('./cdp-utils');
 
 /**
  * Keyboard and text-input actions: keyboardPress (named keys + modifiers),
@@ -89,6 +90,7 @@ function attachKeyboardInput({ state, resolveWsUrl, sendCdpCommand, click }) {
         expression: focusJs,
         returnByValue: true
       });
+      throwIfExceptionDetails(focusResult);
       if (!focusResult.result?.value?.success) {
         throw new Error(focusResult.result?.value?.error || 'Failed to focus element');
       }
@@ -125,6 +127,7 @@ function attachKeyboardInput({ state, resolveWsUrl, sendCdpCommand, click }) {
           expression: `({ isTextarea: document.activeElement?.tagName === 'TEXTAREA' })`,
           returnByValue: true
         });
+        throwIfExceptionDetails(currentFocus);
         const currentlyInTextarea = currentFocus.result?.value?.isTextarea || false;
 
         if (currentlyInTextarea) {

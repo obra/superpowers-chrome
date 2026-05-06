@@ -1,4 +1,5 @@
 const { getElementSelectorAll } = require('./element-selector');
+const { throwIfExceptionDetails } = require('./cdp-utils');
 
 /**
  * Native HTML `<select>` element control.
@@ -27,6 +28,7 @@ function attachSelectOption({ resolveWsUrl, sendCdpCommand }) {
       expression: countJs,
       returnByValue: true
     });
+    throwIfExceptionDetails(countResult);
     const matchCount = countResult.result.value || 0;
 
     let warning = null;
@@ -76,6 +78,7 @@ function attachSelectOption({ resolveWsUrl, sendCdpCommand }) {
       expression: js,
       returnByValue: true
     });
+    throwIfExceptionDetails(result);
 
     const resultValue = result.result.value;
     if (!resultValue.success) {
