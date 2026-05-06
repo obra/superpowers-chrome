@@ -1,5 +1,9 @@
 const { getElementSelector } = require('./element-selector');
 
+// Brief pause between the last mouseMoved step and mouseReleased so apps
+// that process drag events asynchronously have time to commit.
+const DRAG_SETTLE_MS = 50;
+
 /**
  * CDP mouse actions — click, hover, drag, mouse-move, scroll, double-click,
  * right-click. Every entry resolves to real `Input.dispatchMouseEvent`
@@ -122,7 +126,7 @@ function attachMouse({ resolveWsUrl, sendCdpCommand }) {
     }
 
     // Brief pause for apps that process drag events asynchronously.
-    await new Promise(resolve => setTimeout(resolve, 50));
+    await new Promise(resolve => setTimeout(resolve, DRAG_SETTLE_MS));
 
     await sendCdpCommand(wsUrl, 'Input.dispatchMouseEvent', {
       type: 'mouseReleased',

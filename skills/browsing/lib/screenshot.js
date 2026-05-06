@@ -4,6 +4,10 @@ const { execSync } = require('child_process');
 const os = require('os');
 const { getElementSelector } = require('./element-selector');
 
+// Auto-downscale cap so screenshots fit Claude's many-image mode size limit
+// (max 2000px). Headroom of 200px keeps us safely under.
+const MAX_IMAGE_DIMENSION_PX = 1800;
+
 /**
  * Page / element / full-page screenshots via CDP Page.captureScreenshot,
  * with auto-downscaling so the resulting PNG fits Claude's many-image mode
@@ -26,7 +30,7 @@ const { getElementSelector } = require('./element-selector');
  * action.
  */
 function attachScreenshot({ resolveWsUrl, sendCdpCommand }) {
-  async function downscaleImageIfNeeded(filepath, maxDimension = 1800) {
+  async function downscaleImageIfNeeded(filepath, maxDimension = MAX_IMAGE_DIMENSION_PX) {
     const platform = os.platform();
 
     try {
@@ -113,7 +117,7 @@ function attachScreenshot({ resolveWsUrl, sendCdpCommand }) {
     const buffer = Buffer.from(result.data, 'base64');
     fs.writeFileSync(filename, buffer);
 
-    await downscaleImageIfNeeded(filename, 1800);
+    await downscaleImageIfNeeded(filename, MAX_IMAGE_DIMENSION_PX);
 
     return path.resolve(filename);
   }

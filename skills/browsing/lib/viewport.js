@@ -1,3 +1,7 @@
+// Pixel 7 UA string used for mobile emulation. Matches what Chrome's own
+// device-mode dropdown sends for the same device.
+const MOBILE_USER_AGENT = 'Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36';
+
 /**
  * Viewport / device emulation — set, clear, and read the CDP
  * Emulation.setDeviceMetricsOverride state. Mobile emulation toggles touch
@@ -47,7 +51,7 @@ function attachViewport({ resolveWsUrl, sendCdpCommand }) {
     if (viewportParams.mobile) {
       await sendCdpCommand(wsUrl, 'Emulation.setTouchEmulationEnabled', { enabled: true });
       await sendCdpCommand(wsUrl, 'Emulation.setUserAgentOverride', {
-        userAgent: 'Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36'
+        userAgent: MOBILE_USER_AGENT
       });
     } else {
       await sendCdpCommand(wsUrl, 'Emulation.setTouchEmulationEnabled', { enabled: false });

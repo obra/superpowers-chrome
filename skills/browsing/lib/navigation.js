@@ -1,6 +1,15 @@
 const { WebSocketClient } = require('./websocket-client');
 const { getElementSelector } = require('./element-selector');
 
+// Hard cap on the navigate() wait — covers slow servers and pages that
+// never fire Page.loadEventFired.
+const NAVIGATE_TIMEOUT_MS = 30000;
+
+// After Page.loadEventFired, keep the secondary console-capture WebSocket
+// open this long so console messages emitted in the load handler get
+// captured before we close the socket.
+const CONSOLE_LINGER_MS = 1000;
+
 /**
  * Navigation: page-level navigation, SPA pushState navigation, and the
  * "wait for" predicates.
@@ -45,9 +54,9 @@ function attachNavigation({ state, resolveWsUrl, sendCdpCommand, capturePageArti
         if (data.method === 'Page.loadEventFired' && !pageLoaded) {
           pageLoaded = true;
           if (autoCapture) {
-            // Linger 1s so any console messages emitted during the load
+            // Linger so any console messages emitted during the load
             // event handler get captured before we close the socket.
-            setTimeout(() => { ws.close(); resolve(); }, 1000);
+            setTimeout(() => { ws.close(); resolve(); }, CONSOLE_LINGER_MS);
           } else {
             ws.close();
             resolve();
@@ -87,7 +96,7 @@ function attachNavigation({ state, resolveWsUrl, sendCdpCommand, capturePageArti
           ws.close();
           resolve();
         }
-      }, 30000);
+      }, NAVIGATE_TIMEOUT_MS);
     });
 
     if (autoCapture) {
