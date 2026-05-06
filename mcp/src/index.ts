@@ -557,7 +557,7 @@ async function executeBrowserAction(params: UseBrowserInput): Promise<string> {
         throw new Error("scroll requires payload: direction (up/down/left/right) or JSON {\"deltaX\":N,\"deltaY\":N}");
       }
 
-      let scrollOpts: { selector?: string; deltaX?: number; deltaY?: number } = {};
+      const scrollOpts: { selector?: string; deltaX?: number; deltaY?: number } = {};
       if (params.selector) {
         scrollOpts.selector = params.selector;
       }

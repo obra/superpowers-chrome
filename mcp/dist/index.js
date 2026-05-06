@@ -14270,7 +14270,7 @@ Result: ${evalResult.result}`);
       if (!params.payload) {
         throw new Error('scroll requires payload: direction (up/down/left/right) or JSON {"deltaX":N,"deltaY":N}');
       }
-      let scrollOpts = {};
+      const scrollOpts = {};
       if (params.selector) {
         scrollOpts.selector = params.selector;
       }

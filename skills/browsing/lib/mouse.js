@@ -59,7 +59,7 @@ function attachMouse({ resolveWsUrl, sendCdpCommand }) {
       });
 
       return { clicked: true, x, y };
-    } catch (e) {
+    } catch (_e) {
       // Fallback for edge cases (e.g., hidden elements with zero bounding rect).
       const js = `${getElementSelector(selector)}?.click()`;
       await sendCdpCommand(wsUrl, 'Runtime.evaluate', { expression: js });

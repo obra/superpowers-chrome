@@ -24,7 +24,7 @@ async function chromeHttpAt(host, port, urlPath, method = 'GET') {
       res.on('end', () => {
         if (!data) { resolve({}); return; }
         try { resolve(JSON.parse(data)); }
-        catch (e) { resolve({ message: data }); }
+        catch (_e) { resolve({ message: data }); }
       });
     });
 

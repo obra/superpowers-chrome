@@ -60,7 +60,7 @@ function attachScreenshot({ resolveWsUrl, sendCdpCommand }) {
       } else if (platform === 'linux') {
         execSync(`convert "${filepath}" -resize ${maxDimension}x${maxDimension}\\> "${filepath}" 2>/dev/null`);
       }
-    } catch (e) {
+    } catch (_e) {
       // Better to ship a too-big PNG than none.
     }
   }

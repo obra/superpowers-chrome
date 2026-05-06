@@ -68,7 +68,7 @@ function attachCdpConnection({ state }) {
     ws.on('close', () => {
       state.connectionPool.delete(wsUrl);
       // Reject any in-flight requests so callers don't hang forever.
-      for (const [id, pending] of conn.pendingRequests) {
+      for (const [_id, pending] of conn.pendingRequests) {
         clearTimeout(pending.timeout);
         pending.reject(new Error('Connection closed'));
       }
@@ -163,7 +163,7 @@ function attachCdpConnection({ state }) {
   }
 
   function closeAllConnections() {
-    for (const [wsUrl, conn] of state.connectionPool) {
+    for (const [_wsUrl, conn] of state.connectionPool) {
       conn.ws.close();
     }
     state.connectionPool.clear();

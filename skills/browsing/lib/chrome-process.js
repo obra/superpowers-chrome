@@ -143,7 +143,7 @@ function attachChromeProcess({ state, chromeHttp, getTabs, newTab }) {
       try {
         await chromeHttp('/json/close', 'GET');
         await new Promise(resolve => setTimeout(resolve, 500));
-      } catch (e) {
+      } catch (_e) {
         // Ignore — Chrome might already be dead.
       }
 
@@ -152,7 +152,7 @@ function attachChromeProcess({ state, chromeHttp, getTabs, newTab }) {
         try {
           process.kill(state.chromeProcess.pid, 'SIGTERM');
           await new Promise(resolve => setTimeout(resolve, 500));
-        } catch (e) {
+        } catch (_e) {
           // Process might already be dead.
         }
       }
@@ -183,7 +183,7 @@ function attachChromeProcess({ state, chromeHttp, getTabs, newTab }) {
     try {
       const tabs = await getTabs();
       currentTabs = tabs.map(t => t.url).filter(url => url && url !== 'about:blank');
-    } catch (e) {
+    } catch (_e) {
       // Chrome not running — nothing to capture.
     }
 

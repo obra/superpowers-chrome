@@ -14,9 +14,8 @@
  */
 
 
-const { createOverride } = require('./host-override');
-const { getElementSelector, getElementSelectorAll } = require('./lib/element-selector');
-const { KEY_DEFINITIONS, charToKeyDef } = require('./lib/key-definitions');
+const { getElementSelector } = require('./lib/element-selector');
+const { KEY_DEFINITIONS } = require('./lib/key-definitions');
 const { generateHtmlDiff } = require('./lib/html-diff');
 const { createState } = require('./lib/session-state');
 const { attachCookies } = require('./lib/cookies');
@@ -25,7 +24,6 @@ const { attachEvaluation } = require('./lib/evaluation');
 const { attachMouse } = require('./lib/mouse');
 const { attachChromeProcess } = require('./lib/chrome-process');
 const { attachCapture } = require('./lib/capture');
-const { WebSocketClient } = require('./lib/websocket-client');
 const { attachNavigation } = require('./lib/navigation');
 const { attachKeyboardInput } = require('./lib/keyboard-input');
 const { attachExtraction } = require('./lib/extraction');
@@ -36,17 +34,12 @@ const { attachCdpConnection } = require('./lib/cdp-connection');
 const { attachConsoleLogging } = require('./lib/console-logging');
 const { attachSelectOption } = require('./lib/select-option');
 const {
-  PORT_RANGE_START,
-  PORT_RANGE_END,
-  chromeHttpAt,
   getXdgCacheHome,
   getChromeProfileDir,
   getProfileMetaPath,
   readProfileMeta,
   writeProfileMeta,
   clearProfileMeta,
-  isPortAlive,
-  isPortFree,
   findAvailablePort,
   buildChromeArgs,
 } = require('./lib/chrome-launcher-helpers');
@@ -75,41 +68,27 @@ const {
  */
 function createSession({ host, port } = {}) {
   const state = createState({ host, port });
-  // Convenience aliases for read-once derived values. The hostOverride that
-  // backs these is on `state` for any extracted module that needs it.
-  const { hostOverride, rewriteWsUrl } = state;
-  const CHROME_DEBUG_HOST = hostOverride.getHost();
-  const CHROME_DEBUG_PORT = hostOverride.getPort();
 
   // =============================================================================
   const {
-    getPooledConnection,
     sendCdpCommand,
-    sendCdpCommandPooled,
-    sendCdpCommandSingle,
     closePooledConnection,
     closeAllConnections,
   } = attachCdpConnection({ state });
 
   const { chromeHttp, resolveWsUrl, getTabs, newTab, closeTab } = attachTabs({ state });
 
-
-
   const { click, hover, drag, mouseMove, scroll, doubleClick, rightClick } =
     attachMouse({ resolveWsUrl, sendCdpCommand });
-  // Legacy alias for backwards compatibility
-  const cdpClick = click;
 
-  const { keyboardPress, keyboardType, fill, humanType } =
+  const { keyboardPress, fill, humanType } =
     attachKeyboardInput({ state, resolveWsUrl, sendCdpCommand, click });
-  // Legacy alias
-  const insertText = fill;
 
   const { fileUpload } = attachFileUpload({ resolveWsUrl, sendCdpCommand });
 
   const { selectOption } = attachSelectOption({ resolveWsUrl, sendCdpCommand });
 
-  const { evaluate, evaluateJson, evaluateRaw } = attachEvaluation({ resolveWsUrl, sendCdpCommand });
+  const { evaluate } = attachEvaluation({ resolveWsUrl, sendCdpCommand });
 
   // =============================================================================
 
@@ -146,7 +125,7 @@ function createSession({ host, port } = {}) {
     actions: { click, fill, selectOption, evaluate },
   });
 
-  const { navigate, spaNavigate, hrefNavigate, waitForElement, waitForText } =
+  const { navigate, waitForElement, waitForText } =
     attachNavigation({ state, resolveWsUrl, sendCdpCommand, capturePageArtifacts });
 
   const { setViewport, clearViewport, getViewport } = attachViewport({ resolveWsUrl, sendCdpCommand });

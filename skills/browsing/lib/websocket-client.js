@@ -50,7 +50,7 @@ class WebSocketClient {
 
       const req = http.request(options);
 
-      req.on('upgrade', (res, socket) => {
+      req.on('upgrade', (_res, socket) => {
         this.socket = socket;
         this.connected = true;
 
@@ -83,9 +83,9 @@ class WebSocketClient {
       const firstByte = this.buffer[0];
       const secondByte = this.buffer[1];
 
-      const fin = (firstByte & 0x80) !== 0;
+      const _fin = (firstByte & 0x80) !== 0;
       const opcode = firstByte & 0x0F;
-      const masked = (secondByte & 0x80) !== 0;
+      const _masked = (secondByte & 0x80) !== 0;
       let payloadLen = secondByte & 0x7F;
 
       let offset = 2;
@@ -102,7 +102,7 @@ class WebSocketClient {
 
       if (this.buffer.length < offset + payloadLen) return;
 
-      let payload = this.buffer.slice(offset, offset + payloadLen);
+      const payload = this.buffer.slice(offset, offset + payloadLen);
       this.buffer = this.buffer.slice(offset + payloadLen);
 
       if (opcode === 0x1 && this.callbacks.message) {
