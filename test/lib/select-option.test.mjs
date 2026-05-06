@@ -14,7 +14,7 @@ describe('selectOption (jsdom)', () => {
     // that exercise page-side code paths.
     const dom = new JSDOM(html, { runScripts: 'dangerously' });
     const { window } = dom;
-    const sendCdpCommand = async (wsUrl, method, params) => {
+    const sendCdpCommand = async (_wsUrl, method, params) => {
       if (method !== 'Runtime.evaluate') {
         throw new Error(`Unexpected CDP method: ${method}`);
       }
