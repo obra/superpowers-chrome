@@ -3,9 +3,8 @@ const { getElementSelector } = require('./element-selector');
 
 /**
  * Keyboard and text-input actions: keyboardPress (named keys + modifiers),
- * fill (smart text input with \t/\n handling), humanType (realistic
- * per-keystroke timing for bot-detection-resistant input), and the simpler
- * keyboardType helper.
+ * fill (smart text input with \t/\n handling), and humanType (realistic
+ * per-keystroke timing for bot-detection-resistant input).
  *
  * The headless/headed split inside humanType is load-bearing: in headed
  * mode we send full keyDown/keyUp events so JS keyboard event handlers
