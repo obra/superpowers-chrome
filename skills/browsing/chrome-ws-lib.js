@@ -28,6 +28,7 @@ const { attachCapture } = require('./lib/capture');
 const { WebSocketClient } = require('./lib/websocket-client');
 const { attachNavigation } = require('./lib/navigation');
 const { attachKeyboardInput } = require('./lib/keyboard-input');
+const { attachExtraction } = require('./lib/extraction');
 const {
   PORT_RANGE_START,
   PORT_RANGE_END,
@@ -466,37 +467,7 @@ function createSession({ host, port } = {}) {
 
   // =============================================================================
 
-  async function extractText(tabIndexOrWsUrl, selector) {
-    const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
-    const js = `${getElementSelector(selector)}?.textContent`;
-    const result = await sendCdpCommand(wsUrl, 'Runtime.evaluate', {
-      expression: js,
-      returnByValue: true
-    });
-    return result.result.value;
-  }
-
-  async function getHtml(tabIndexOrWsUrl, selector = null) {
-    const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
-    const js = selector
-      ? `${getElementSelector(selector)}?.innerHTML`
-      : 'document.documentElement.outerHTML';
-    const result = await sendCdpCommand(wsUrl, 'Runtime.evaluate', {
-      expression: js,
-      returnByValue: true
-    });
-    return result.result.value;
-  }
-
-  async function getAttribute(tabIndexOrWsUrl, selector, attrName) {
-    const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
-    const js = `${getElementSelector(selector)}?.getAttribute(${JSON.stringify(attrName)})`;
-    const result = await sendCdpCommand(wsUrl, 'Runtime.evaluate', {
-      expression: js,
-      returnByValue: true
-    });
-    return result.result.value;
-  }
+  const { extractText, getHtml, getAttribute } = attachExtraction({ resolveWsUrl, sendCdpCommand });
 
 
   async function screenshot(tabIndexOrWsUrl, filename, selector = null, fullPage = false) {
