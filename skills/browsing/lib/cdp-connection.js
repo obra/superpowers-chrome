@@ -20,8 +20,8 @@ const DEFAULT_CDP_TIMEOUT_MS = 30000;
  * connection would still work.
  *
  * Per-connection request ids start at 1 in each pooled `conn`. The
- * single-use path uses `state.messageIdCounter` (one counter per session)
- * because each single-use connection is its own short-lived ws.
+ * single-use path always uses id=1 because each fresh ws has nothing to
+ * collide with.
  *
  * The pool eventHandler hook (`conn.eventHandler`) is consumed by
  * `enableConsoleLogging` (and any future caller that wants to listen on
@@ -112,7 +112,9 @@ function attachCdpConnection({ state }) {
     const ws = new WebSocketClient(wsUrl);
 
     return new Promise((resolve, reject) => {
-      const id = state.messageIdCounter++;
+      // Single-use ws sends exactly one request — id=1 is fine because the
+      // connection is fresh and there's nothing to collide with.
+      const id = 1;
       let resolved = false;
 
       ws.on('message', (msg) => {

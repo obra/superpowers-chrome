@@ -6,9 +6,8 @@ const { createOverride } = require('../host-override');
  * Every Chrome session has a small set of mutable values that the rest of
  * the library reads and writes: the active CDP port, the connection pool,
  * per-tab console-message buffers, the launched Chrome process handle,
- * the chosen profile name and data directory, the headless flag, the
- * auto-capture session directory and counter, and a single-use CDP
- * message-id counter.
+ * the chosen profile name and data directory, the headless flag, and the
+ * auto-capture session directory and counter.
  *
  * Pulling them into one object (and one file) makes the per-session
  * surface explicit, lets methods that get extracted to sibling files
@@ -43,10 +42,6 @@ function createState({ host, port } = {}) {
     chromeHeadless: true,
     chromeUserDataDir: null,
     chromeProfileName: 'superpowers-chrome',
-
-    // Single-use CDP connection's message-id counter (sendCdpCommandSingle
-    // fallback path; pooled connections have their own per-connection counter).
-    messageIdCounter: 1,
   };
 }
 
