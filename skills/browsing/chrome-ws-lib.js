@@ -31,6 +31,7 @@ const { attachKeyboardInput } = require('./lib/keyboard-input');
 const { attachExtraction } = require('./lib/extraction');
 const { attachScreenshot } = require('./lib/screenshot');
 const { attachTabs } = require('./lib/tabs');
+const { attachFileUpload } = require('./lib/file-upload');
 const {
   PORT_RANGE_START,
   PORT_RANGE_END,
@@ -254,63 +255,7 @@ function createSession({ host, port } = {}) {
   // Legacy alias
   const insertText = fill;
 
-  // =============================================================================
-  // FILE UPLOAD - Set files on input[type=file] elements
-  // =============================================================================
-
-  /**
-   * Upload files to an input[type=file] element using DOM.setFileInputFiles.
-   * This is the only way to programmatically set files on a file input
-   * (security restrictions prevent JavaScript from doing it).
-   *
-   * @param {number|string} tabIndexOrWsUrl - Tab index or WebSocket URL
-   * @param {string} selector - CSS/XPath selector for the file input
-   * @param {string[]} filePaths - Array of absolute file paths to upload
-   */
-  async function fileUpload(tabIndexOrWsUrl, selector, filePaths) {
-    const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
-
-    // Get the DOM node ID for the file input
-    const docResult = await sendCdpCommand(wsUrl, 'DOM.getDocument', {});
-    const rootNodeId = docResult.root.nodeId;
-
-    // Find the element
-    let nodeId;
-    if (selector.startsWith('/') || selector.startsWith('//')) {
-      // XPath
-      const searchResult = await sendCdpCommand(wsUrl, 'DOM.performSearch', {
-        query: selector
-      });
-      if (searchResult.resultCount === 0) {
-        throw new Error(`File input not found: ${selector}`);
-      }
-      const nodesResult = await sendCdpCommand(wsUrl, 'DOM.getSearchResults', {
-        searchId: searchResult.searchId,
-        fromIndex: 0,
-        toIndex: 1
-      });
-      nodeId = nodesResult.nodeIds[0];
-    } else {
-      // CSS selector
-      const queryResult = await sendCdpCommand(wsUrl, 'DOM.querySelector', {
-        nodeId: rootNodeId,
-        selector: selector
-      });
-      nodeId = queryResult.nodeId;
-    }
-
-    if (!nodeId) {
-      throw new Error(`File input not found: ${selector}`);
-    }
-
-    // Set the files
-    await sendCdpCommand(wsUrl, 'DOM.setFileInputFiles', {
-      files: filePaths,
-      nodeId: nodeId
-    });
-
-    return { uploaded: true, files: filePaths.length };
-  }
+  const { fileUpload } = attachFileUpload({ resolveWsUrl, sendCdpCommand });
 
   // =============================================================================
   // SELECT FUNCTION (JRV-129: Multi-element warning)
