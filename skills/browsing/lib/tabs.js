@@ -7,22 +7,47 @@ const { chromeHttpAt } = require('./chrome-launcher-helpers');
  *     `state.activePort` and the session's host-override.
  *   - `resolveWsUrl` — accept a tab index, a numeric string, or a `ws://`
  *     URL and return a usable WebSocket URL. Auto-creates a tab if none
- *     exist (mirrors the auto-start-Chrome behaviour).
- *   - `getTabs` / `newTab` / `closeTab` — list, open, close. List/open
- *     rewrite the returned `webSocketDebuggerUrl` through the session's
- *     host-override so the URL can actually be connected to from the
- *     calling process even when the host-override remaps host/port.
+ *     exist (mirrors the auto-start-Chrome behaviour). Kept around for
+ *     compatibility with callers that still consume per-page WS URLs
+ *     (notably the orchestrator's getPageSession resolver, which uses
+ *     it to map ws-URL args back to tabs).
+ *   - `getTabs` / `newTab` / `closeTab` — list, open, close.
  *
- * All three helpers feed every other attach* in the library, so this
- * module is the foundation the rest sits on.
+ * Returned tab handles carry a lazy `getPageSession()` thunk that
+ * attaches a page session via `Target.attachToTarget({flatten:true})` on
+ * first call. Memoized per `targetId`; `closeTab` detaches the cached
+ * session.
  *
- * `attachTabs({ state })` returns the bound API. The session state bag
- * carries the host-override (for `getHost` and `rewriteWsUrl`) and the
- * mutable `activePort`, which is everything the transport helpers need.
+ * `attachTabs({ state })` returns the bound API plus a `setPageSessionAttacher`
+ * setter the orchestrator wires after the bridge is constructed (avoids a
+ * circular dependency at construction time — tabs.js is created first, the
+ * bridge wants tab handles, the bridge later supplies the attacher).
  */
 function attachTabs({ state }) {
   const CHROME_DEBUG_HOST = state.hostOverride.getHost();
   const { rewriteWsUrl } = state;
+
+  // Per-targetId memoized page-session attaches. Keyed by targetId so
+  // two getPageSession() calls on the same tab share the same in-flight
+  // Promise (and the resolved session afterwards).
+  const pageSessionCache = new Map();
+  let pageSessionAttacher = null;
+
+  function setPageSessionAttacher(fn) {
+    pageSessionAttacher = fn;
+  }
+
+  function attachPageSessionLazy(targetId) {
+    if (!pageSessionAttacher) {
+      throw new Error('tabs.js: pageSessionAttacher not set — orchestrator wiring missing');
+    }
+    let cached = pageSessionCache.get(targetId);
+    if (!cached) {
+      cached = pageSessionAttacher(targetId);
+      pageSessionCache.set(targetId, cached);
+    }
+    return cached;
+  }
 
   // HTTP request to Chrome's DevTools endpoint on the session's active port.
   async function chromeHttp(httpPath, method = 'GET') {
@@ -67,7 +92,8 @@ function attachTabs({ state }) {
       .filter(tab => tab.type === 'page')
       .map(tab => ({
         ...tab,
-        webSocketDebuggerUrl: rewriteWsUrl(tab.webSocketDebuggerUrl, CHROME_DEBUG_HOST, state.activePort)
+        webSocketDebuggerUrl: rewriteWsUrl(tab.webSocketDebuggerUrl, CHROME_DEBUG_HOST, state.activePort),
+        getPageSession: () => attachPageSessionLazy(tab.id),
       }));
   }
 
@@ -76,6 +102,7 @@ function attachTabs({ state }) {
     const tab = await chromeHttp(`/json/new?${encoded}`, 'PUT');
     if (tab && typeof tab === 'object') {
       tab.webSocketDebuggerUrl = rewriteWsUrl(tab.webSocketDebuggerUrl, CHROME_DEBUG_HOST, state.activePort);
+      tab.getPageSession = () => attachPageSessionLazy(tab.id);
     }
     return tab;
   }
@@ -84,13 +111,38 @@ function attachTabs({ state }) {
     const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
     const tabs = await chromeHttp('/json');
     if (!Array.isArray(tabs)) return;
-    const tab = tabs.find(t => t.webSocketDebuggerUrl === wsUrl);
+    const tab = tabs.find((t) => {
+      if (!t.webSocketDebuggerUrl) return false;
+      // Match against both rewritten and raw URLs — host-override may rewrite
+      // the URL we got from `/json/list` so we can connect to remote-Chrome.
+      const rewritten = rewriteWsUrl(t.webSocketDebuggerUrl, CHROME_DEBUG_HOST, state.activePort);
+      return rewritten === wsUrl || t.webSocketDebuggerUrl === wsUrl;
+    });
     if (tab) {
+      // Detach any cached page session for this tab so the sessionId-keyed
+      // state (router pendingRequests, console-message buffer) cleans up
+      // promptly.
+      const cached = pageSessionCache.get(tab.id);
+      if (cached) {
+        try {
+          const ps = await cached;
+          await ps.detach();
+        } catch { /* best-effort */ }
+        pageSessionCache.delete(tab.id);
+      }
       await chromeHttp(`/json/close/${tab.id}`, 'GET');
     }
   }
 
-  return { chromeHttp, resolveWsUrl, getTabs, newTab, closeTab };
+  return {
+    chromeHttp,
+    resolveWsUrl,
+    getTabs,
+    newTab,
+    closeTab,
+    attachPageSessionLazy,
+    setPageSessionAttacher,
+  };
 }
 
 module.exports = { attachTabs };

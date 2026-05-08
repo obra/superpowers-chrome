@@ -13,15 +13,14 @@ const DRAG_SETTLE_MS = 50;
  * path; the older `el.click()` route survives only as a fallback for
  * hidden-element edge cases inside `click`.
  *
- * `attachMouse({ resolveWsUrl, sendCdpCommand })` returns the bound action
- * methods. The pre-action element-coordinate lookup uses the shared
- * `getElementSelector` from lib/element-selector — same visibility-aware
- * picker the rest of the library uses.
+ * Helpers accept `tabIndexOrPageSession` (the orchestrator's
+ * `getPageSession` resolver handles all shapes) and route through
+ * `pageSession.send`.
  */
-function attachMouse({ resolveWsUrl, sendCdpCommand }) {
+function attachMouse({ getPageSession }) {
   // Common helper: resolve a CSS/XPath selector to centered viewport coords
   // after scrolling the element into view. Returns { x, y } or throws.
-  async function resolveCenter(wsUrl, selector, label = 'Element') {
+  async function resolveCenter(ps, selector, label = 'Element') {
     const js = `
       (() => {
         const el = ${getElementSelector(selector)};
@@ -35,9 +34,9 @@ function attachMouse({ resolveWsUrl, sendCdpCommand }) {
         };
       })()
     `;
-    const result = await sendCdpCommand(wsUrl, 'Runtime.evaluate', {
+    const result = await ps.send('Runtime.evaluate', {
       expression: js,
-      returnByValue: true
+      returnByValue: true,
     });
     throwIfExceptionDetails(result);
     if (!result.result.value || !result.result.value.found) {
@@ -51,24 +50,24 @@ function attachMouse({ resolveWsUrl, sendCdpCommand }) {
    * Falls back to `el.click()` if CDP coordinate resolution throws (hidden
    * elements with no bounding rect).
    */
-  async function click(tabIndexOrWsUrl, selector) {
-    const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
+  async function click(tabIndexOrPageSession, selector) {
+    const ps = await getPageSession(tabIndexOrPageSession);
 
     try {
-      const { x, y } = await resolveCenter(wsUrl, selector);
+      const { x, y } = await resolveCenter(ps, selector);
 
-      await sendCdpCommand(wsUrl, 'Input.dispatchMouseEvent', {
-        type: 'mousePressed', x, y, button: 'left', clickCount: 1
+      await ps.send('Input.dispatchMouseEvent', {
+        type: 'mousePressed', x, y, button: 'left', clickCount: 1,
       });
-      await sendCdpCommand(wsUrl, 'Input.dispatchMouseEvent', {
-        type: 'mouseReleased', x, y, button: 'left', clickCount: 1
+      await ps.send('Input.dispatchMouseEvent', {
+        type: 'mouseReleased', x, y, button: 'left', clickCount: 1,
       });
 
       return { clicked: true, x, y };
     } catch (_e) {
       // Fallback for edge cases (e.g., hidden elements with zero bounding rect).
       const js = `${getElementSelector(selector)}?.click()`;
-      const fallbackResult = await sendCdpCommand(wsUrl, 'Runtime.evaluate', { expression: js });
+      const fallbackResult = await ps.send('Runtime.evaluate', { expression: js });
       throwIfExceptionDetails(fallbackResult);
       return { clicked: true, fallback: true };
     }
@@ -78,12 +77,12 @@ function attachMouse({ resolveWsUrl, sendCdpCommand }) {
    * Hover over an element using CDP mouseMoved.
    * Triggers CSS :hover, mouseenter/mouseover events, tooltips, dropdown menus.
    */
-  async function hover(tabIndexOrWsUrl, selector) {
-    const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
-    const { x, y } = await resolveCenter(wsUrl, selector);
+  async function hover(tabIndexOrPageSession, selector) {
+    const ps = await getPageSession(tabIndexOrPageSession);
+    const { x, y } = await resolveCenter(ps, selector);
 
-    await sendCdpCommand(wsUrl, 'Input.dispatchMouseEvent', {
-      type: 'mouseMoved', x, y
+    await ps.send('Input.dispatchMouseEvent', {
+      type: 'mouseMoved', x, y,
     });
 
     return { hovered: true, x, y };
@@ -94,49 +93,49 @@ function attachMouse({ resolveWsUrl, sendCdpCommand }) {
    * Uses Input.dispatchMouseEvent to trigger native drag-and-drop, bypassing
    * the DataTransfer restriction on synthetic JS DragEvents.
    *
-   * @param {number|string} tabIndexOrWsUrl - Tab index or WebSocket URL
+   * @param {number|string|object} tabIndexOrPageSession - Tab index, ws URL, or page session
    * @param {string} sourceSelector - CSS/XPath selector for the drag source
    * @param {string|{x:number,y:number}} target - Target selector string or {x,y} coordinates
    * @param {object} options
    * @param {number} [options.steps=8] - Intermediate mouseMoved steps (must exceed
    *                                     the browser's ~4px drag-detection threshold)
    */
-  async function drag(tabIndexOrWsUrl, sourceSelector, target, options = {}) {
-    const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
+  async function drag(tabIndexOrPageSession, sourceSelector, target, options = {}) {
+    const ps = await getPageSession(tabIndexOrPageSession);
     const steps = options.steps || 8;
 
-    const src = await resolveCenter(wsUrl, sourceSelector, 'Source element');
+    const src = await resolveCenter(ps, sourceSelector, 'Source element');
 
     let dst;
     if (typeof target === 'object' && target.x !== undefined && target.y !== undefined) {
       dst = { x: target.x, y: target.y };
     } else {
-      dst = await resolveCenter(wsUrl, target, 'Target element');
+      dst = await resolveCenter(ps, target, 'Target element');
     }
 
-    await sendCdpCommand(wsUrl, 'Input.dispatchMouseEvent', {
-      type: 'mousePressed', x: src.x, y: src.y, button: 'left', clickCount: 1
+    await ps.send('Input.dispatchMouseEvent', {
+      type: 'mousePressed', x: src.x, y: src.y, button: 'left', clickCount: 1,
     });
 
     for (let i = 1; i <= steps; i++) {
       const ratio = i / steps;
-      await sendCdpCommand(wsUrl, 'Input.dispatchMouseEvent', {
+      await ps.send('Input.dispatchMouseEvent', {
         type: 'mouseMoved',
         x: Math.round(src.x + (dst.x - src.x) * ratio),
         y: Math.round(src.y + (dst.y - src.y) * ratio),
-        button: 'left'
+        button: 'left',
       });
     }
 
     // Brief pause for apps that process drag events asynchronously.
-    await new Promise(resolve => setTimeout(resolve, DRAG_SETTLE_MS));
+    await new Promise((resolve) => setTimeout(resolve, DRAG_SETTLE_MS));
 
-    await sendCdpCommand(wsUrl, 'Input.dispatchMouseEvent', {
+    await ps.send('Input.dispatchMouseEvent', {
       type: 'mouseReleased',
       x: Math.round(dst.x),
       y: Math.round(dst.y),
       button: 'left',
-      clickCount: 1
+      clickCount: 1,
     });
 
     return { dragged: true, from: { x: src.x, y: src.y }, to: { x: dst.x, y: dst.y }, steps };
@@ -147,25 +146,25 @@ function attachMouse({ resolveWsUrl, sendCdpCommand }) {
    * Useful for: pre-click mouse patterns (bot detection), captcha puzzles,
    * hover effects on coordinate-based targets.
    */
-  async function mouseMove(tabIndexOrWsUrl, x, y, options = {}) {
-    const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
+  async function mouseMove(tabIndexOrPageSession, x, y, options = {}) {
+    const ps = await getPageSession(tabIndexOrPageSession);
     const steps = options.steps || 1;
 
     if (steps <= 1 || (options.fromX === undefined && options.fromY === undefined)) {
-      await sendCdpCommand(wsUrl, 'Input.dispatchMouseEvent', {
+      await ps.send('Input.dispatchMouseEvent', {
         type: 'mouseMoved',
         x: Math.round(x),
-        y: Math.round(y)
+        y: Math.round(y),
       });
     } else {
       const startX = options.fromX || 0;
       const startY = options.fromY || 0;
       for (let i = 1; i <= steps; i++) {
         const ratio = i / steps;
-        await sendCdpCommand(wsUrl, 'Input.dispatchMouseEvent', {
+        await ps.send('Input.dispatchMouseEvent', {
           type: 'mouseMoved',
           x: Math.round(startX + (x - startX) * ratio),
-          y: Math.round(startY + (y - startY) * ratio)
+          y: Math.round(startY + (y - startY) * ratio),
         });
       }
     }
@@ -176,22 +175,16 @@ function attachMouse({ resolveWsUrl, sendCdpCommand }) {
   /**
    * Scroll using CDP mouse-wheel events.
    * Simulates real wheel input — bot detectors flag JavaScript `scrollTo`.
-   *
-   * @param {object} options
-   * @param {string} [options.selector] - Element to anchor the wheel event on
-   * @param {number} [options.deltaX=0] - Horizontal scroll (positive = right)
-   * @param {number} [options.deltaY=0] - Vertical scroll (positive = down)
    */
-  async function scroll(tabIndexOrWsUrl, options = {}) {
-    const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
+  async function scroll(tabIndexOrPageSession, options = {}) {
+    const ps = await getPageSession(tabIndexOrPageSession);
 
     let x = options.x || 100;
     let y = options.y || 100;
 
     if (options.selector) {
-      // Inline the selector lookup (rather than using the throwing resolveCenter)
-      // so a missing element falls back to default coordinates instead of throwing —
-      // matches the pre-extraction scroll() behaviour. CDP errors still propagate.
+      // Inline selector lookup — missing element falls back to default coords
+      // instead of throwing, matching the pre-extraction scroll() behaviour.
       const js = `
         (() => {
           const el = ${getElementSelector(options.selector)};
@@ -204,9 +197,9 @@ function attachMouse({ resolveWsUrl, sendCdpCommand }) {
           };
         })()
       `;
-      const result = await sendCdpCommand(wsUrl, 'Runtime.evaluate', {
+      const result = await ps.send('Runtime.evaluate', {
         expression: js,
-        returnByValue: true
+        returnByValue: true,
       });
       throwIfExceptionDetails(result);
       if (result.result.value && result.result.value.found) {
@@ -215,12 +208,12 @@ function attachMouse({ resolveWsUrl, sendCdpCommand }) {
       }
     }
 
-    await sendCdpCommand(wsUrl, 'Input.dispatchMouseEvent', {
+    await ps.send('Input.dispatchMouseEvent', {
       type: 'mouseWheel',
       x: Math.round(x),
       y: Math.round(y),
       deltaX: options.deltaX || 0,
-      deltaY: options.deltaY || 0
+      deltaY: options.deltaY || 0,
     });
 
     return { scrolled: true, x, y, deltaX: options.deltaX || 0, deltaY: options.deltaY || 0 };
@@ -230,22 +223,21 @@ function attachMouse({ resolveWsUrl, sendCdpCommand }) {
    * Double-click an element using CDP mouse events.
    * Fires mousedown, mouseup, click, mousedown, mouseup, click, dblclick.
    */
-  async function doubleClick(tabIndexOrWsUrl, selector) {
-    const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
-    const { x, y } = await resolveCenter(wsUrl, selector);
+  async function doubleClick(tabIndexOrPageSession, selector) {
+    const ps = await getPageSession(tabIndexOrPageSession);
+    const { x, y } = await resolveCenter(ps, selector);
 
-    await sendCdpCommand(wsUrl, 'Input.dispatchMouseEvent', {
-      type: 'mousePressed', x, y, button: 'left', clickCount: 1
+    await ps.send('Input.dispatchMouseEvent', {
+      type: 'mousePressed', x, y, button: 'left', clickCount: 1,
     });
-    await sendCdpCommand(wsUrl, 'Input.dispatchMouseEvent', {
-      type: 'mouseReleased', x, y, button: 'left', clickCount: 1
+    await ps.send('Input.dispatchMouseEvent', {
+      type: 'mouseReleased', x, y, button: 'left', clickCount: 1,
     });
-    // Second click with clickCount: 2 triggers dblclick.
-    await sendCdpCommand(wsUrl, 'Input.dispatchMouseEvent', {
-      type: 'mousePressed', x, y, button: 'left', clickCount: 2
+    await ps.send('Input.dispatchMouseEvent', {
+      type: 'mousePressed', x, y, button: 'left', clickCount: 2,
     });
-    await sendCdpCommand(wsUrl, 'Input.dispatchMouseEvent', {
-      type: 'mouseReleased', x, y, button: 'left', clickCount: 2
+    await ps.send('Input.dispatchMouseEvent', {
+      type: 'mouseReleased', x, y, button: 'left', clickCount: 2,
     });
 
     return { doubleClicked: true, x, y };
@@ -255,15 +247,15 @@ function attachMouse({ resolveWsUrl, sendCdpCommand }) {
    * Right-click an element using CDP mouse events.
    * Fires mousedown (button 2), mouseup (button 2), contextmenu.
    */
-  async function rightClick(tabIndexOrWsUrl, selector) {
-    const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
-    const { x, y } = await resolveCenter(wsUrl, selector);
+  async function rightClick(tabIndexOrPageSession, selector) {
+    const ps = await getPageSession(tabIndexOrPageSession);
+    const { x, y } = await resolveCenter(ps, selector);
 
-    await sendCdpCommand(wsUrl, 'Input.dispatchMouseEvent', {
-      type: 'mousePressed', x, y, button: 'right', clickCount: 1
+    await ps.send('Input.dispatchMouseEvent', {
+      type: 'mousePressed', x, y, button: 'right', clickCount: 1,
     });
-    await sendCdpCommand(wsUrl, 'Input.dispatchMouseEvent', {
-      type: 'mouseReleased', x, y, button: 'right', clickCount: 1
+    await ps.send('Input.dispatchMouseEvent', {
+      type: 'mouseReleased', x, y, button: 'right', clickCount: 1,
     });
 
     return { rightClicked: true, x, y };

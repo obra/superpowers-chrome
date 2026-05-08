@@ -9,17 +9,17 @@ const { createOverride } = require('../skills/browsing/host-override.js');
 // Regression gate for the createSession() / createOverride() factories.
 //
 // Pre-factory, every consumer that required chrome-ws-lib shared a single
-// connection pool, console-message map, profile name, Chrome process
-// handle, active CDP port, and host-override config — all module-level
-// state. Any future change that reintroduces a module-level mutable will
-// break these assertions.
+// console-message map, profile name, Chrome process handle, active CDP
+// port, host-override config, and (until the bridge migration) connection
+// pool — all module-level state. Any future change that reintroduces a
+// module-level mutable will break these assertions.
 //
-// We can't directly probe the connection pool or chromeProcess without
-// standing up Chrome, so the assertions poke observable surface area:
-// distinct method identity (proves each call captures its own closure),
-// per-instance setProfileName / setDefaults isolation (proves the
-// underlying state is not shared), and per-instance host/port seeding
-// (proves the host-override is per-session, not module-singleton).
+// We can't directly probe the bridge or chromeProcess without standing up
+// Chrome, so the assertions poke observable surface area: distinct method
+// identity (proves each call captures its own closure), per-instance
+// setProfileName / setDefaults isolation (proves the underlying state is
+// not shared), and per-instance host/port seeding (proves the
+// host-override is per-session, not module-singleton).
 
 describe('chrome-ws-lib createSession() isolation', () => {
 
@@ -29,7 +29,11 @@ describe('chrome-ws-lib createSession() isolation', () => {
     assert.notStrictEqual(a, b);
     assert.notStrictEqual(a.getProfileName, b.getProfileName);
     assert.notStrictEqual(a.setProfileName, b.setProfileName);
-    assert.notStrictEqual(a.closeAllConnections, b.closeAllConnections);
+    // Bridge surfaces — each session owns its own browser-WS bridge, so
+    // these closures are distinct per session.
+    assert.notStrictEqual(a.attachPageSession, b.attachPageSession);
+    assert.notStrictEqual(a.createBrowserContext, b.createBrowserContext);
+    assert.notStrictEqual(a.targets, b.targets);
   });
 
   it('setProfileName on one session does not leak into the other', () => {
@@ -50,13 +54,6 @@ describe('chrome-ws-lib createSession() isolation', () => {
     const b = createSession({ host: '127.0.0.1', port: 22222 });
     assert.equal(a.getActivePort(), 11111);
     assert.equal(b.getActivePort(), 22222);
-  });
-
-  it('closeAllConnections is a per-session no-op when nothing is connected', () => {
-    const a = createSession();
-    const b = createSession();
-    assert.doesNotThrow(() => a.closeAllConnections());
-    assert.doesNotThrow(() => b.closeAllConnections());
   });
 });
 

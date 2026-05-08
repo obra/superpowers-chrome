@@ -7,34 +7,34 @@
  * or `DOM.performSearch` + `DOM.getSearchResults` for XPath, then attaches
  * the absolute file paths to the input.
  *
- * `attachFileUpload({ resolveWsUrl, sendCdpCommand })` returns the bound
- * action.
+ * Helpers accept `tabIndexOrPageSession` and route through
+ * `pageSession.send`.
  */
-function attachFileUpload({ resolveWsUrl, sendCdpCommand }) {
-  async function fileUpload(tabIndexOrWsUrl, selector, filePaths) {
-    const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
+function attachFileUpload({ getPageSession }) {
+  async function fileUpload(tabIndexOrPageSession, selector, filePaths) {
+    const ps = await getPageSession(tabIndexOrPageSession);
 
-    const docResult = await sendCdpCommand(wsUrl, 'DOM.getDocument', {});
+    const docResult = await ps.send('DOM.getDocument', {});
     const rootNodeId = docResult.root.nodeId;
 
     let nodeId;
     if (selector.startsWith('/') || selector.startsWith('//')) {
-      const searchResult = await sendCdpCommand(wsUrl, 'DOM.performSearch', {
-        query: selector
+      const searchResult = await ps.send('DOM.performSearch', {
+        query: selector,
       });
       if (searchResult.resultCount === 0) {
         throw new Error(`File input not found: ${selector}`);
       }
-      const nodesResult = await sendCdpCommand(wsUrl, 'DOM.getSearchResults', {
+      const nodesResult = await ps.send('DOM.getSearchResults', {
         searchId: searchResult.searchId,
         fromIndex: 0,
-        toIndex: 1
+        toIndex: 1,
       });
       nodeId = nodesResult.nodeIds[0];
     } else {
-      const queryResult = await sendCdpCommand(wsUrl, 'DOM.querySelector', {
+      const queryResult = await ps.send('DOM.querySelector', {
         nodeId: rootNodeId,
-        selector: selector
+        selector,
       });
       nodeId = queryResult.nodeId;
     }
@@ -43,9 +43,9 @@ function attachFileUpload({ resolveWsUrl, sendCdpCommand }) {
       throw new Error(`File input not found: ${selector}`);
     }
 
-    await sendCdpCommand(wsUrl, 'DOM.setFileInputFiles', {
+    await ps.send('DOM.setFileInputFiles', {
       files: filePaths,
-      nodeId: nodeId
+      nodeId,
     });
 
     return { uploaded: true, files: filePaths.length };

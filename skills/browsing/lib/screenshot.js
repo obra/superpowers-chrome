@@ -27,10 +27,10 @@ const MAX_IMAGE_DIMENSION_PX = 1800;
  * ImageMagick on Linux, no-op on Windows). Failures are silent — better
  * to have a big PNG than no PNG.
  *
- * `attachScreenshot({ resolveWsUrl, sendCdpCommand })` returns the bound
- * action.
+ * Helpers accept `tabIndexOrPageSession` and route through
+ * `pageSession.send`.
  */
-function attachScreenshot({ resolveWsUrl, sendCdpCommand }) {
+function attachScreenshot({ getPageSession }) {
   async function downscaleImageIfNeeded(filepath, maxDimension = MAX_IMAGE_DIMENSION_PX) {
     const platform = os.platform();
 
@@ -70,12 +70,12 @@ function attachScreenshot({ resolveWsUrl, sendCdpCommand }) {
     }
   }
 
-  async function screenshot(tabIndexOrWsUrl, filename, selector = null, fullPage = false) {
-    const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
+  async function screenshot(tabIndexOrPageSession, filename, selector = null, fullPage = false) {
+    const ps = await getPageSession(tabIndexOrPageSession);
 
     let clip;
     if (fullPage) {
-      const metrics = await sendCdpCommand(wsUrl, 'Page.getLayoutMetrics');
+      const metrics = await ps.send('Page.getLayoutMetrics');
       const { width, height } = metrics.contentSize;
       clip = { x: 0, y: 0, width, height, scale: 1 };
     } else if (selector) {
@@ -93,28 +93,28 @@ function attachScreenshot({ resolveWsUrl, sendCdpCommand }) {
           };
         })()
       `;
-      const result = await sendCdpCommand(wsUrl, 'Runtime.evaluate', {
+      const result = await ps.send('Runtime.evaluate', {
         expression: js,
-        returnByValue: true
+        returnByValue: true,
       });
       throwIfExceptionDetails(result);
       clip = result.result.value;
     } else {
       // Explicit viewport clip — required for correct sizing on Linux HiDPI.
-      const vpResult = await sendCdpCommand(wsUrl, 'Runtime.evaluate', {
+      const vpResult = await ps.send('Runtime.evaluate', {
         expression: '({ width: window.innerWidth, height: window.innerHeight })',
-        returnByValue: true
+        returnByValue: true,
       });
       throwIfExceptionDetails(vpResult);
       const { width, height } = vpResult.result.value;
       clip = { x: 0, y: 0, width, height, scale: 1 };
     }
 
-    const result = await sendCdpCommand(wsUrl, 'Page.captureScreenshot', {
+    const result = await ps.send('Page.captureScreenshot', {
       format: 'png',
       fromSurface: true,
       captureBeyondViewport: fullPage,
-      clip
+      clip,
     });
 
     const buffer = Buffer.from(result.data, 'base64');

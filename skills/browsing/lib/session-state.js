@@ -27,10 +27,9 @@ function createState({ host, port } = {}) {
     // Dynamic port: updated by startChrome() when Chrome launches or reconnects.
     activePort: hostOverride.getPort(),
 
-    // wsUrl -> { ws: WebSocketClient, pendingRequests: Map, messageIdCounter: number }
-    connectionPool: new Map(),
-
-    // Per-tab buffer of console messages for auto-capture.
+    // Per-page-session buffer of console messages for auto-capture.
+    // Keyed by `pageSession.sessionId` (set by console-logging.js and
+    // navigation.js's auto-capture path).
     consoleMessages: new Map(),
 
     // Auto-capture session: lazily initialised on first capture.

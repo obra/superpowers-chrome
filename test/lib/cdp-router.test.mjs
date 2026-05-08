@@ -113,7 +113,7 @@ describe('cdp-router', () => {
 
   it('drops messages for an unregistered sessionId silently', () => {
     const browser = makeMockBrowser();
-    const router = createCdpRouter({ browser });
+    createCdpRouter({ browser });
 
     // No session registered for 'GHOST'. Should not throw.
     browser.deliver({ id: 1, sessionId: 'GHOST', result: {} });

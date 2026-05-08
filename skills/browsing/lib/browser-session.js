@@ -1,9 +1,10 @@
 // One CDP WebSocket per Chrome process, talking to /devtools/browser/<id>.
 //
-// Independent of the per-page actions in lib/cdp-connection.js (which is on
-// its way out — see chrome-ws-lib.js's bridge wiring): the browser-WS is the
-// transport for Target.* events, BrowserContext create/dispose, and every
-// page session attached via Target.attachToTarget({flatten:true}).
+// This is the transport for Target.* events, BrowserContext create/dispose,
+// and every page session attached via Target.attachToTarget({flatten:true}).
+// Page-action commands ride the per-page sessions (lib/page-session.js),
+// which envelope into this socket via sendRaw and correlate responses
+// through the cdp-router.
 //
 // Lazy: connect happens on first send() / onEvent() call. Both local and
 // remote-Chrome callers exercise the same code path — for the remote case
