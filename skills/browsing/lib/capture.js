@@ -41,11 +41,10 @@ function ensureProcessHandlersRegistered() {
  *   - WithCapture wrappers: thin adapters that pair an action with a
  *     post-action capturePageArtifacts.
  *
- * `attachCapture({ state, resolveWsUrl, sendCdpCommand, getHtml,
- *                 screenshot, actions: { click, fill, selectOption, evaluate } })`
- * returns the bound API.
+ * Helpers accept `tabIndexOrPageSession` and route through
+ * `pageSession.send`.
  */
-function attachCapture({ state, resolveWsUrl, sendCdpCommand, getHtml, screenshot, actions }) {
+function attachCapture({ state, getPageSession, getHtml, screenshot, actions }) {
   function initializeSession() {
     if (!state.sessionDir) {
       // ~/.cache/superpowers/browser/YYYY-MM-DD/session-{timestamp}
@@ -87,18 +86,18 @@ function attachCapture({ state, resolveWsUrl, sendCdpCommand, getHtml, screensho
   // Token-efficient page summary: heading list, interactive-element counts,
   // main/nav landmark detection. Used in the auto-capture artifact bundle so
   // the model can decide whether to read the .md or .html file.
-  async function generateDomSummary(tabIndexOrWsUrl) {
-    const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
-    const result = await sendCdpCommand(wsUrl, 'Runtime.evaluate', {
+  async function generateDomSummary(tabIndexOrPageSession) {
+    const ps = await getPageSession(tabIndexOrPageSession);
+    const result = await ps.send('Runtime.evaluate', {
       expression: domSummaryScript,
-      returnByValue: true
+      returnByValue: true,
     });
     throwIfExceptionDetails(result);
     return result.result.value;
   }
 
-  async function getPageSize(tabIndexOrWsUrl) {
-    const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
+  async function getPageSize(tabIndexOrPageSession) {
+    const ps = await getPageSession(tabIndexOrPageSession);
 
     const js = `({
       width: window.innerWidth,
@@ -107,9 +106,9 @@ function attachCapture({ state, resolveWsUrl, sendCdpCommand, getHtml, screensho
       documentHeight: document.documentElement.scrollHeight
     })`;
 
-    const result = await sendCdpCommand(wsUrl, 'Runtime.evaluate', {
+    const result = await ps.send('Runtime.evaluate', {
       expression: js,
-      returnByValue: true
+      returnByValue: true,
     });
     throwIfExceptionDetails(result);
     return result.result.value;
@@ -118,11 +117,11 @@ function attachCapture({ state, resolveWsUrl, sendCdpCommand, getHtml, screensho
   // Render the page to markdown for token-efficient consumption. Includes
   // images >= 100x100 in a header summary; inlines image references >= 50x50
   // with size info; skips smaller icons.
-  async function generateMarkdown(tabIndexOrWsUrl) {
-    const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
-    const result = await sendCdpCommand(wsUrl, 'Runtime.evaluate', {
+  async function generateMarkdown(tabIndexOrPageSession) {
+    const ps = await getPageSession(tabIndexOrPageSession);
+    const result = await ps.send('Runtime.evaluate', {
       expression: markdownScript,
-      returnByValue: true
+      returnByValue: true,
     });
     throwIfExceptionDetails(result);
     return result.result.value;
@@ -131,15 +130,15 @@ function attachCapture({ state, resolveWsUrl, sendCdpCommand, getHtml, screensho
   // Single post-action snapshot: html + markdown + screenshot + console-log
   // placeholder, all parallelised. Filenames share a numbered prefix so the
   // session dir reads like a flat timeline.
-  async function capturePageArtifacts(tabIndexOrWsUrl, actionType = 'navigate') {
+  async function capturePageArtifacts(tabIndexOrPageSession, actionType = 'navigate') {
     const prefix = createCapturePrefix(actionType);
     const dir = initializeSession();
 
     const [html, markdown, pageSize, domSummary] = await Promise.all([
-      getHtml(tabIndexOrWsUrl),
-      generateMarkdown(tabIndexOrWsUrl),
-      getPageSize(tabIndexOrWsUrl),
-      generateDomSummary(tabIndexOrWsUrl)
+      getHtml(tabIndexOrPageSession),
+      generateMarkdown(tabIndexOrPageSession),
+      getPageSize(tabIndexOrPageSession),
+      generateDomSummary(tabIndexOrPageSession),
     ]);
 
     const htmlPath = path.join(dir, `${prefix}.html`);
@@ -151,7 +150,7 @@ function attachCapture({ state, resolveWsUrl, sendCdpCommand, getHtml, screensho
     fs.writeFileSync(markdownPath, markdown || '');
     fs.writeFileSync(consoleLogPath, '# Console Log\n# TODO: Console logging not yet implemented\n');
 
-    await screenshot(tabIndexOrWsUrl, screenshotPath);
+    await screenshot(tabIndexOrPageSession, screenshotPath);
 
     return {
       capturePrefix: prefix,
@@ -160,10 +159,10 @@ function attachCapture({ state, resolveWsUrl, sendCdpCommand, getHtml, screensho
         html: htmlPath,
         markdown: markdownPath,
         screenshot: screenshotPath,
-        consoleLog: consoleLogPath
+        consoleLog: consoleLogPath,
       },
       pageSize,
-      domSummary
+      domSummary,
     };
   }
 
@@ -171,13 +170,13 @@ function attachCapture({ state, resolveWsUrl, sendCdpCommand, getHtml, screensho
   // get the action result alongside the diff and screenshots. Saves and
   // restores focus around the BEFORE screenshot — taking a screenshot can
   // shift focus, which then breaks any focus-dependent action that follows.
-  async function captureActionWithDiff(tabIndexOrWsUrl, actionType, actionFn, settleTime = 3000) {
+  async function captureActionWithDiff(tabIndexOrPageSession, actionType, actionFn, settleTime = 3000) {
     const prefix = createCapturePrefix(actionType);
     const dir = initializeSession();
-    const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
+    const ps = await getPageSession(tabIndexOrPageSession);
 
     async function saveFocus() {
-      const result = await sendCdpCommand(wsUrl, 'Runtime.evaluate', {
+      const result = await ps.send('Runtime.evaluate', {
         expression: `
           (() => {
             const el = document.activeElement;
@@ -199,7 +198,7 @@ function attachCapture({ state, resolveWsUrl, sendCdpCommand, getHtml, screensho
             return { type: 'path', value: focusPath };
           })()
         `,
-        returnByValue: true
+        returnByValue: true,
       });
       throwIfExceptionDetails(result);
       return result.result?.value;
@@ -225,31 +224,31 @@ function attachCapture({ state, resolveWsUrl, sendCdpCommand, getHtml, screensho
         })()`;
       }
       if (selector) {
-        const restoreResult = await sendCdpCommand(wsUrl, 'Runtime.evaluate', {
-          expression: `(() => { const el = ${selector}; if (el) el.focus(); })()`
+        const restoreResult = await ps.send('Runtime.evaluate', {
+          expression: `(() => { const el = ${selector}; if (el) el.focus(); })()`,
         });
         throwIfExceptionDetails(restoreResult);
       }
     }
 
     // BEFORE: html + screenshot, with focus saved/restored around the screenshot.
-    const beforeHtml = await getHtml(tabIndexOrWsUrl);
+    const beforeHtml = await getHtml(ps);
     const focusInfo = await saveFocus();
     const beforeScreenshotPath = path.join(dir, `${prefix}-before.png`);
-    await screenshot(tabIndexOrWsUrl, beforeScreenshotPath);
+    await screenshot(ps, beforeScreenshotPath);
     await restoreFocus(focusInfo);
 
     const actionResult = await actionFn();
 
     // Settle: lets React re-renders, animations, and post-action XHRs complete
     // before the AFTER snapshot.
-    await new Promise(resolve => setTimeout(resolve, settleTime));
+    await new Promise((resolve) => setTimeout(resolve, settleTime));
 
     const [afterHtml, markdown, pageSize, domSummary] = await Promise.all([
-      getHtml(tabIndexOrWsUrl),
-      generateMarkdown(tabIndexOrWsUrl),
-      getPageSize(tabIndexOrWsUrl),
-      generateDomSummary(tabIndexOrWsUrl)
+      getHtml(ps),
+      generateMarkdown(ps),
+      getPageSize(ps),
+      generateDomSummary(ps),
     ]);
 
     const diff = generateHtmlDiff(beforeHtml, afterHtml);
@@ -264,7 +263,7 @@ function attachCapture({ state, resolveWsUrl, sendCdpCommand, getHtml, screensho
     fs.writeFileSync(afterHtmlPath, afterHtml || '');
     fs.writeFileSync(diffPath, diff);
     fs.writeFileSync(markdownPath, markdown || '');
-    await screenshot(tabIndexOrWsUrl, afterScreenshotPath);
+    await screenshot(ps, afterScreenshotPath);
 
     return {
       actionResult,
@@ -277,21 +276,21 @@ function attachCapture({ state, resolveWsUrl, sendCdpCommand, getHtml, screensho
           diff: diffPath,
           markdown: markdownPath,
           beforeScreenshot: beforeScreenshotPath,
-          afterScreenshot: afterScreenshotPath
+          afterScreenshot: afterScreenshotPath,
         },
         pageSize,
         domSummary,
-        diffSummary: diff.split('\n').slice(0, 5).join('\n') + (diff.split('\n').length > 5 ? '\n...' : '')
-      }
+        diffSummary: diff.split('\n').slice(0, 5).join('\n') + (diff.split('\n').length > 5 ? '\n...' : ''),
+      },
     };
   }
 
   // *WithCapture wrappers — perform an action, then capturePageArtifacts.
   // The MCP server consumes these directly; the bare action variants stay
   // exported for callers (and tests) that don't want auto-capture.
-  async function clickWithCapture(tabIndexOrWsUrl, selector) {
-    await actions.click(tabIndexOrWsUrl, selector);
-    const artifacts = await capturePageArtifacts(tabIndexOrWsUrl, 'click');
+  async function clickWithCapture(tabIndexOrPageSession, selector) {
+    await actions.click(tabIndexOrPageSession, selector);
+    const artifacts = await capturePageArtifacts(tabIndexOrPageSession, 'click');
     return {
       action: 'click',
       selector,
@@ -300,13 +299,13 @@ function attachCapture({ state, resolveWsUrl, sendCdpCommand, getHtml, screensho
       sessionDir: artifacts.sessionDir,
       files: artifacts.files,
       domSummary: artifacts.domSummary,
-      consoleLog: [] // Placeholder
+      consoleLog: [], // Placeholder
     };
   }
 
-  async function fillWithCapture(tabIndexOrWsUrl, selector, value) {
-    await actions.fill(tabIndexOrWsUrl, selector, value);
-    const artifacts = await capturePageArtifacts(tabIndexOrWsUrl, 'type');
+  async function fillWithCapture(tabIndexOrPageSession, selector, value) {
+    await actions.fill(tabIndexOrPageSession, selector, value);
+    const artifacts = await capturePageArtifacts(tabIndexOrPageSession, 'type');
     return {
       action: 'type',
       selector,
@@ -316,13 +315,13 @@ function attachCapture({ state, resolveWsUrl, sendCdpCommand, getHtml, screensho
       sessionDir: artifacts.sessionDir,
       files: artifacts.files,
       domSummary: artifacts.domSummary,
-      consoleLog: [] // Placeholder
+      consoleLog: [], // Placeholder
     };
   }
 
-  async function selectOptionWithCapture(tabIndexOrWsUrl, selector, value) {
-    await actions.selectOption(tabIndexOrWsUrl, selector, value);
-    const artifacts = await capturePageArtifacts(tabIndexOrWsUrl, 'select');
+  async function selectOptionWithCapture(tabIndexOrPageSession, selector, value) {
+    await actions.selectOption(tabIndexOrPageSession, selector, value);
+    const artifacts = await capturePageArtifacts(tabIndexOrPageSession, 'select');
     return {
       action: 'select',
       selector,
@@ -332,13 +331,13 @@ function attachCapture({ state, resolveWsUrl, sendCdpCommand, getHtml, screensho
       sessionDir: artifacts.sessionDir,
       files: artifacts.files,
       domSummary: artifacts.domSummary,
-      consoleLog: [] // Placeholder
+      consoleLog: [], // Placeholder
     };
   }
 
-  async function evaluateWithCapture(tabIndexOrWsUrl, expression) {
-    const result = await actions.evaluate(tabIndexOrWsUrl, expression);
-    const artifacts = await capturePageArtifacts(tabIndexOrWsUrl, 'eval');
+  async function evaluateWithCapture(tabIndexOrPageSession, expression) {
+    const result = await actions.evaluate(tabIndexOrPageSession, expression);
+    const artifacts = await capturePageArtifacts(tabIndexOrPageSession, 'eval');
     return {
       action: 'eval',
       expression,
@@ -348,7 +347,7 @@ function attachCapture({ state, resolveWsUrl, sendCdpCommand, getHtml, screensho
       sessionDir: artifacts.sessionDir,
       files: artifacts.files,
       domSummary: artifacts.domSummary,
-      consoleLog: [] // Placeholder
+      consoleLog: [], // Placeholder
     };
   }
 

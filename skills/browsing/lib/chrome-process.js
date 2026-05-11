@@ -19,10 +19,15 @@ const os = require('os');
  * needs — chromeHttp for graceful shutdown, getTabs/newTab for the
  * show/hide tab-restoration flow.
  *
- * `attachChromeProcess({ state, chromeHttp, getTabs, newTab })` returns
- * the bound methods.
+ * `closeBridge` (optional) is invoked at the start of `killChrome` so the
+ * browser-level CDP WebSocket and any attached page sessions are torn down
+ * before Chrome itself is killed. If absent (older callers, tests), the
+ * bridge close is skipped.
+ *
+ * `attachChromeProcess({ state, chromeHttp, getTabs, newTab, closeBridge })`
+ * returns the bound methods.
  */
-function attachChromeProcess({ state, chromeHttp, getTabs, newTab }) {
+function attachChromeProcess({ state, chromeHttp, getTabs, newTab, closeBridge }) {
   // Read-once derived constants from the per-session host-override.
   const CHROME_DEBUG_HOST = state.hostOverride.getHost();
   const CHROME_DEBUG_PORT = state.hostOverride.getPort();
@@ -143,6 +148,13 @@ function attachChromeProcess({ state, chromeHttp, getTabs, newTab }) {
   }
 
   async function killChrome() {
+    // Close the browser-level WS bridge before tearing down Chrome. Best-effort
+    // — if the bridge never opened (no consumer touched targets / pageSession),
+    // this is a no-op.
+    if (closeBridge) {
+      try { await closeBridge(); } catch { /* best-effort */ }
+    }
+
     let pidToKill = null;
 
     if (state.chromeProcess && state.chromeProcess.pid) {

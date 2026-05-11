@@ -4,7 +4,7 @@ import { createRequire } from 'node:module';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { makeCdpSpy, makeResolveWsUrl } from './_helpers.mjs';
+import { makePageSessionSpy, makeGetPageSession } from './_helpers.mjs';
 
 const require = createRequire(import.meta.url);
 const { attachScreenshot } = require('../../skills/browsing/lib/screenshot.js');
@@ -14,12 +14,12 @@ describe('screenshot', () => {
   const FAKE_PNG_BASE64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
 
   function setup(handlers = {}) {
-    const sendCdpCommand = makeCdpSpy({
+    const ps = makePageSessionSpy({
       'Page.captureScreenshot': () => ({ data: FAKE_PNG_BASE64 }),
       'Runtime.evaluate': () => ({ result: { value: { width: 1024, height: 768 } } }),
-      ...handlers
+      ...handlers,
     });
-    return { ...attachScreenshot({ resolveWsUrl: makeResolveWsUrl(), sendCdpCommand }), sendCdpCommand };
+    return { ...attachScreenshot({ getPageSession: makeGetPageSession(ps) }), ps };
   }
 
   function tmpFile() {
@@ -28,10 +28,10 @@ describe('screenshot', () => {
 
   it('viewport screenshot sends explicit clip from window.innerWidth/Height', async () => {
     const filename = tmpFile();
-    const { screenshot, sendCdpCommand } = setup();
+    const { screenshot, ps } = setup();
     await screenshot(0, filename);
 
-    const screenshotCall = sendCdpCommand.calls.find(c => c.method === 'Page.captureScreenshot');
+    const screenshotCall = ps.calls.find((c) => c.method === 'Page.captureScreenshot');
     assert.deepEqual(screenshotCall.params.clip, { x: 0, y: 0, width: 1024, height: 768, scale: 1 });
     assert.equal(screenshotCall.params.captureBeyondViewport, false);
 
@@ -40,12 +40,12 @@ describe('screenshot', () => {
 
   it('full-page screenshot uses Page.getLayoutMetrics contentSize', async () => {
     const filename = tmpFile();
-    const { screenshot, sendCdpCommand } = setup({
-      'Page.getLayoutMetrics': () => ({ contentSize: { width: 1024, height: 5000 } })
+    const { screenshot, ps } = setup({
+      'Page.getLayoutMetrics': () => ({ contentSize: { width: 1024, height: 5000 } }),
     });
     await screenshot(0, filename, null, true);
 
-    const screenshotCall = sendCdpCommand.calls.find(c => c.method === 'Page.captureScreenshot');
+    const screenshotCall = ps.calls.find((c) => c.method === 'Page.captureScreenshot');
     assert.equal(screenshotCall.params.clip.height, 5000);
     assert.equal(screenshotCall.params.captureBeyondViewport, true);
 

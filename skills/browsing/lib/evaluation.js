@@ -15,25 +15,26 @@
  *   full RemoteObject including `objectId`). For callers that need the
  *   raw CDP shape.
  *
- * `attachEvaluation({ resolveWsUrl, sendCdpCommand })` binds them to a
- * session via the helpers' closure capture.
+ * Helpers accept `tabIndexOrPageSession` (the orchestrator's
+ * `getPageSession` resolver handles all shapes) and route through
+ * `pageSession.send`.
  */
 const { throwIfExceptionDetails } = require('./cdp-utils');
 
-function attachEvaluation({ resolveWsUrl, sendCdpCommand }) {
-  async function evaluate(tabIndexOrWsUrl, expression) {
-    const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
-    const result = await sendCdpCommand(wsUrl, 'Runtime.evaluate', {
+function attachEvaluation({ getPageSession }) {
+  async function evaluate(tabIndexOrPageSession, expression) {
+    const ps = await getPageSession(tabIndexOrPageSession);
+    const result = await ps.send('Runtime.evaluate', {
       expression,
       returnByValue: true,
-      awaitPromise: true
+      awaitPromise: true,
     });
     throwIfExceptionDetails(result);
     return result.result.value;
   }
 
-  async function evaluateJson(tabIndexOrWsUrl, expression) {
-    const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
+  async function evaluateJson(tabIndexOrPageSession, expression) {
+    const ps = await getPageSession(tabIndexOrPageSession);
 
     const wrappedExpression = `
       (() => {
@@ -60,20 +61,20 @@ function attachEvaluation({ resolveWsUrl, sendCdpCommand }) {
       })()
     `;
 
-    const result = await sendCdpCommand(wsUrl, 'Runtime.evaluate', {
+    const result = await ps.send('Runtime.evaluate', {
       expression: wrappedExpression,
       returnByValue: true,
-      awaitPromise: true
+      awaitPromise: true,
     });
     throwIfExceptionDetails(result);
     return result.result.value;
   }
 
-  async function evaluateRaw(tabIndexOrWsUrl, expression) {
-    const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
-    const result = await sendCdpCommand(wsUrl, 'Runtime.evaluate', {
+  async function evaluateRaw(tabIndexOrPageSession, expression) {
+    const ps = await getPageSession(tabIndexOrPageSession);
+    const result = await ps.send('Runtime.evaluate', {
       expression,
-      returnByValue: false
+      returnByValue: false,
     });
     throwIfExceptionDetails(result);
     return result.result;

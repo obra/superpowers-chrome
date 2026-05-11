@@ -7,26 +7,27 @@ const require = createRequire(import.meta.url);
 const { attachSelectOption } = require('../../skills/browsing/lib/select-option.js');
 
 describe('selectOption (jsdom)', () => {
-  // Build a fake CDP layer that evaluates Runtime.evaluate against a jsdom DOM.
+  // Build a fake page session that evaluates Runtime.evaluate against a jsdom DOM.
   function setup(html) {
     // runScripts: 'dangerously' is required for window.eval to have access to
     // document and the DOM globals — the standard jsdom approach for unit tests
     // that exercise page-side code paths.
     const dom = new JSDOM(html, { runScripts: 'dangerously' });
     const { window } = dom;
-    const sendCdpCommand = async (_wsUrl, method, params) => {
-      if (method !== 'Runtime.evaluate') {
-        throw new Error(`Unexpected CDP method: ${method}`);
-      }
-      // Evaluate the expression directly in jsdom's window context.
-      // IIFEs evaluate to their return value; plain expressions evaluate
-      // to their value. No function wrapper needed.
-      const result = window.eval(params.expression);
-      // wrap to match returnByValue: true CDP shape
-      return { result: { value: result } };
+    const ps = {
+      sessionId: 'TEST',
+      targetId: 'TEST',
+      async send(method, params) {
+        if (method !== 'Runtime.evaluate') {
+          throw new Error(`Unexpected CDP method: ${method}`);
+        }
+        // Evaluate the expression directly in jsdom's window context.
+        const result = window.eval(params.expression);
+        return { result: { value: result } };
+      },
     };
-    const resolveWsUrl = async () => 'ws://jsdom';
-    return attachSelectOption({ resolveWsUrl, sendCdpCommand });
+    const getPageSession = async () => ps;
+    return attachSelectOption({ getPageSession });
   }
 
   const SINGLE = `<select id="single">
@@ -74,11 +75,8 @@ describe('selectOption (jsdom)', () => {
   });
 
   it('replace semantics: previous selections are cleared', async () => {
-    // Pre-select option 'a', then call selectOption with 'b'. Only 'b' should be selected.
     const { selectOption } = setup(MULTI);
-    // Prime: select all three.
     await selectOption(0, '#multi', ['a', 'b', 'c']);
-    // Replace: select only 'b'.
     const r = await selectOption(0, '#multi', ['b']);
     assert.equal(r.matched.length, 1);
     assert.equal(r.matched[0].value, 'b');

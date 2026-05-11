@@ -4,6 +4,7 @@ import { createRequire } from 'node:module';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { after, describe, it } from 'node:test';
+import { makePageSessionSpy, makeGetPageSession } from './_helpers.mjs';
 
 const require = createRequire(import.meta.url);
 const { attachCapture } = require('../../skills/browsing/lib/capture.js');
@@ -22,9 +23,12 @@ describe('capture', () => {
 
   function setup() {
     const state = { sessionDir: null, captureCounter: 0 };
-    const calls = { resolveWsUrl: 0, sendCdpCommand: 0, getHtml: 0, screenshot: 0 };
-    const sendCdpCommand = async () => { calls.sendCdpCommand++; return { result: { value: 'fake' } }; };
-    const resolveWsUrl = async (_x) => { calls.resolveWsUrl++; return 'ws://test/x'; };
+    const calls = { send: 0, getHtml: 0, screenshot: 0 };
+    const ps = makePageSessionSpy();
+    // Wrap ps.send to count for cross-check, but real spy still records into ps.calls.
+    const origSend = ps.send.bind(ps);
+    ps.send = async (method, params, opts) => { calls.send++; return origSend(method, params, opts); };
+    const getPageSession = makeGetPageSession(ps);
     const getHtml = async () => { calls.getHtml++; return '<html></html>'; };
     const screenshot = async (_tab, file) => { calls.screenshot++; fs.writeFileSync(file, ''); return file; };
     const actions = {
@@ -34,9 +38,10 @@ describe('capture', () => {
       evaluate: async () => 'eval-result',
     };
     return {
-      ...attachCapture({ state, resolveWsUrl, sendCdpCommand, getHtml, screenshot, actions }),
+      ...attachCapture({ state, getPageSession, getHtml, screenshot, actions }),
       calls,
-      state
+      state,
+      ps,
     };
   }
 

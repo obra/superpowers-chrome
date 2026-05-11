@@ -1,115 +1,75 @@
-const { WebSocketClient } = require('./websocket-client');
-
-// Fixed CDP request id used to mark the Runtime.enable response so the
-// message handler can distinguish setup-acknowledged from runtime-event
-// without tracking ids generally.
-const RUNTIME_ENABLE_REQUEST_ID = 999999;
-
-// How long to wait for Runtime.enable to acknowledge before failing the
-// console-logging setup.
-const ENABLE_TIMEOUT_MS = 5000;
-
 /**
  * Page console-message capture.
  *
- * `enableConsoleLogging` opens a persistent WebSocket alongside the
- * pooled CDP connection (kept separate so the request/response flow
- * isn't polluted with `Runtime.consoleAPICalled` events) and streams
- * console output into `state.consoleMessages` keyed by tab ws URL.
- * `getConsoleMessages` reads them out — optionally filtered by
- * timestamp — and `clearConsoleMessages` resets the buffer for a tab.
+ * `enableConsoleLogging` enables Runtime on the page session and registers a
+ * page-session event listener for `Runtime.consoleAPICalled`, streaming
+ * console output into `state.consoleMessages` keyed by `ps.sessionId`.
+ * `getConsoleMessages` reads them out — optionally filtered by timestamp —
+ * and `clearConsoleMessages` resets the buffer for a tab.
  *
- * The fixed id `999999` is used for the `Runtime.enable` request/response
- * pair so the message handler can tell setup-acknowledged from
- * runtime-event without tracking ids generally.
+ * `enableDomain('Runtime')` is idempotent so navigation's auto-capture
+ * and `enableConsoleLogging` can coexist on the same page session without
+ * stomping on each other.
  *
- * `attachConsoleLogging({ state, resolveWsUrl })` returns the bound API.
+ * Keying: `state.consoleMessages` is keyed by `ps.sessionId`. The public
+ * adapter API (`getConsoleMessages(arg, sinceTimestamp)`,
+ * `clearConsoleMessages(arg)`) accepts tabIndex / wsUrl / pageSession —
+ * all resolve through `getPageSession` to `ps.sessionId`.
  */
-function attachConsoleLogging({ state, resolveWsUrl }) {
-  async function enableConsoleLogging(tabIndexOrWsUrl) {
-    const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
+function attachConsoleLogging({ state, getPageSession }) {
+  async function enableConsoleLogging(tabIndexOrPageSession) {
+    const ps = await getPageSession(tabIndexOrPageSession);
 
-    if (!state.consoleMessages.has(wsUrl)) {
-      state.consoleMessages.set(wsUrl, []);
+    if (!state.consoleMessages.has(ps.sessionId)) {
+      state.consoleMessages.set(ps.sessionId, []);
     }
 
-    // Persistent ws — kept open after Runtime.enable so we keep receiving
-    // Runtime.consoleAPICalled events. Separate from the pooled CDP
-    // connection so RPC traffic doesn't fight event traffic.
-    const ws = new WebSocketClient(wsUrl);
+    await ps.enableDomain('Runtime'); // idempotent
 
-    return new Promise((resolve, reject) => {
-      let enabledRuntime = false;
+    const unsub = ps.onEvent((data) => {
+      if (data.method !== 'Runtime.consoleAPICalled') return;
+      const entry = data.params || {};
+      const timestamp = new Date().toISOString();
+      const level = entry.type || 'log';
+      const args = entry.args || [];
 
-      ws.on('message', (msg) => {
-        const data = JSON.parse(msg);
+      const text = args.map((arg) => {
+        if (arg.type === 'string') return arg.value;
+        if (arg.type === 'number') return String(arg.value);
+        if (arg.type === 'boolean') return String(arg.value);
+        if (arg.type === 'object') return arg.description || '[Object]';
+        return String(arg.value || arg.description || arg.type);
+      }).join(' ');
 
-        // Fixed id marks the Runtime.enable response; everything
-        // after that is event traffic.
-        if (data.id === RUNTIME_ENABLE_REQUEST_ID && !enabledRuntime) {
-          enabledRuntime = true;
-          resolve();
-          return;
-        }
-
-        if (data.method === 'Runtime.consoleAPICalled') {
-          const entry = data.params;
-          const timestamp = new Date().toISOString();
-          const level = entry.type || 'log';
-          const args = entry.args || [];
-
-          const text = args.map(arg => {
-            if (arg.type === 'string') return arg.value;
-            if (arg.type === 'number') return String(arg.value);
-            if (arg.type === 'boolean') return String(arg.value);
-            if (arg.type === 'object') return arg.description || '[Object]';
-            return String(arg.value || arg.description || arg.type);
-          }).join(' ');
-
-          const messages = state.consoleMessages.get(wsUrl) || [];
-          messages.push({ timestamp, level, text });
-          state.consoleMessages.set(wsUrl, messages);
-        }
-      });
-
-      ws.on('error', (err) => {
-        if (!enabledRuntime) {
-          reject(err);
-        }
-      });
-
-      ws.connect()
-        .then(() => {
-          ws.send(JSON.stringify({
-            id: RUNTIME_ENABLE_REQUEST_ID,
-            method: 'Runtime.enable'
-          }));
-        })
-        .catch(reject);
-
-      setTimeout(() => {
-        if (!enabledRuntime) {
-          ws.close();
-          reject(new Error('Console logging enable timeout'));
-        }
-      }, ENABLE_TIMEOUT_MS);
+      const messages = state.consoleMessages.get(ps.sessionId) || [];
+      messages.push({ timestamp, level, text });
+      state.consoleMessages.set(ps.sessionId, messages);
     });
+
+    // The page session detach handles event-listener cleanup via router
+    // unregisterSession; close() here just unsubscribes this specific
+    // listener so a caller that wants to stop capturing without detaching
+    // the whole page session can do so.
+    return {
+      close: () => {
+        try { unsub(); } catch { /* best-effort */ }
+      },
+    };
   }
 
-  async function getConsoleMessages(tabIndexOrWsUrl, sinceTime = null) {
-    const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
-    const messages = state.consoleMessages.get(wsUrl) || [];
+  async function getConsoleMessages(tabIndexOrPageSession, sinceTime = null) {
+    const ps = await getPageSession(tabIndexOrPageSession);
+    const messages = state.consoleMessages.get(ps.sessionId) || [];
 
     if (!sinceTime) {
       return messages;
     }
-
-    return messages.filter(msg => new Date(msg.timestamp) > sinceTime);
+    return messages.filter((msg) => new Date(msg.timestamp) > sinceTime);
   }
 
-  async function clearConsoleMessages(tabIndexOrWsUrl) {
-    const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
-    state.consoleMessages.set(wsUrl, []);
+  async function clearConsoleMessages(tabIndexOrPageSession) {
+    const ps = await getPageSession(tabIndexOrPageSession);
+    state.consoleMessages.set(ps.sessionId, []);
   }
 
   return { enableConsoleLogging, getConsoleMessages, clearConsoleMessages };
