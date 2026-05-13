@@ -11,7 +11,21 @@ function attachDialogs({ state, sendCdpCommand, resolveWsUrl }) {
     state.dialogs.delete(wsUrl);
   }
 
-  return { getOpen, clear };
+  async function attachToConnection(conn, wsUrl) {
+    await sendCdpCommand(wsUrl, 'Page.enable', {});
+    await sendCdpCommand(wsUrl, 'DeviceAccess.enable', {});
+    await sendCdpCommand(wsUrl, 'Fetch.enable', {
+      handleAuthRequests: true,
+      patterns: [{ urlPattern: '*' }],
+    });
+    conn.eventHandler = (msg) => handleCdpEvent(wsUrl, msg);
+  }
+
+  function handleCdpEvent(_wsUrl, _msg) {
+    // Filled in by later tasks.
+  }
+
+  return { getOpen, clear, attachToConnection };
 }
 
 module.exports = { attachDialogs };

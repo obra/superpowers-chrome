@@ -25,3 +25,29 @@ describe('dialogs state map', () => {
     assert.equal(api.getOpen('ws://x'), null);
   });
 });
+
+describe('dialogs attachToConnection', () => {
+  it('enables Page, DeviceAccess, and Fetch domains once', async () => {
+    const { api, sendCdpCommand } = setup();
+    const conn = { eventHandler: null };
+    await api.attachToConnection(conn, 'ws://x');
+    const methods = sendCdpCommand.calls.map(c => c.method);
+    assert.deepEqual(methods, ['Page.enable', 'DeviceAccess.enable', 'Fetch.enable']);
+  });
+
+  it('Fetch.enable passes handleAuthRequests and wildcard pattern', async () => {
+    const { api, sendCdpCommand } = setup();
+    const conn = { eventHandler: null };
+    await api.attachToConnection(conn, 'ws://x');
+    const fetchCall = sendCdpCommand.calls.find(c => c.method === 'Fetch.enable');
+    assert.equal(fetchCall.params.handleAuthRequests, true);
+    assert.deepEqual(fetchCall.params.patterns, [{ urlPattern: '*' }]);
+  });
+
+  it('installs an eventHandler on the connection', async () => {
+    const { api } = setup();
+    const conn = { eventHandler: null };
+    await api.attachToConnection(conn, 'ws://x');
+    assert.equal(typeof conn.eventHandler, 'function');
+  });
+});
