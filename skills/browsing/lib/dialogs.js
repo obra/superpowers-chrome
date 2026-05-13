@@ -21,8 +21,25 @@ function attachDialogs({ state, sendCdpCommand, resolveWsUrl }) {
     conn.eventHandler = (msg) => handleCdpEvent(wsUrl, msg);
   }
 
-  function handleCdpEvent(_wsUrl, _msg) {
-    // Filled in by later tasks.
+  function handleCdpEvent(wsUrl, msg) {
+    if (msg.method === 'Page.javascriptDialogOpening') {
+      if (state.dialogs.has(wsUrl)) {
+        console.error(`[dialogs] second javascriptDialogOpening on ${wsUrl}; preserving original`);
+        return;
+      }
+      const p = msg.params;
+      state.dialogs.set(wsUrl, {
+        kind: p.type, // CDP uses 'alert' | 'confirm' | 'prompt' | 'beforeunload'
+        openedAt: Date.now(),
+        payload: {
+          message: p.message,
+          defaultPrompt: p.defaultPrompt,
+          url: p.url,
+          hasBrowserHandler: p.hasBrowserHandler,
+        },
+        staged: {},
+      });
+    }
   }
 
   return { getOpen, clear, attachToConnection };

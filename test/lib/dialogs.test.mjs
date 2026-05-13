@@ -51,3 +51,53 @@ describe('dialogs attachToConnection', () => {
     assert.equal(typeof conn.eventHandler, 'function');
   });
 });
+
+describe('Page.javascriptDialogOpening', () => {
+  async function fireEvent(api, conn, wsUrl, params) {
+    await api.attachToConnection(conn, wsUrl);
+    conn.eventHandler({ method: 'Page.javascriptDialogOpening', params });
+  }
+
+  it('populates state with kind: alert', async () => {
+    const { api } = setup();
+    const conn = {};
+    await fireEvent(api, conn, 'ws://x', {
+      type: 'alert', message: 'hi', defaultPrompt: '', url: 'http://e.com', hasBrowserHandler: false,
+    });
+    const s = api.getOpen('ws://x');
+    assert.equal(s.kind, 'alert');
+    assert.equal(s.payload.message, 'hi');
+    assert.equal(s.payload.url, 'http://e.com');
+    assert.equal(typeof s.openedAt, 'number');
+  });
+
+  it('populates state with kind: confirm', async () => {
+    const { api } = setup();
+    const conn = {};
+    await fireEvent(api, conn, 'ws://x', { type: 'confirm', message: 'q', defaultPrompt: '', url: '', hasBrowserHandler: false });
+    assert.equal(api.getOpen('ws://x').kind, 'confirm');
+  });
+
+  it('populates state with kind: prompt including defaultPrompt', async () => {
+    const { api } = setup();
+    const conn = {};
+    await fireEvent(api, conn, 'ws://x', { type: 'prompt', message: 'name?', defaultPrompt: 'guest', url: '', hasBrowserHandler: false });
+    const s = api.getOpen('ws://x');
+    assert.equal(s.kind, 'prompt');
+    assert.equal(s.payload.defaultPrompt, 'guest');
+  });
+
+  it('populates state with kind: beforeunload', async () => {
+    const { api } = setup();
+    const conn = {};
+    await fireEvent(api, conn, 'ws://x', { type: 'beforeunload', message: '', defaultPrompt: '', url: '', hasBrowserHandler: false });
+    assert.equal(api.getOpen('ws://x').kind, 'beforeunload');
+  });
+
+  it('initializes staged with empty object', async () => {
+    const { api } = setup();
+    const conn = {};
+    await fireEvent(api, conn, 'ws://x', { type: 'alert', message: 'x', defaultPrompt: '', url: '', hasBrowserHandler: false });
+    assert.deepEqual(api.getOpen('ws://x').staged, {});
+  });
+});
