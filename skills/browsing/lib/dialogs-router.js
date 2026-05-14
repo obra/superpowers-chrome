@@ -80,7 +80,11 @@ async function tryHandleDialogSelector({ selector, op, payload, state, sendCdpCo
     }
   }
 
-  return { handled: true, error: `Unknown dialog selector or operation: ${op} ${selector}` };
+  const validSelectors = ['dialog::accept', 'dialog::dismiss', 'dialog::prompt', 'dialog::device[id="..."]', 'dialog::username', 'dialog::password'];
+  if (op !== 'click' && op !== 'type') {
+    return { handled: true, error: `Unsupported operation '${op}' on dialog selector. Only 'click' and 'type' are supported.` };
+  }
+  return { handled: true, error: `Unknown dialog selector: ${selector}. Valid: ${validSelectors.join(', ')}.` };
 }
 
 module.exports = { tryHandleDialogSelector };

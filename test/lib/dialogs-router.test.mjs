@@ -118,3 +118,20 @@ describe('basic-auth router', () => {
     assert.equal(call.params.authChallengeResponse.response, 'CancelAuth');
   });
 });
+
+describe('router errors', () => {
+  it('unknown dialog selector returns error listing valid ones', async () => {
+    const cdp = makeCdpSpy();
+    const r = await tryHandleDialogSelector({ selector: 'dialog::garbage', op: 'click', state: jsAlert(), sendCdpCommand: cdp, wsUrl: 'ws://x' });
+    assert.equal(r.handled, true);
+    assert.match(r.error, /Unknown dialog selector/);
+    assert.match(r.error, /dialog::accept/);
+  });
+
+  it('attr on dialog::accept returns refusal (unsupported op)', async () => {
+    const cdp = makeCdpSpy();
+    const r = await tryHandleDialogSelector({ selector: 'dialog::accept', op: 'attr', state: jsAlert(), sendCdpCommand: cdp, wsUrl: 'ws://x' });
+    assert.equal(r.handled, true);
+    assert.match(r.error, /unsupported operation/i);
+  });
+});
