@@ -244,4 +244,48 @@ describe('dialog handling — real Chrome smoke', { skip: !CHROME_AVAILABLE && '
     const result = await session.evaluate(0, 'document.title');
     assert.equal(result, 'granted');
   });
+
+  // ---------- Test 5: session-boundary gate on extractText ----------
+  //
+  // This test specifically validates the gap that was missed in the original
+  // MCP smoke suite: session methods like extractText (not wrapped by Task 24)
+  // must also be refused when a dialog is open, rather than timing out on CDP.
+  //
+  // Flow:
+  //   navigate → setTimeout alert → extractText returns refusal (not timeout) →
+  //   click dialog::accept → extractText succeeds.
+  it('extractText is refused while alert is open — not a CDP timeout', async () => {
+    await session.navigate(0, 'data:text/html,<h1>dialog-gap-test</h1><script>setTimeout(()=>alert("gap-test"),100)</script>');
+
+    // Wait for the alert to open on the pooled connection.
+    await waitFor(() => session.dialogs.getOpen(wsUrl) !== null);
+
+    const open = session.dialogs.getOpen(wsUrl);
+    assert.equal(open.kind, 'alert');
+    assert.equal(open.payload.message, 'gap-test');
+
+    // extractText must return a structured refusal, NOT hang until CDP timeout.
+    const extractResult = await session.extractText(0, 'body');
+    assert.equal(extractResult.refused, true,
+      `Expected refused:true from extractText, got: ${JSON.stringify(extractResult)}`);
+    assert.match(extractResult.error, /Page is behind a dialog/);
+    assert.ok(extractResult.dialog, 'refusal should include dialog state');
+    assert.ok(extractResult.artifacts, 'refusal should include synthetic artifacts');
+
+    // screenshot also lives behind the gate.
+    const screenshotResult = await session.screenshot(0, '/tmp/test-dialog-gate-screenshot.png');
+    assert.equal(screenshotResult.refused, true,
+      `Expected refused:true from screenshot, got: ${JSON.stringify(screenshotResult)}`);
+
+    // Dismiss the alert.
+    await session.click(0, 'dialog::accept');
+
+    // Wait for dialog state to clear.
+    await waitFor(() => session.dialogs.getOpen(wsUrl) === null);
+
+    // extractText must now succeed.
+    const text = await session.extractText(0, 'body');
+    assert.equal(typeof text, 'string', `Expected string from extractText after dismiss, got: ${JSON.stringify(text)}`);
+    assert.ok(text.includes('dialog-gap-test'), 'extractText should return page content after dialog dismissed');
+  });
 });

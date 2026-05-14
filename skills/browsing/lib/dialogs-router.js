@@ -51,11 +51,11 @@ async function tryHandleDialogSelector({ selector, op, payload, state, sendCdpCo
         id: state.payload.requestId,
         deviceId: m[1],
       });
-      return { handled: true, result: { ok: true } };
+      return { handled: true, clearDialog: true, result: { ok: true } };
     }
     if (selector === 'dialog::dismiss' && state.kind === 'device-chooser') {
       await sendCdpCommand(wsUrl, 'DeviceAccess.cancelPrompt', { id: state.payload.requestId });
-      return { handled: true, result: { ok: true } };
+      return { handled: true, clearDialog: true, result: { ok: true } };
     }
   }
 
@@ -69,14 +69,14 @@ async function tryHandleDialogSelector({ selector, op, payload, state, sendCdpCo
           password: state.staged.password || '',
         },
       });
-      return { handled: true, result: { ok: true } };
+      return { handled: true, clearDialog: true, result: { ok: true } };
     }
     if (selector === 'dialog::dismiss') {
       await sendCdpCommand(wsUrl, 'Fetch.continueWithAuth', {
         requestId: state.payload.requestId,
         authChallengeResponse: { response: 'CancelAuth' },
       });
-      return { handled: true, result: { ok: true } };
+      return { handled: true, clearDialog: true, result: { ok: true } };
     }
   }
 
@@ -87,7 +87,7 @@ async function tryHandleDialogSelector({ selector, op, payload, state, sendCdpCo
       await sendCdpCommand(wsUrl, 'Runtime.evaluate', {
         expression: `window.__dialogShim_resolve('${id}', '${decision}')`,
       });
-      return { handled: true, result: { ok: true } };
+      return { handled: true, clearDialog: true, result: { ok: true } };
     }
   }
 

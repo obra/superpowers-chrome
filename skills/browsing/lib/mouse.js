@@ -60,6 +60,7 @@ function attachMouse({ resolveWsUrl, sendCdpCommand, dialogs }) {
       const routed = await tryHandleDialogSelector({ selector, op: 'click', state, sendCdpCommand, wsUrl });
       if (routed.handled) {
         if (routed.error) throw new Error(routed.error);
+        if (routed.clearDialog) dialogs.clear(wsUrl);
         return routed.result;
       }
     }

@@ -83,6 +83,7 @@ function attachKeyboardInput({ state, resolveWsUrl, sendCdpCommand, click, dialo
       const routed = await tryHandleDialogSelector({ selector, op: 'type', payload: value, state: dialogState, sendCdpCommand, wsUrl });
       if (routed.handled) {
         if (routed.error) throw new Error(routed.error);
+        if (routed.clearDialog) dialogs.clear(wsUrl);
         return routed.result;
       }
     }

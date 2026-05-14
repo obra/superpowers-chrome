@@ -34,6 +34,7 @@ const { attachCdpConnection } = require('./lib/cdp-connection');
 const { attachConsoleLogging } = require('./lib/console-logging');
 const { attachSelectOption } = require('./lib/select-option');
 const { attachDialogs } = require('./lib/dialogs');
+const { renderSyntheticArtifacts } = require('./lib/dialogs-render');
 const {
   getXdgCacheHome,
   getChromeProfileDir,
@@ -44,6 +45,48 @@ const {
   findAvailablePort,
   buildChromeArgs,
 } = require('./lib/chrome-launcher-helpers');
+
+/**
+ * Session methods whose CDP work targets the page (tab) target.
+ * When a native browser dialog is open, these methods will wedge waiting for a
+ * CDP response that never arrives because the dialog blocks the JS runtime.
+ * The session-boundary wrapper below refuses them with a descriptive error
+ * rather than hanging until timeout.
+ *
+ * Browser-target methods (getTabs, newTab, closeTab, startChrome, …) are NOT
+ * listed here — they route through the browser target and work fine while a
+ * dialog is open.
+ */
+const PAGE_TARGET_SESSION_METHODS = new Set([
+  'navigate',
+  'click',
+  'fill',
+  'selectOption',
+  'evaluate',
+  'extractText',
+  'getHtml',
+  'getAttribute',
+  'waitForElement',
+  'waitForText',
+  'screenshot',
+  'hover',
+  'drag',
+  'mouseMove',
+  'scroll',
+  'doubleClick',
+  'rightClick',
+  'humanType',
+  'fileUpload',
+  'keyboardPress',
+  'clickWithCapture',
+  'fillWithCapture',
+  'selectOptionWithCapture',
+  'evaluateWithCapture',
+  'captureActionWithDiff',
+  'setViewport',
+  'clearViewport',
+  'getViewport',
+]);
 
 /**
  * Build a fresh Chrome session — a state-bag scoped to a single Chrome target.
@@ -137,7 +180,51 @@ function createSession({ host, port } = {}) {
   const { setViewport, clearViewport, getViewport } = attachViewport({ resolveWsUrl, sendCdpCommand });
   const { clearCookies } = attachCookies({ resolveWsUrl, sendCdpCommand });
 
-  return {
+  // ---------------------------------------------------------------------------
+  // Session-boundary dialog gate
+  //
+  // Wraps every page-target method so that any call issued while a native dialog
+  // is open returns a structured refusal instead of hanging until a CDP timeout.
+  //
+  // Convention (mirrors all other page-target methods in this library):
+  //   fn(tabIndexOrWsUrl, selectorOrArg, ...rest)
+  //
+  // If the second argument is a string beginning with "dialog::", it is a
+  // dialog-selector call (e.g. click("dialog::accept")) and must be allowed
+  // through so the existing internal routers in mouse.js and keyboard-input.js
+  // can handle it.
+  // ---------------------------------------------------------------------------
+  function wrapWithDialogGate(_name, fn) {
+    return async function dialogGated(tabIndexOrWsUrl, secondArg, ...rest) {
+      // Resolve the ws URL so we can look up dialog state.
+      // resolveWsUrl may throw (e.g., no Chrome running) — let it propagate
+      // naturally; that's not a dialog problem.
+      let wsUrl;
+      try {
+        wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
+      } catch {
+        // Can't resolve the URL — delegate and let the method surface the error.
+        return fn(tabIndexOrWsUrl, secondArg, ...rest);
+      }
+
+      const open = dialogs.getOpen(wsUrl);
+      const isDialogSelector = typeof secondArg === 'string' && secondArg.startsWith('dialog::');
+
+      if (open && !isDialogSelector) {
+        return {
+          refused: true,
+          error: 'Page is behind a dialog. Handle dialog::accept or dialog::dismiss first.',
+          dialog: open,
+          artifacts: renderSyntheticArtifacts(open),
+        };
+      }
+
+      return fn(tabIndexOrWsUrl, secondArg, ...rest);
+    };
+  }
+
+  // Build the raw session object, then wrap page-target methods.
+  const rawSession = {
     // Internal helpers (exported for testing)
     getElementSelector,
 
@@ -238,6 +325,15 @@ function createSession({ host, port } = {}) {
     dialogs,
 
   };
+
+  // Apply the session-boundary dialog gate to every page-target method.
+  for (const name of PAGE_TARGET_SESSION_METHODS) {
+    if (typeof rawSession[name] === 'function') {
+      rawSession[name] = wrapWithDialogGate(name, rawSession[name]);
+    }
+  }
+
+  return rawSession;
 }
 
-module.exports = { createSession };
+module.exports = { createSession, PAGE_TARGET_SESSION_METHODS };
