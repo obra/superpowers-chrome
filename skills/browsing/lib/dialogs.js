@@ -41,6 +41,23 @@ function attachDialogs({ state, sendCdpCommand, resolveWsUrl }) {
       });
       return;
     }
+    if (msg.method === 'DeviceAccess.deviceRequestPrompted') {
+      if (state.dialogs.has(wsUrl)) {
+        console.error(`[dialogs] second prompt on ${wsUrl}; preserving original`);
+        return;
+      }
+      state.dialogs.set(wsUrl, {
+        kind: 'device-chooser',
+        openedAt: Date.now(),
+        payload: {
+          requestId: msg.params.id,
+          deviceKind: msg.params.deviceKind || 'usb', // CDP older versions may omit; default to usb
+          devices: msg.params.devices || [],
+        },
+        staged: {},
+      });
+      return;
+    }
     if (msg.method === 'Page.javascriptDialogClosed') {
       state.dialogs.delete(wsUrl);
       return;

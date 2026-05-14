@@ -75,3 +75,23 @@ describe('router staging', () => {
     assert.equal(state.staged.password, 'p4ss');
   });
 });
+
+describe('router device selection', () => {
+  it('click dialog::device[id="d1"] calls DeviceAccess.selectPrompt', async () => {
+    const cdp = makeCdpSpy();
+    const state = { kind: 'device-chooser', payload: { requestId: 'req-1', deviceKind: 'usb', devices: [{ id: 'd1', name: 'D' }] }, staged: {} };
+    const r = await tryHandleDialogSelector({ selector: 'dialog::device[id="d1"]', op: 'click', state, sendCdpCommand: cdp, wsUrl: 'ws://x' });
+    assert.equal(r.handled, true);
+    const call = cdp.calls.find(c => c.method === 'DeviceAccess.selectPrompt');
+    assert.equal(call.params.id, 'req-1');
+    assert.equal(call.params.deviceId, 'd1');
+  });
+
+  it('click dialog::dismiss on device-chooser calls cancelPrompt', async () => {
+    const cdp = makeCdpSpy();
+    const state = { kind: 'device-chooser', payload: { requestId: 'req-1', deviceKind: 'usb', devices: [] }, staged: {} };
+    await tryHandleDialogSelector({ selector: 'dialog::dismiss', op: 'click', state, sendCdpCommand: cdp, wsUrl: 'ws://x' });
+    const call = cdp.calls.find(c => c.method === 'DeviceAccess.cancelPrompt');
+    assert.equal(call.params.id, 'req-1');
+  });
+});

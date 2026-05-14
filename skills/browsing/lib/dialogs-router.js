@@ -1,6 +1,7 @@
 'use strict';
 
 const JS_KINDS = new Set(['alert', 'confirm', 'prompt', 'beforeunload']);
+const DEVICE_SELECTOR_RE = /^dialog::device\[id="([^"]+)"\]$/;
 
 async function tryHandleDialogSelector({ selector, op, payload, state, sendCdpCommand, wsUrl }) {
   if (!selector || !selector.startsWith('dialog::')) {
@@ -40,6 +41,21 @@ async function tryHandleDialogSelector({ selector, op, payload, state, sendCdpCo
     if (selector === 'dialog::password' && state.kind === 'basic-auth') {
       state.staged.password = String(payload ?? '');
       return { handled: true, result: { staged: 'password' } };
+    }
+  }
+
+  if (op === 'click') {
+    const m = DEVICE_SELECTOR_RE.exec(selector);
+    if (m && state.kind === 'device-chooser') {
+      await sendCdpCommand(wsUrl, 'DeviceAccess.selectPrompt', {
+        id: state.payload.requestId,
+        deviceId: m[1],
+      });
+      return { handled: true, result: { ok: true } };
+    }
+    if (selector === 'dialog::dismiss' && state.kind === 'device-chooser') {
+      await sendCdpCommand(wsUrl, 'DeviceAccess.cancelPrompt', { id: state.payload.requestId });
+      return { handled: true, result: { ok: true } };
     }
   }
 

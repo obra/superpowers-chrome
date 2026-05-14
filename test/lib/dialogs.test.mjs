@@ -153,3 +153,19 @@ describe('dialog state clearing', () => {
     assert.notEqual(api.getOpen('ws://x'), null);
   });
 });
+
+describe('DeviceAccess.deviceRequestPrompted', () => {
+  it('populates device-chooser state', async () => {
+    const { api } = setup();
+    const conn = {};
+    await api.attachToConnection(conn, 'ws://x');
+    conn.eventHandler({ method: 'DeviceAccess.deviceRequestPrompted', params: {
+      id: 'req-1',
+      devices: [{ id: 'd1', name: 'USB' }],
+    }});
+    const s = api.getOpen('ws://x');
+    assert.equal(s.kind, 'device-chooser');
+    assert.equal(s.payload.requestId, 'req-1');
+    assert.deepEqual(s.payload.devices, [{ id: 'd1', name: 'USB' }]);
+  });
+});
