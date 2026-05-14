@@ -64,6 +64,19 @@ CHROME_EXTRA_ARGS="--use-gl=angle --use-angle=swiftshader-webgl --enable-unsafe-
 - **Export**: `screenshot`, `markdown`
 - **Raw protocol**: `raw` (full CDP access)
 
+## Dialog Handling
+
+Pages that open JS dialogs, device choosers, permission prompts, or HTTP basic-auth challenges no longer wedge the connection. The dialog appears as a synthetic page response with `dialog::*` selector buttons. Agents handle them with the existing `click` and `type` actions:
+
+```
+click selector="dialog::accept"
+type  selector="dialog::prompt" value="my answer"
+click selector="dialog::accept"
+click selector="dialog::device[id=\"...\"]"
+```
+
+See `docs/superpowers/specs/2026-05-13-dialog-handling-design.md` for the full design.
+
 ## MCP Server Mode
 
 Ultra-lightweight MCP server with a single `use_browser` tool. Perfect for minimal context usage with automatic page captures.

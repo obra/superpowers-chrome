@@ -2,6 +2,16 @@
 
 All notable changes to the superpowers-chrome MCP project.
 
+## Unreleased
+
+### Added
+- **Dialog handling**: JS dialogs (alert/confirm/prompt/beforeunload), WebUSB/Bluetooth/Serial/HID device choosers, permission prompts (via JS API shim), and HTTP basic auth challenges now surface as synthetic "pages" the agent can interact with using `click`/`type` against `dialog::*` selectors (`dialog::accept`, `dialog::dismiss`, `dialog::prompt`, `dialog::device[id="..."]`, `dialog::username`, `dialog::password`). Page-target actions are refused with a synthetic-dialog response while a dialog is open; browser-target actions (`list_tabs`, etc.) pass through. See `docs/superpowers/specs/2026-05-13-dialog-handling-design.md`.
+
+### Known Limitations
+- Permission shim (camera/microphone/notifications/geolocation/clipboard) currently doesn't fire in Chrome 148+ because `Runtime.addBinding` doesn't inject `window.__dialogShim` into page main worlds. The shim code runs but its binding call throws. JS dialogs and device choosers are unaffected. Tracked for follow-up.
+
+---
+
 ## [2.0.0] - 2026-05-06 - Per-session factory, three-tier test suite, and correctness fixes
 
 Major release. Breaking changes for any external consumer of the lib's pre-factory module-level state or the legacy method aliases. The MCP server and CLI bundled with this plugin are unaffected — they use the canonical names.
