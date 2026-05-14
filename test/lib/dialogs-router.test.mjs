@@ -95,3 +95,26 @@ describe('router device selection', () => {
     assert.equal(call.params.id, 'req-1');
   });
 });
+
+describe('basic-auth router', () => {
+  function authState(staged = {}) {
+    return { kind: 'basic-auth', payload: { requestId: 'r', origin: 'x', scheme: 'basic', realm: 'R' }, staged };
+  }
+
+  it('dialog::accept calls Fetch.continueWithAuth with ProvideCredentials', async () => {
+    const cdp = makeCdpSpy();
+    await tryHandleDialogSelector({ selector: 'dialog::accept', op: 'click', state: authState({ username: 'u', password: 'p' }), sendCdpCommand: cdp, wsUrl: 'ws://x' });
+    const call = cdp.calls.find(c => c.method === 'Fetch.continueWithAuth');
+    assert.equal(call.params.requestId, 'r');
+    assert.equal(call.params.authChallengeResponse.response, 'ProvideCredentials');
+    assert.equal(call.params.authChallengeResponse.username, 'u');
+    assert.equal(call.params.authChallengeResponse.password, 'p');
+  });
+
+  it('dialog::dismiss calls Fetch.continueWithAuth with CancelAuth', async () => {
+    const cdp = makeCdpSpy();
+    await tryHandleDialogSelector({ selector: 'dialog::dismiss', op: 'click', state: authState(), sendCdpCommand: cdp, wsUrl: 'ws://x' });
+    const call = cdp.calls.find(c => c.method === 'Fetch.continueWithAuth');
+    assert.equal(call.params.authChallengeResponse.response, 'CancelAuth');
+  });
+});

@@ -59,6 +59,27 @@ async function tryHandleDialogSelector({ selector, op, payload, state, sendCdpCo
     }
   }
 
+  if (op === 'click' && state.kind === 'basic-auth') {
+    if (selector === 'dialog::accept') {
+      await sendCdpCommand(wsUrl, 'Fetch.continueWithAuth', {
+        requestId: state.payload.requestId,
+        authChallengeResponse: {
+          response: 'ProvideCredentials',
+          username: state.staged.username || '',
+          password: state.staged.password || '',
+        },
+      });
+      return { handled: true, result: { ok: true } };
+    }
+    if (selector === 'dialog::dismiss') {
+      await sendCdpCommand(wsUrl, 'Fetch.continueWithAuth', {
+        requestId: state.payload.requestId,
+        authChallengeResponse: { response: 'CancelAuth' },
+      });
+      return { handled: true, result: { ok: true } };
+    }
+  }
+
   return { handled: true, error: `Unknown dialog selector or operation: ${op} ${selector}` };
 }
 
