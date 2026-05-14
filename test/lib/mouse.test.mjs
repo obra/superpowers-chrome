@@ -100,3 +100,24 @@ describe('mouse', () => {
     assert.equal(mouseCalls[0].params.button, 'right');
   });
 });
+
+describe('mouse click routes dialog::* selectors', () => {
+  it('click dialog::accept invokes the dialog router and skips DOM resolution', async () => {
+    const cdp = makeCdpSpy();
+    const dialogState = { kind: 'alert', payload: { message: 'x', url: '', defaultPrompt: '', hasBrowserHandler: false }, staged: {} };
+    const dialogs = {
+      getOpen: () => dialogState,
+    };
+    const { click } = attachMouse({
+      resolveWsUrl: async () => 'ws://x',
+      sendCdpCommand: cdp,
+      dialogs,
+    });
+    await click(0, 'dialog::accept');
+    const call = cdp.calls.find(c => c.method === 'Page.handleJavaScriptDialog');
+    assert.ok(call, 'expected Page.handleJavaScriptDialog call');
+    assert.equal(call.params.accept, true);
+    // No DOM-resolution call (Runtime.evaluate) should have happened.
+    assert.ok(!cdp.calls.some(c => c.method === 'Runtime.evaluate'));
+  });
+});

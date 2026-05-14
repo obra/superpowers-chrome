@@ -18,7 +18,8 @@ const DRAG_SETTLE_MS = 50;
  * `getElementSelector` from lib/element-selector — same visibility-aware
  * picker the rest of the library uses.
  */
-function attachMouse({ resolveWsUrl, sendCdpCommand }) {
+function attachMouse({ resolveWsUrl, sendCdpCommand, dialogs }) {
+  const { tryHandleDialogSelector } = require('./dialogs-router.js');
   // Common helper: resolve a CSS/XPath selector to centered viewport coords
   // after scrolling the element into view. Returns { x, y } or throws.
   async function resolveCenter(wsUrl, selector, label = 'Element') {
@@ -53,6 +54,15 @@ function attachMouse({ resolveWsUrl, sendCdpCommand }) {
    */
   async function click(tabIndexOrWsUrl, selector) {
     const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
+
+    if (selector && selector.startsWith('dialog::') && dialogs) {
+      const state = dialogs.getOpen(wsUrl);
+      const routed = await tryHandleDialogSelector({ selector, op: 'click', state, sendCdpCommand, wsUrl });
+      if (routed.handled) {
+        if (routed.error) throw new Error(routed.error);
+        return routed.result;
+      }
+    }
 
     try {
       const { x, y } = await resolveCenter(wsUrl, selector);
