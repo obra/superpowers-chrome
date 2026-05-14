@@ -119,6 +119,25 @@ describe('basic-auth router', () => {
   });
 });
 
+describe('permission router', () => {
+  function permState(shimId = '7') {
+    return { kind: 'permission', payload: { name: 'camera', origin: 'x', jsApi: 'getUserMedia' }, staged: { _shimId: shimId } };
+  }
+  it('dialog::accept resolves shim with grant via Runtime.evaluate', async () => {
+    const cdp = makeCdpSpy();
+    await tryHandleDialogSelector({ selector: 'dialog::accept', op: 'click', state: permState('42'), sendCdpCommand: cdp, wsUrl: 'ws://x' });
+    const call = cdp.calls.find(c => c.method === 'Runtime.evaluate');
+    assert.ok(call);
+    assert.match(call.params.expression, /__dialogShim_resolve\('42', 'grant'\)/);
+  });
+  it('dialog::dismiss resolves shim with deny', async () => {
+    const cdp = makeCdpSpy();
+    await tryHandleDialogSelector({ selector: 'dialog::dismiss', op: 'click', state: permState('9'), sendCdpCommand: cdp, wsUrl: 'ws://x' });
+    const call = cdp.calls.find(c => c.method === 'Runtime.evaluate');
+    assert.match(call.params.expression, /__dialogShim_resolve\('9', 'deny'\)/);
+  });
+});
+
 describe('router errors', () => {
   it('unknown dialog selector returns error listing valid ones', async () => {
     const cdp = makeCdpSpy();

@@ -80,6 +80,17 @@ async function tryHandleDialogSelector({ selector, op, payload, state, sendCdpCo
     }
   }
 
+  if (op === 'click' && state.kind === 'permission') {
+    const decision = selector === 'dialog::accept' ? 'grant' : (selector === 'dialog::dismiss' ? 'deny' : null);
+    if (decision) {
+      const id = state.staged._shimId;
+      await sendCdpCommand(wsUrl, 'Runtime.evaluate', {
+        expression: `window.__dialogShim_resolve('${id}', '${decision}')`,
+      });
+      return { handled: true, result: { ok: true } };
+    }
+  }
+
   const validSelectors = ['dialog::accept', 'dialog::dismiss', 'dialog::prompt', 'dialog::device[id="..."]', 'dialog::username', 'dialog::password'];
   if (op !== 'click' && op !== 'type') {
     return { handled: true, error: `Unsupported operation '${op}' on dialog selector. Only 'click' and 'type' are supported.` };
