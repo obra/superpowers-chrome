@@ -52,6 +52,31 @@ describe('cdp-connection', () => {
     assert.equal(typeof conn.getPooledConnection, 'function');
     assert.equal(typeof conn.closePooledConnection, 'function');
     assert.equal(typeof conn.closeAllConnections, 'function');
+    assert.equal(typeof conn.setDialogs, 'function');
+  });
+});
+
+describe('cdp-connection setDialogs', () => {
+  it('setDialogs wires dialogs after construction — attachToConnection fires on later connections', async () => {
+    const calls = [];
+    const dialogs = {
+      attachToConnection: async (conn, wsUrl) => { calls.push({ conn, wsUrl }); },
+    };
+    const state = { connectionPool: new Map() };
+    const api = attachCdpConnection({ state, WebSocketClient: makeFakeWebSocketClient });
+
+    // No dialogs yet — first connection should NOT trigger attachToConnection.
+    await api.getPooledConnection('ws://fake/a');
+    assert.equal(calls.length, 0, 'no attachment before setDialogs');
+
+    // Wire dialogs in.
+    api.setDialogs(dialogs);
+
+    // New connection (different URL) — should trigger attachToConnection.
+    const conn = await api.getPooledConnection('ws://fake/b');
+    assert.equal(calls.length, 1, 'attachToConnection fires after setDialogs');
+    assert.equal(calls[0].wsUrl, 'ws://fake/b');
+    assert.equal(calls[0].conn, conn);
   });
 });
 

@@ -32,7 +32,13 @@ const DEFAULT_CDP_TIMEOUT_MS = 30000;
  * is called each time a new pooled connection is created. `WebSocketClient` is
  * optional — defaults to the real implementation (injectable for tests).
  */
-function attachCdpConnection({ state, dialogs, WebSocketClient = DefaultWebSocketClient }) {
+function attachCdpConnection({ state, dialogs: initialDialogs, WebSocketClient = DefaultWebSocketClient }) {
+  let dialogs = initialDialogs;
+
+  function setDialogs(d) {
+    dialogs = d;
+  }
+
   async function getPooledConnection(wsUrl) {
     let conn = state.connectionPool.get(wsUrl);
 
@@ -189,6 +195,7 @@ function attachCdpConnection({ state, dialogs, WebSocketClient = DefaultWebSocke
     sendCdpCommandSingle,
     closePooledConnection,
     closeAllConnections,
+    setDialogs,
   };
 }
 

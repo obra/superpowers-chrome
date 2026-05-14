@@ -71,21 +71,23 @@ function createSession({ host, port } = {}) {
   const state = createState({ host, port });
 
   // =============================================================================
+  const cdpApi = attachCdpConnection({ state });
   const {
     sendCdpCommand,
     closePooledConnection,
     closeAllConnections,
-  } = attachCdpConnection({ state });
+  } = cdpApi;
 
   const dialogs = attachDialogs({ state, sendCdpCommand });
+  cdpApi.setDialogs(dialogs);
 
   const { chromeHttp, resolveWsUrl, getTabs, newTab, closeTab } = attachTabs({ state });
 
   const { click, hover, drag, mouseMove, scroll, doubleClick, rightClick } =
-    attachMouse({ resolveWsUrl, sendCdpCommand });
+    attachMouse({ resolveWsUrl, sendCdpCommand, dialogs });
 
   const { keyboardPress, fill, humanType } =
-    attachKeyboardInput({ state, resolveWsUrl, sendCdpCommand, click });
+    attachKeyboardInput({ state, resolveWsUrl, sendCdpCommand, click, dialogs });
 
   const { fileUpload } = attachFileUpload({ resolveWsUrl, sendCdpCommand });
 
@@ -126,6 +128,7 @@ function createSession({ host, port } = {}) {
     getHtml,
     screenshot,
     actions: { click, fill, selectOption, evaluate },
+    dialogs,
   });
 
   const { navigate, waitForElement, waitForText } =

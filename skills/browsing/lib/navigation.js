@@ -56,6 +56,13 @@ function attachNavigation({ state, resolveWsUrl, sendCdpCommand, capturePageArti
       let settled = false; // guard against double-resolve from race between events
       let pageEnableConfirmed = false;
       let runtimeEnableConfirmed = !autoCapture; // skip if not needed
+      // Chrome broadcasts Page.loadEventFired to all clients that have Page.enable
+      // active when ANY other client first enables Page on an already-loaded tab.
+      // This can cause the navigate listener to resolve prematurely (before the
+      // actual navigation completes). Guard: only accept Page.loadEventFired after
+      // we see Page.frameNavigated — which only fires for real navigation events,
+      // not for the synthetic broadcast.
+      let frameNavigated = false;
 
       function settle(action) {
         if (settled) return;
@@ -105,7 +112,14 @@ function attachNavigation({ state, resolveWsUrl, sendCdpCommand, capturePageArti
           return;
         }
 
-        if (data.method === 'Page.loadEventFired' && !pageLoaded) {
+        if (data.method === 'Page.frameNavigated') {
+          const frame = data.params && data.params.frame;
+          if (frame && !frame.parentId) {
+            frameNavigated = true;
+          }
+        }
+
+        if (data.method === 'Page.loadEventFired' && !pageLoaded && frameNavigated) {
           pageLoaded = true;
           if (autoCapture) {
             // Linger so any console messages emitted during the load
