@@ -39,6 +39,17 @@ function attachDialogs({ state, sendCdpCommand, resolveWsUrl }) {
         },
         staged: {},
       });
+      return;
+    }
+    if (msg.method === 'Page.javascriptDialogClosed') {
+      state.dialogs.delete(wsUrl);
+      return;
+    }
+    if (msg.method === 'Page.frameNavigated') {
+      if (msg.params.frame && !msg.params.frame.parentId) {
+        state.dialogs.delete(wsUrl);
+      }
+      return;
     }
   }
 

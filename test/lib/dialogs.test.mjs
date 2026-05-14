@@ -101,3 +101,32 @@ describe('Page.javascriptDialogOpening', () => {
     assert.deepEqual(api.getOpen('ws://x').staged, {});
   });
 });
+
+describe('dialog state clearing', () => {
+  it('Page.javascriptDialogClosed clears state', async () => {
+    const { api } = setup();
+    const conn = {};
+    await api.attachToConnection(conn, 'ws://x');
+    conn.eventHandler({ method: 'Page.javascriptDialogOpening', params: { type: 'alert', message: 'x', defaultPrompt: '', url: '', hasBrowserHandler: false } });
+    conn.eventHandler({ method: 'Page.javascriptDialogClosed', params: { result: true, userInput: '' } });
+    assert.equal(api.getOpen('ws://x'), null);
+  });
+
+  it('Page.frameNavigated clears state defensively (main frame only)', async () => {
+    const { api } = setup();
+    const conn = {};
+    await api.attachToConnection(conn, 'ws://x');
+    conn.eventHandler({ method: 'Page.javascriptDialogOpening', params: { type: 'alert', message: 'x', defaultPrompt: '', url: '', hasBrowserHandler: false } });
+    conn.eventHandler({ method: 'Page.frameNavigated', params: { frame: { id: 'main', parentId: undefined } } });
+    assert.equal(api.getOpen('ws://x'), null);
+  });
+
+  it('Page.frameNavigated does NOT clear state for subframes', async () => {
+    const { api } = setup();
+    const conn = {};
+    await api.attachToConnection(conn, 'ws://x');
+    conn.eventHandler({ method: 'Page.javascriptDialogOpening', params: { type: 'alert', message: 'x', defaultPrompt: '', url: '', hasBrowserHandler: false } });
+    conn.eventHandler({ method: 'Page.frameNavigated', params: { frame: { id: 'sub', parentId: 'main' } } });
+    assert.notEqual(api.getOpen('ws://x'), null);
+  });
+});
