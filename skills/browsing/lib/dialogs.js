@@ -1,5 +1,7 @@
 'use strict';
 
+const { renderSyntheticArtifacts } = require('./dialogs-render.js');
+
 const PAGE_TARGET_ACTIONS = new Set([
   'navigate', 'click', 'type', 'extract', 'screenshot', 'eval', 'select', 'attr',
   'await_element', 'await_text', 'hover', 'drag_drop', 'mouse_move', 'scroll',
@@ -12,7 +14,7 @@ const BROWSER_TARGET_ACTIONS = new Set([
   'browser_mode', 'set_profile', 'get_profile', 'help', 'clear_cookies',
 ]);
 
-function attachDialogs({ state, sendCdpCommand, resolveWsUrl }) {
+function attachDialogs({ state, sendCdpCommand, _resolveWsUrl }) {
   if (!state.dialogs) state.dialogs = new Map();
 
   function getOpen(wsUrl) {
@@ -105,7 +107,22 @@ function attachDialogs({ state, sendCdpCommand, resolveWsUrl }) {
     }
   }
 
-  return { getOpen, clear, attachToConnection };
+  async function withDialogAwareness(actionName, wsUrl, args, fn) {
+    const open = getOpen(wsUrl);
+    const isDialogSelector = typeof args?.selector === 'string' && args.selector.startsWith('dialog::');
+
+    if (open && PAGE_TARGET_ACTIONS.has(actionName) && !isDialogSelector) {
+      return {
+        refused: true,
+        error: 'Page is behind a dialog. Handle dialog::accept or dialog::dismiss first.',
+        dialog: open,
+        artifacts: renderSyntheticArtifacts(open),
+      };
+    }
+    return fn();
+  }
+
+  return { getOpen, clear, attachToConnection, withDialogAwareness };
 }
 
 module.exports = { attachDialogs, PAGE_TARGET_ACTIONS, BROWSER_TARGET_ACTIONS };

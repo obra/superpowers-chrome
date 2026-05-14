@@ -225,3 +225,46 @@ describe('action classification', () => {
     for (const a of PAGE_TARGET_ACTIONS) assert.ok(!BROWSER_TARGET_ACTIONS.has(a), `${a} in both`);
   });
 });
+
+describe('withDialogAwareness', () => {
+  function simulateDialog(_api, conn) {
+    conn.eventHandler({ method: 'Page.javascriptDialogOpening', params: { type: 'alert', message: 'x', defaultPrompt: '', url: '', hasBrowserHandler: false } });
+  }
+
+  it('refuses page-target action when dialog is open', async () => {
+    const { api } = setup();
+    const conn = {};
+    await api.attachToConnection(conn, 'ws://x');
+    simulateDialog(api, conn);
+    const r = await api.withDialogAwareness('click', 'ws://x', { selector: 'button' }, async () => 'body-ran');
+    assert.equal(r.refused, true);
+    assert.match(r.error, /Page is behind a dialog/);
+    assert.equal(r.dialog.kind, 'alert');
+  });
+
+  it('passes through browser-target action when dialog is open', async () => {
+    const { api } = setup();
+    const conn = {};
+    await api.attachToConnection(conn, 'ws://x');
+    simulateDialog(api, conn);
+    const r = await api.withDialogAwareness('list_tabs', 'ws://x', {}, async () => 'tabs-result');
+    assert.equal(r, 'tabs-result');
+  });
+
+  it('allows page-target click with dialog::* selector through', async () => {
+    const { api } = setup();
+    const conn = {};
+    await api.attachToConnection(conn, 'ws://x');
+    simulateDialog(api, conn);
+    const r = await api.withDialogAwareness('click', 'ws://x', { selector: 'dialog::accept' }, async () => 'click-ran');
+    assert.equal(r, 'click-ran');
+  });
+
+  it('passes through page-target action when no dialog open', async () => {
+    const { api } = setup();
+    const conn = {};
+    await api.attachToConnection(conn, 'ws://x');
+    const r = await api.withDialogAwareness('click', 'ws://x', { selector: 'button' }, async () => 'ran');
+    assert.equal(r, 'ran');
+  });
+});
