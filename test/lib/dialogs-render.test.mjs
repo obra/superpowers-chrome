@@ -58,4 +58,33 @@ describe('renderSyntheticArtifacts', () => {
     });
     assert.equal(out.markdown.trim(), golden('dialog-beforeunload.md').trim());
   });
+
+  it('renders device-chooser with 0 devices', () => {
+    const out = renderSyntheticArtifacts({
+      kind: 'device-chooser',
+      payload: { requestId: 'r', deviceKind: 'usb', devices: [] },
+      staged: {},
+    });
+    assert.equal(out.markdown.trim(), golden('dialog-device-chooser-0.md').trim());
+  });
+
+  it('renders device-chooser with 1 device', () => {
+    const out = renderSyntheticArtifacts({
+      kind: 'device-chooser',
+      payload: { requestId: 'r', deviceKind: 'usb', devices: [{ id: 'abc', name: 'Logitech USB Receiver' }] },
+      staged: {},
+    });
+    assert.equal(out.markdown.trim(), golden('dialog-device-chooser-1.md').trim());
+  });
+
+  it('renders device-chooser with many devices', () => {
+    const out = renderSyntheticArtifacts({
+      kind: 'device-chooser',
+      payload: { requestId: 'r', deviceKind: 'bluetooth', devices: [
+        { id: 'x1', name: 'Speaker' }, { id: 'x2', name: 'Headphones' }, { id: 'x3', name: 'Watch' },
+      ]},
+      staged: {},
+    });
+    assert.equal(out.markdown.trim(), golden('dialog-device-chooser-many.md').trim());
+  });
 });

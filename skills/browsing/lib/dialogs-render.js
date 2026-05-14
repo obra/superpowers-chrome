@@ -58,6 +58,23 @@ function renderSyntheticArtifacts(s) {
       `  click selector="dialog::accept"`,
       `  click selector="dialog::dismiss"`,
     ].join('\n');
+  } else if (s.kind === 'device-chooser') {
+    const kindLabel = { usb: 'USB', bluetooth: 'Bluetooth', serial: 'Serial', hid: 'HID' }[s.payload.deviceKind] || s.payload.deviceKind;
+    const lines = [
+      `# Dialog: device-chooser (${s.payload.deviceKind})`,
+      `Origin requested a ${kindLabel} device.`,
+      ``,
+    ];
+    if (s.payload.devices.length === 0) {
+      lines.push(`(No devices visible.)`);
+    } else {
+      lines.push(`Devices:`);
+      for (const d of s.payload.devices) {
+        lines.push(`  - dialog::device[id="${d.id}"]   "${d.name}"`);
+      }
+    }
+    lines.push(``, `Buttons:`, `  - dialog::dismiss   (Cancel)`);
+    markdown = lines.join('\n');
   } else {
     markdown = `# Dialog: ${s.kind}\n(unsupported in this render path)`;
   }
