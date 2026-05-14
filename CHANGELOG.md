@@ -2,10 +2,14 @@
 
 All notable changes to the superpowers-chrome MCP project.
 
-## Unreleased
+## [2.1.0] - 2026-05-14 - Dialog handling
 
 ### Added
-- **Dialog handling**: JS dialogs (alert/confirm/prompt/beforeunload), WebUSB/Bluetooth/Serial/HID device choosers, permission prompts (via JS API shim), and HTTP basic auth challenges now surface as synthetic "pages" the agent can interact with using `click`/`type` against `dialog::*` selectors (`dialog::accept`, `dialog::dismiss`, `dialog::prompt`, `dialog::device[id="..."]`, `dialog::username`, `dialog::password`). Page-target actions are refused with a synthetic-dialog response while a dialog is open; browser-target actions (`list_tabs`, etc.) pass through. See `docs/superpowers/specs/2026-05-13-dialog-handling-design.md`.
+- **Dialog handling.** JS dialogs (`alert` / `confirm` / `prompt` / `beforeunload`), WebUSB / Bluetooth / Serial / HID device choosers, permission prompts (camera / microphone / notifications / geolocation / clipboard — via a `document_start` JS-API shim), and HTTP basic-auth challenges no longer wedge the CDP connection. Each dialog is surfaced as a synthetic "page" that the agent interacts with using the existing `click` and `type` actions against a small `dialog::*` selector grammar: `dialog::accept`, `dialog::dismiss`, `dialog::prompt`, `dialog::device[id="..."]`, `dialog::username`, `dialog::password`. While a dialog is open, page-targeted actions (`extract`, `screenshot`, `eval`, `click <real-selector>`, etc.) return a clear refusal that includes the dialog content and handling instructions; browser-targeted actions (`list_tabs`, `new_tab`, `close_tab`, etc.) pass through unaffected. See `docs/superpowers/specs/2026-05-13-dialog-handling-design.md` for the full design.
+
+### Changed
+- The pooled CDP connection now enables `Runtime` (in addition to `Page` / `DeviceAccess` / `Fetch`) so that `Runtime.addBinding` can plumb the permission-shim binding into page main worlds. Required for Chrome 148+.
+- Page-targeted actions that encounter an open dialog throw a typed `DialogRefusedError` from the session-boundary wrapper; the MCP top-level handler catches and formats it as a synthetic-dialog tool response. Internal architecture: every page-targeted session method (29 of them, enumerated in one Set) is gated at the `chrome-ws-lib` session boundary by a single wrapper, instead of relying on per-action middleware.
 
 ---
 
