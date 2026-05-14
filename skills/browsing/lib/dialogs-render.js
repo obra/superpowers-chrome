@@ -105,7 +105,31 @@ function renderSyntheticArtifacts(s) {
     markdown = `# Dialog: ${s.kind}\n(unsupported in this render path)`;
   }
 
-  return { markdown, html: '', consoleSnapshot: '' };
+  const htmlParts = [
+    '<!doctype html>',
+    '<html><head><title>Dialog</title></head><body>',
+    `<h1>Dialog: ${s.kind}</h1>`,
+  ];
+  if (s.kind === 'prompt') {
+    htmlParts.push('<input id="dialog-prompt" type="text">');
+  }
+  if (s.kind === 'basic-auth') {
+    htmlParts.push('<input id="dialog-username" type="text">');
+    htmlParts.push('<input id="dialog-password" type="password">');
+  }
+  if (s.kind === 'device-chooser') {
+    for (const d of s.payload.devices) {
+      htmlParts.push(`<button data-device-id="${d.id}">${d.name}</button>`);
+    }
+  }
+  const acceptKinds = new Set(['alert', 'confirm', 'prompt', 'beforeunload', 'permission', 'basic-auth']);
+  const dismissKinds = new Set(['confirm', 'prompt', 'beforeunload', 'device-chooser', 'permission', 'basic-auth']);
+  if (acceptKinds.has(s.kind)) htmlParts.push('<button id="dialog-accept">Accept</button>');
+  if (dismissKinds.has(s.kind)) htmlParts.push('<button id="dialog-dismiss">Dismiss</button>');
+  htmlParts.push('</body></html>');
+  const html = htmlParts.join('\n');
+
+  return { markdown, html, consoleSnapshot: '' };
 }
 
 module.exports = { renderSyntheticArtifacts };

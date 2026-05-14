@@ -115,3 +115,43 @@ describe('renderSyntheticArtifacts', () => {
     assert.equal(out.markdown.trim(), golden('dialog-basic-auth-no-realm.md').trim());
   });
 });
+
+describe('synthetic html', () => {
+  it('emits an element with id=dialog-accept for confirm', () => {
+    const out = renderSyntheticArtifacts({
+      kind: 'confirm',
+      payload: { message: 'q', url: '', defaultPrompt: '', hasBrowserHandler: false },
+      staged: {},
+    });
+    assert.match(out.html, /<button[^>]*id="dialog-accept"/);
+    assert.match(out.html, /<button[^>]*id="dialog-dismiss"/);
+  });
+
+  it('emits an input id=dialog-prompt for prompt', () => {
+    const out = renderSyntheticArtifacts({
+      kind: 'prompt',
+      payload: { message: 'q', url: '', defaultPrompt: '', hasBrowserHandler: false },
+      staged: {},
+    });
+    assert.match(out.html, /<input[^>]*id="dialog-prompt"/);
+  });
+
+  it('emits a button per device with data-device-id', () => {
+    const out = renderSyntheticArtifacts({
+      kind: 'device-chooser',
+      payload: { requestId: 'r', deviceKind: 'usb', devices: [{ id: 'abc', name: 'D' }] },
+      staged: {},
+    });
+    assert.match(out.html, /data-device-id="abc"/);
+  });
+
+  it('emits username and password inputs for basic-auth', () => {
+    const out = renderSyntheticArtifacts({
+      kind: 'basic-auth',
+      payload: { requestId: 'r', origin: 'x', scheme: 'basic', realm: '' },
+      staged: {},
+    });
+    assert.match(out.html, /<input[^>]*id="dialog-username"/);
+    assert.match(out.html, /<input[^>]*id="dialog-password"[^>]*type="password"/);
+  });
+});
