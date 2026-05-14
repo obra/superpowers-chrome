@@ -68,6 +68,29 @@ function attachDialogs({ state, sendCdpCommand, resolveWsUrl }) {
       }
       return;
     }
+    if (msg.method === 'Fetch.requestPaused') {
+      const p = msg.params;
+      if (p.authChallenge) {
+        if (state.dialogs.has(wsUrl)) {
+          console.error(`[dialogs] auth challenge while dialog open on ${wsUrl}; preserving original`);
+          return;
+        }
+        state.dialogs.set(wsUrl, {
+          kind: 'basic-auth',
+          openedAt: Date.now(),
+          payload: {
+            requestId: p.requestId,
+            origin: p.authChallenge.origin,
+            scheme: p.authChallenge.scheme,
+            realm: p.authChallenge.realm || '',
+          },
+          staged: {},
+        });
+      } else {
+        sendCdpCommand(wsUrl, 'Fetch.continueRequest', { requestId: p.requestId }).catch(() => {});
+      }
+      return;
+    }
   }
 
   return { getOpen, clear, attachToConnection };

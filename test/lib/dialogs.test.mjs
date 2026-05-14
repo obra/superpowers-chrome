@@ -169,3 +169,33 @@ describe('DeviceAccess.deviceRequestPrompted', () => {
     assert.deepEqual(s.payload.devices, [{ id: 'd1', name: 'USB' }]);
   });
 });
+
+describe('Fetch.requestPaused', () => {
+  it('continues plain requests immediately', async () => {
+    const { api, sendCdpCommand } = setup();
+    const conn = {};
+    await api.attachToConnection(conn, 'ws://x');
+    sendCdpCommand.calls.length = 0;
+    conn.eventHandler({ method: 'Fetch.requestPaused', params: { requestId: 'r1' /* no authChallenge */ } });
+    const call = sendCdpCommand.calls.find(c => c.method === 'Fetch.continueRequest');
+    assert.equal(call.params.requestId, 'r1');
+    assert.equal(api.getOpen('ws://x'), null);
+  });
+
+  it('surfaces basic-auth challenge as dialog state', async () => {
+    const { api, sendCdpCommand } = setup();
+    const conn = {};
+    await api.attachToConnection(conn, 'ws://x');
+    sendCdpCommand.calls.length = 0;
+    conn.eventHandler({ method: 'Fetch.requestPaused', params: {
+      requestId: 'r2',
+      authChallenge: { source: 'Server', origin: 'https://x.com', scheme: 'basic', realm: 'Admin' },
+    }});
+    const s = api.getOpen('ws://x');
+    assert.equal(s.kind, 'basic-auth');
+    assert.equal(s.payload.requestId, 'r2');
+    assert.equal(s.payload.realm, 'Admin');
+    // No automatic continue yet — agent must respond.
+    assert.equal(sendCdpCommand.calls.find(c => c.method === 'Fetch.continueWithAuth'), undefined);
+  });
+});
