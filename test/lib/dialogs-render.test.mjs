@@ -87,4 +87,31 @@ describe('renderSyntheticArtifacts', () => {
     });
     assert.equal(out.markdown.trim(), golden('dialog-device-chooser-many.md').trim());
   });
+
+  it('renders permission', () => {
+    const out = renderSyntheticArtifacts({
+      kind: 'permission',
+      payload: { name: 'camera', origin: 'https://example.com', jsApi: 'navigator.mediaDevices.getUserMedia' },
+      staged: {},
+    });
+    assert.equal(out.markdown.trim(), golden('dialog-permission.md').trim());
+  });
+
+  it('renders basic-auth with realm', () => {
+    const out = renderSyntheticArtifacts({
+      kind: 'basic-auth',
+      payload: { requestId: 'r', origin: 'https://example.com', scheme: 'basic', realm: 'Admin Area' },
+      staged: {},
+    });
+    assert.equal(out.markdown.trim(), golden('dialog-basic-auth.md').trim());
+  });
+
+  it('renders basic-auth without realm', () => {
+    const out = renderSyntheticArtifacts({
+      kind: 'basic-auth',
+      payload: { requestId: 'r', origin: 'https://example.com', scheme: 'basic', realm: '' },
+      staged: {},
+    });
+    assert.equal(out.markdown.trim(), golden('dialog-basic-auth-no-realm.md').trim());
+  });
 });

@@ -75,6 +75,32 @@ function renderSyntheticArtifacts(s) {
     }
     lines.push(``, `Buttons:`, `  - dialog::dismiss   (Cancel)`);
     markdown = lines.join('\n');
+  } else if (s.kind === 'permission') {
+    markdown = [
+      `# Dialog: permission`,
+      `Origin ${s.payload.origin} requested: ${s.payload.name}`,
+      `JS API: ${s.payload.jsApi}`,
+      ``,
+      `Buttons:`,
+      `  - dialog::accept   (grant for this origin)`,
+      `  - dialog::dismiss  (deny for this origin)`,
+    ].join('\n');
+  } else if (s.kind === 'basic-auth') {
+    const header = s.payload.realm
+      ? `Origin ${s.payload.origin} — realm "${s.payload.realm}"`
+      : `Origin ${s.payload.origin}`;
+    markdown = [
+      `# Dialog: basic-auth`,
+      header,
+      ``,
+      `Inputs:`,
+      `  dialog::username`,
+      `  dialog::password`,
+      ``,
+      `Buttons:`,
+      `  - dialog::accept`,
+      `  - dialog::dismiss`,
+    ].join('\n');
   } else {
     markdown = `# Dialog: ${s.kind}\n(unsupported in this render path)`;
   }
