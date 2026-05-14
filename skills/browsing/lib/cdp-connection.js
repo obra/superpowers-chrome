@@ -1,4 +1,4 @@
-const { WebSocketClient } = require('./websocket-client');
+const { WebSocketClient: DefaultWebSocketClient } = require('./websocket-client');
 
 // Default per-CDP-call timeout. Caller can override via the `timeout`
 // parameter on sendCdpCommand.
@@ -27,9 +27,12 @@ const DEFAULT_CDP_TIMEOUT_MS = 30000;
  * `enableConsoleLogging` (and any future caller that wants to listen on
  * the persistent socket without spinning up a second one).
  *
- * `attachCdpConnection({ state })` returns the bound API.
+ * `attachCdpConnection({ state, dialogs, WebSocketClient })` returns the
+ * bound API. `dialogs` is optional — when provided, `dialogs.attachToConnection`
+ * is called each time a new pooled connection is created. `WebSocketClient` is
+ * optional — defaults to the real implementation (injectable for tests).
  */
-function attachCdpConnection({ state }) {
+function attachCdpConnection({ state, dialogs, WebSocketClient = DefaultWebSocketClient }) {
   async function getPooledConnection(wsUrl) {
     let conn = state.connectionPool.get(wsUrl);
 
@@ -85,6 +88,10 @@ function attachCdpConnection({ state }) {
 
     await ws.connect();
     state.connectionPool.set(wsUrl, conn);
+
+    if (dialogs) {
+      await dialogs.attachToConnection(conn, wsUrl);
+    }
 
     return conn;
   }

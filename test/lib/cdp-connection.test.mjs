@@ -5,6 +5,17 @@ import { describe, it } from 'node:test';
 const require = createRequire(import.meta.url);
 const { attachCdpConnection } = require('../../skills/browsing/lib/cdp-connection.js');
 
+// Minimal fake WebSocketClient: resolves connect() immediately, no network.
+function makeFakeWebSocketClient(_url) {
+  return {
+    on() {},
+    isConnected() { return true; },
+    async connect() {},
+    send() {},
+    close() {},
+  };
+}
+
 describe('cdp-connection', () => {
   function setup() {
     const state = { connectionPool: new Map() };
@@ -41,5 +52,57 @@ describe('cdp-connection', () => {
     assert.equal(typeof conn.getPooledConnection, 'function');
     assert.equal(typeof conn.closePooledConnection, 'function');
     assert.equal(typeof conn.closeAllConnections, 'function');
+  });
+});
+
+describe('cdp-connection dialog attachment', () => {
+  it('calls dialogs.attachToConnection when creating a new pooled connection', async () => {
+    const calls = [];
+    const dialogs = {
+      attachToConnection: async (conn, wsUrl) => { calls.push({ conn, wsUrl }); },
+    };
+    const state = { connectionPool: new Map() };
+    const { getPooledConnection } = attachCdpConnection({
+      state,
+      dialogs,
+      WebSocketClient: makeFakeWebSocketClient,
+    });
+
+    const wsUrl = 'ws://fake-host/devtools/page/test-1';
+    const conn = await getPooledConnection(wsUrl);
+
+    assert.equal(calls.length, 1, 'attachToConnection should fire once for the new pool entry');
+    assert.equal(calls[0].wsUrl, wsUrl, 'wsUrl passed to attachToConnection matches');
+    assert.equal(calls[0].conn, conn, 'conn passed to attachToConnection is the pooled connection object');
+  });
+
+  it('does not call dialogs.attachToConnection when no dialogs provided', async () => {
+    const state = { connectionPool: new Map() };
+    const { getPooledConnection } = attachCdpConnection({
+      state,
+      WebSocketClient: makeFakeWebSocketClient,
+    });
+    // Should not throw even without dialogs.
+    const conn = await getPooledConnection('ws://fake-host/devtools/page/test-2');
+    assert.ok(conn, 'connection returned without dialogs');
+  });
+
+  it('does not call dialogs.attachToConnection for an already-connected pooled entry', async () => {
+    const calls = [];
+    const dialogs = {
+      attachToConnection: async (_conn, wsUrl) => { calls.push({ wsUrl }); },
+    };
+    const state = { connectionPool: new Map() };
+    const { getPooledConnection } = attachCdpConnection({
+      state,
+      dialogs,
+      WebSocketClient: makeFakeWebSocketClient,
+    });
+
+    const wsUrl = 'ws://fake-host/devtools/page/test-3';
+    await getPooledConnection(wsUrl); // first call — creates and attaches
+    await getPooledConnection(wsUrl); // second call — reuses; isConnected() is true
+
+    assert.equal(calls.length, 1, 'attachToConnection fires only once across two getPooledConnection calls to the same wsUrl');
   });
 });
