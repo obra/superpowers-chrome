@@ -102,6 +102,29 @@ describe('Page.javascriptDialogOpening', () => {
   });
 });
 
+describe('second-open guard', () => {
+  it('preserves the original dialog and logs a warning on second open', async () => {
+    const { api } = setup();
+    const conn = {};
+    await api.attachToConnection(conn, 'ws://x');
+    conn.eventHandler({ method: 'Page.javascriptDialogOpening', params: { type: 'alert', message: 'first', defaultPrompt: '', url: '', hasBrowserHandler: false } });
+
+    // Capture console.error
+    const errors = [];
+    const origErr = console.error;
+    console.error = (...args) => errors.push(args.join(' '));
+    try {
+      conn.eventHandler({ method: 'Page.javascriptDialogOpening', params: { type: 'confirm', message: 'second', defaultPrompt: '', url: '', hasBrowserHandler: false } });
+    } finally {
+      console.error = origErr;
+    }
+
+    assert.equal(api.getOpen('ws://x').payload.message, 'first');
+    assert.equal(api.getOpen('ws://x').kind, 'alert');
+    assert.ok(errors.some(e => e.includes('second javascriptDialogOpening')));
+  });
+});
+
 describe('dialog state clearing', () => {
   it('Page.javascriptDialogClosed clears state', async () => {
     const { api } = setup();
