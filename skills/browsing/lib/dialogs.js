@@ -1,6 +1,7 @@
 'use strict';
 
 const { renderSyntheticArtifacts } = require('./dialogs-render.js');
+const { SHIM_SOURCE } = require('./page-scripts/permission-shim.js');
 
 const PAGE_TARGET_ACTIONS = new Set([
   'navigate', 'click', 'type', 'extract', 'screenshot', 'eval', 'select', 'attr',
@@ -32,10 +33,30 @@ function attachDialogs({ state, sendCdpCommand, _resolveWsUrl }) {
       handleAuthRequests: true,
       patterns: [{ urlPattern: '*' }],
     });
+    await sendCdpCommand(wsUrl, 'Page.addScriptToEvaluateOnNewDocument', { source: SHIM_SOURCE });
+    await sendCdpCommand(wsUrl, 'Runtime.addBinding', { name: '__dialogShim' });
     conn.eventHandler = (msg) => handleCdpEvent(wsUrl, msg);
   }
 
   function handleCdpEvent(wsUrl, msg) {
+    if (msg.method === 'Runtime.bindingCalled') {
+      if (msg.params.name !== '__dialogShim') return;
+      let data;
+      try { data = JSON.parse(msg.params.payload); } catch { return; }
+      if (data.type === 'permission-request') {
+        if (state.dialogs.has(wsUrl)) {
+          console.error(`[dialogs] permission request while dialog open on ${wsUrl}; preserving original`);
+          return;
+        }
+        state.dialogs.set(wsUrl, {
+          kind: 'permission',
+          openedAt: Date.now(),
+          payload: { name: data.name, origin: data.origin, jsApi: data.jsApi },
+          staged: { _shimId: data.id },
+        });
+      }
+      return;
+    }
     if (msg.method === 'Page.javascriptDialogOpening') {
       if (state.dialogs.has(wsUrl)) {
         console.error(`[dialogs] second javascriptDialogOpening on ${wsUrl}; preserving original`);

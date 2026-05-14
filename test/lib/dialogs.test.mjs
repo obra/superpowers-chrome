@@ -27,12 +27,18 @@ describe('dialogs state map', () => {
 });
 
 describe('dialogs attachToConnection', () => {
-  it('enables Page, DeviceAccess, and Fetch domains once', async () => {
+  it('enables Page, DeviceAccess, Fetch domains and registers shim and binding', async () => {
     const { api, sendCdpCommand } = setup();
     const conn = { eventHandler: null };
     await api.attachToConnection(conn, 'ws://x');
     const methods = sendCdpCommand.calls.map(c => c.method);
-    assert.deepEqual(methods, ['Page.enable', 'DeviceAccess.enable', 'Fetch.enable']);
+    assert.deepEqual(methods, [
+      'Page.enable',
+      'DeviceAccess.enable',
+      'Fetch.enable',
+      'Page.addScriptToEvaluateOnNewDocument',
+      'Runtime.addBinding',
+    ]);
   });
 
   it('Fetch.enable passes handleAuthRequests and wildcard pattern', async () => {
@@ -283,5 +289,35 @@ describe('withDialogAwareness mid-flight', () => {
     assert.equal(r.actionResult, 'body-ok');
     assert.equal(r.dialog.kind, 'alert');
     assert.ok(r.artifacts.markdown.includes('# Dialog: alert'));
+  });
+});
+
+describe('permission shim integration', () => {
+  it('attachToConnection registers shim via Page.addScriptToEvaluateOnNewDocument and Runtime.addBinding', async () => {
+    const { api, sendCdpCommand } = setup();
+    const conn = {};
+    await api.attachToConnection(conn, 'ws://x');
+    const addScript = sendCdpCommand.calls.find(c => c.method === 'Page.addScriptToEvaluateOnNewDocument');
+    assert.ok(addScript, 'expected Page.addScriptToEvaluateOnNewDocument call');
+    assert.match(addScript.params.source, /navigator\.mediaDevices/);
+
+    const addBinding = sendCdpCommand.calls.find(c => c.method === 'Runtime.addBinding');
+    assert.ok(addBinding);
+    assert.equal(addBinding.params.name, '__dialogShim');
+  });
+
+  it('Runtime.bindingCalled with permission-request populates state', async () => {
+    const { api } = setup();
+    const conn = {};
+    await api.attachToConnection(conn, 'ws://x');
+    conn.eventHandler({ method: 'Runtime.bindingCalled', params: {
+      name: '__dialogShim',
+      payload: JSON.stringify({ type: 'permission-request', id: '1', name: 'camera', jsApi: 'getUserMedia', origin: 'https://example.com' }),
+    }});
+    const s = api.getOpen('ws://x');
+    assert.equal(s.kind, 'permission');
+    assert.equal(s.payload.name, 'camera');
+    assert.equal(s.payload.origin, 'https://example.com');
+    assert.equal(s.payload.jsApi, 'getUserMedia');
   });
 });
