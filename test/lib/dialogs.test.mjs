@@ -268,3 +268,20 @@ describe('withDialogAwareness', () => {
     assert.equal(r, 'ran');
   });
 });
+
+describe('withDialogAwareness mid-flight', () => {
+  it('replaces post-capture when a dialog opens during action', async () => {
+    const { api } = setup();
+    const conn = {};
+    await api.attachToConnection(conn, 'ws://x');
+    const r = await api.withDialogAwareness('eval', 'ws://x', { expression: 'x' }, async () => {
+      // Simulate page firing alert while action body runs.
+      conn.eventHandler({ method: 'Page.javascriptDialogOpening', params: { type: 'alert', message: 'm', defaultPrompt: '', url: '', hasBrowserHandler: false } });
+      return 'body-ok';
+    });
+    assert.equal(r.midFlight, true);
+    assert.equal(r.actionResult, 'body-ok');
+    assert.equal(r.dialog.kind, 'alert');
+    assert.ok(r.artifacts.markdown.includes('# Dialog: alert'));
+  });
+});

@@ -119,6 +119,22 @@ function attachDialogs({ state, sendCdpCommand, _resolveWsUrl }) {
         artifacts: renderSyntheticArtifacts(open),
       };
     }
+
+    if (!open && PAGE_TARGET_ACTIONS.has(actionName)) {
+      const before = state.dialogs.has(wsUrl);
+      const actionResult = await fn();
+      const afterOpen = getOpen(wsUrl);
+      if (!before && afterOpen) {
+        return {
+          midFlight: true,
+          actionResult,
+          dialog: afterOpen,
+          artifacts: renderSyntheticArtifacts(afterOpen),
+        };
+      }
+      return actionResult;
+    }
+
     return fn();
   }
 
