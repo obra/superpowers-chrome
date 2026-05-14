@@ -33,7 +33,7 @@ const { attachFileUpload } = require('./lib/file-upload');
 const { attachCdpConnection } = require('./lib/cdp-connection');
 const { attachConsoleLogging } = require('./lib/console-logging');
 const { attachSelectOption } = require('./lib/select-option');
-const { attachDialogs } = require('./lib/dialogs');
+const { attachDialogs, DialogRefusedError } = require('./lib/dialogs');
 const { renderSyntheticArtifacts } = require('./lib/dialogs-render');
 const {
   getXdgCacheHome,
@@ -211,12 +211,7 @@ function createSession({ host, port } = {}) {
       const isDialogSelector = typeof secondArg === 'string' && secondArg.startsWith('dialog::');
 
       if (open && !isDialogSelector) {
-        return {
-          refused: true,
-          error: 'Page is behind a dialog. Handle dialog::accept or dialog::dismiss first.',
-          dialog: open,
-          artifacts: renderSyntheticArtifacts(open),
-        };
+        throw new DialogRefusedError({ dialog: open, artifacts: renderSyntheticArtifacts(open) });
       }
 
       return fn(tabIndexOrWsUrl, secondArg, ...rest);
@@ -336,4 +331,4 @@ function createSession({ host, port } = {}) {
   return rawSession;
 }
 
-module.exports = { createSession, PAGE_TARGET_SESSION_METHODS };
+module.exports = { createSession, PAGE_TARGET_SESSION_METHODS, DialogRefusedError };

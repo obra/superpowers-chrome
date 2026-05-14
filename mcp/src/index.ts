@@ -189,6 +189,20 @@ async function ensureChromeRunning(): Promise<void> {
 }
 
 /**
+ * Format a DialogRefusedError into a human-readable tool response string.
+ * Uses duck typing (error.refused && error.artifacts) rather than instanceof
+ * because class identity can be unreliable across CommonJS require boundaries.
+ */
+function formatDialogRefusal(error: any): string {
+  const lines: string[] = [error.message || 'Page is behind a dialog.'];
+  if (error.artifacts?.markdown) {
+    lines.push('');
+    lines.push(error.artifacts.markdown);
+  }
+  return lines.join('\n');
+}
+
+/**
  * Format action response with capture information
  */
 function formatActionResponse(actionResult: any, actionDescription: string): string {
@@ -898,6 +912,17 @@ Additional actions: hover, drag_drop, mouse_move, scroll, double_click, right_cl
         }]
       };
     } catch (error) {
+      // DialogRefusedError: page-target action blocked by open native dialog.
+      // Surface as a synthetic tool response rather than a generic error so the
+      // model receives the dialog description and knows how to proceed.
+      if (error && (error as any).refused === true && (error as any).artifacts) {
+        return {
+          content: [{
+            type: "text" as const,
+            text: formatDialogRefusal(error as any),
+          }],
+        };
+      }
       const errorMessage = error instanceof Error ? error.message : String(error);
       return {
         content: [{

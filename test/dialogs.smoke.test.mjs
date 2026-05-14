@@ -121,9 +121,11 @@ describe('dialog handling — real Chrome smoke', { skip: !CHROME_AVAILABLE && '
     assert.equal(open.payload.message, 'smoke-test');
 
     // evaluateWithCapture must be refused while the alert is open.
-    const evalResult = await session.evaluateWithCapture(0, 'document.title');
-    assert.equal(evalResult.refused, true, `Expected refused:true, got: ${JSON.stringify(evalResult)}`);
-    assert.match(evalResult.error, /Page is behind a dialog/);
+    await assert.rejects(
+      () => session.evaluateWithCapture(0, 'document.title'),
+      (err) => err.refused === true && /Page is behind a dialog/.test(err.message),
+      'Expected DialogRefusedError from evaluateWithCapture',
+    );
 
     // Dismiss the alert.
     await session.click(0, 'dialog::accept');
@@ -151,8 +153,11 @@ describe('dialog handling — real Chrome smoke', { skip: !CHROME_AVAILABLE && '
     assert.equal(open.payload.message, 'q?');
 
     // evaluateWithCapture must be refused while the confirm is open.
-    const evalResult = await session.evaluateWithCapture(0, '1');
-    assert.equal(evalResult.refused, true, `Expected refused:true, got: ${JSON.stringify(evalResult)}`);
+    await assert.rejects(
+      () => session.evaluateWithCapture(0, '1'),
+      (err) => err.refused === true && /Page is behind a dialog/.test(err.message),
+      'Expected DialogRefusedError from evaluateWithCapture',
+    );
 
     // Accept the confirm dialog.
     await session.click(0, 'dialog::accept');
@@ -264,18 +269,22 @@ describe('dialog handling — real Chrome smoke', { skip: !CHROME_AVAILABLE && '
     assert.equal(open.kind, 'alert');
     assert.equal(open.payload.message, 'gap-test');
 
-    // extractText must return a structured refusal, NOT hang until CDP timeout.
-    const extractResult = await session.extractText(0, 'body');
-    assert.equal(extractResult.refused, true,
-      `Expected refused:true from extractText, got: ${JSON.stringify(extractResult)}`);
-    assert.match(extractResult.error, /Page is behind a dialog/);
-    assert.ok(extractResult.dialog, 'refusal should include dialog state');
-    assert.ok(extractResult.artifacts, 'refusal should include synthetic artifacts');
+    // extractText must throw DialogRefusedError, NOT hang until CDP timeout.
+    await assert.rejects(
+      () => session.extractText(0, 'body'),
+      (err) => err.refused === true &&
+               /Page is behind a dialog/.test(err.message) &&
+               err.dialog != null &&
+               err.artifacts != null,
+      'Expected DialogRefusedError from extractText',
+    );
 
     // screenshot also lives behind the gate.
-    const screenshotResult = await session.screenshot(0, '/tmp/test-dialog-gate-screenshot.png');
-    assert.equal(screenshotResult.refused, true,
-      `Expected refused:true from screenshot, got: ${JSON.stringify(screenshotResult)}`);
+    await assert.rejects(
+      () => session.screenshot(0, '/tmp/test-dialog-gate-screenshot.png'),
+      (err) => err.refused === true,
+      'Expected DialogRefusedError from screenshot',
+    );
 
     // Dismiss the alert.
     await session.click(0, 'dialog::accept');

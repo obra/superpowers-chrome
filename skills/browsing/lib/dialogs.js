@@ -3,6 +3,23 @@
 const { renderSyntheticArtifacts } = require('./dialogs-render.js');
 const { SHIM_SOURCE } = require('./page-scripts/permission-shim.js');
 
+/**
+ * Thrown by the session-boundary dialog gate (wrapWithDialogGate in
+ * chrome-ws-lib.js) when a page-target action is attempted while a native
+ * browser dialog is open.  Callers that want to surface a human-readable
+ * refusal (e.g. the MCP layer) catch this and format it; callers that just
+ * want to propagate the error can let it bubble.
+ */
+class DialogRefusedError extends Error {
+  constructor({ dialog, artifacts }) {
+    super('Page is behind a dialog. Handle dialog::accept or dialog::dismiss first.');
+    this.name = 'DialogRefusedError';
+    this.refused = true;
+    this.dialog = dialog;
+    this.artifacts = artifacts;
+  }
+}
+
 const PAGE_TARGET_ACTIONS = new Set([
   'navigate', 'click', 'type', 'extract', 'screenshot', 'eval', 'select', 'attr',
   'await_element', 'await_text', 'hover', 'drag_drop', 'mouse_move', 'scroll',
@@ -163,4 +180,4 @@ function attachDialogs({ state, sendCdpCommand, _resolveWsUrl }) {
   return { getOpen, clear, attachToConnection, withDialogAwareness };
 }
 
-module.exports = { attachDialogs, PAGE_TARGET_ACTIONS, BROWSER_TARGET_ACTIONS };
+module.exports = { attachDialogs, PAGE_TARGET_ACTIONS, BROWSER_TARGET_ACTIONS, DialogRefusedError };

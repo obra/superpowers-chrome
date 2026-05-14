@@ -13973,6 +13973,14 @@ async function ensureChromeRunning() {
     throw new Error(`Failed to auto-start Chrome: ${startError instanceof Error ? startError.message : String(startError)}`);
   }
 }
+function formatDialogRefusal(error) {
+  const lines = [error.message || "Page is behind a dialog."];
+  if (error.artifacts?.markdown) {
+    lines.push("");
+    lines.push(error.artifacts.markdown);
+  }
+  return lines.join("\n");
+}
 function formatActionResponse(actionResult, actionDescription) {
   const prefix = actionResult.capturePrefix || "???";
   const response = [
@@ -14582,6 +14590,14 @@ Additional actions: hover, drag_drop, mouse_move, scroll, double_click, right_cl
         }]
       };
     } catch (error) {
+      if (error && error.refused === true && error.artifacts) {
+        return {
+          content: [{
+            type: "text",
+            text: formatDialogRefusal(error)
+          }]
+        };
+      }
       const errorMessage = error instanceof Error ? error.message : String(error);
       return {
         content: [{
