@@ -50,3 +50,28 @@ describe('tryHandleDialogSelector', () => {
     assert.equal(call.params.accept, false);
   });
 });
+
+describe('router staging', () => {
+  it('type dialog::prompt stages promptText, no CDP call', async () => {
+    const cdp = makeCdpSpy();
+    const state = jsPrompt();
+    const r = await tryHandleDialogSelector({ selector: 'dialog::prompt', op: 'type', payload: 'hello', state, sendCdpCommand: cdp, wsUrl: 'ws://x' });
+    assert.equal(r.handled, true);
+    assert.equal(state.staged.promptText, 'hello');
+    assert.equal(cdp.calls.length, 0);
+  });
+
+  it('type dialog::username stages username', async () => {
+    const cdp = makeCdpSpy();
+    const state = { kind: 'basic-auth', payload: { requestId: 'r', origin: 'x', scheme: 'basic', realm: '' }, staged: {} };
+    await tryHandleDialogSelector({ selector: 'dialog::username', op: 'type', payload: 'alice', state, sendCdpCommand: cdp, wsUrl: 'ws://x' });
+    assert.equal(state.staged.username, 'alice');
+  });
+
+  it('type dialog::password stages password', async () => {
+    const cdp = makeCdpSpy();
+    const state = { kind: 'basic-auth', payload: { requestId: 'r', origin: 'x', scheme: 'basic', realm: '' }, staged: {} };
+    await tryHandleDialogSelector({ selector: 'dialog::password', op: 'type', payload: 'p4ss', state, sendCdpCommand: cdp, wsUrl: 'ws://x' });
+    assert.equal(state.staged.password, 'p4ss');
+  });
+});
