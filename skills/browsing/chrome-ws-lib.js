@@ -33,6 +33,7 @@ const { attachFileUpload } = require('./lib/file-upload');
 const { attachCdpConnection } = require('./lib/cdp-connection');
 const { attachConsoleLogging } = require('./lib/console-logging');
 const { attachSelectOption } = require('./lib/select-option');
+const { attachDialogs } = require('./lib/dialogs');
 const {
   getXdgCacheHome,
   getChromeProfileDir,
@@ -75,6 +76,8 @@ function createSession({ host, port } = {}) {
     closePooledConnection,
     closeAllConnections,
   } = attachCdpConnection({ state });
+
+  const dialogs = attachDialogs({ state, sendCdpCommand });
 
   const { chromeHttp, resolveWsUrl, getTabs, newTab, closeTab } = attachTabs({ state });
 
@@ -227,6 +230,9 @@ function createSession({ host, port } = {}) {
 
     // Cookie management
     clearCookies,
+
+    // Dialog awareness
+    dialogs,
 
   };
 }
