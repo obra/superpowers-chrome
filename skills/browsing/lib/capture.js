@@ -332,66 +332,94 @@ function attachCapture({ state, resolveWsUrl, sendCdpCommand, getHtml, screensho
   // The MCP server consumes these directly; the bare action variants stay
   // exported for callers (and tests) that don't want auto-capture.
   async function clickWithCapture(tabIndexOrWsUrl, selector) {
-    await actions.click(tabIndexOrWsUrl, selector);
-    const artifacts = await capturePageArtifacts(tabIndexOrWsUrl, 'click');
-    return {
-      action: 'click',
-      selector,
-      pageSize: artifacts.pageSize,
-      capturePrefix: artifacts.capturePrefix,
-      sessionDir: artifacts.sessionDir,
-      files: artifacts.files,
-      domSummary: artifacts.domSummary,
-      consoleLog: [] // Placeholder
+    const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
+    const run = async () => {
+      await actions.click(tabIndexOrWsUrl, selector);
+      const artifacts = await capturePageArtifacts(tabIndexOrWsUrl, 'click');
+      return {
+        action: 'click',
+        selector,
+        pageSize: artifacts.pageSize,
+        capturePrefix: artifacts.capturePrefix,
+        sessionDir: artifacts.sessionDir,
+        files: artifacts.files,
+        domSummary: artifacts.domSummary,
+        consoleLog: [] // Placeholder
+      };
     };
+    if (dialogs && dialogs.withDialogAwareness) {
+      return dialogs.withDialogAwareness('click', wsUrl, { selector }, run);
+    }
+    return run();
   }
 
   async function fillWithCapture(tabIndexOrWsUrl, selector, value) {
-    await actions.fill(tabIndexOrWsUrl, selector, value);
-    const artifacts = await capturePageArtifacts(tabIndexOrWsUrl, 'type');
-    return {
-      action: 'type',
-      selector,
-      value,
-      pageSize: artifacts.pageSize,
-      capturePrefix: artifacts.capturePrefix,
-      sessionDir: artifacts.sessionDir,
-      files: artifacts.files,
-      domSummary: artifacts.domSummary,
-      consoleLog: [] // Placeholder
+    const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
+    const run = async () => {
+      await actions.fill(tabIndexOrWsUrl, selector, value);
+      const artifacts = await capturePageArtifacts(tabIndexOrWsUrl, 'type');
+      return {
+        action: 'type',
+        selector,
+        value,
+        pageSize: artifacts.pageSize,
+        capturePrefix: artifacts.capturePrefix,
+        sessionDir: artifacts.sessionDir,
+        files: artifacts.files,
+        domSummary: artifacts.domSummary,
+        consoleLog: [] // Placeholder
+      };
     };
+    if (dialogs && dialogs.withDialogAwareness) {
+      return dialogs.withDialogAwareness('type', wsUrl, { selector }, run);
+    }
+    return run();
   }
 
   async function selectOptionWithCapture(tabIndexOrWsUrl, selector, value) {
-    await actions.selectOption(tabIndexOrWsUrl, selector, value);
-    const artifacts = await capturePageArtifacts(tabIndexOrWsUrl, 'select');
-    return {
-      action: 'select',
-      selector,
-      value,
-      pageSize: artifacts.pageSize,
-      capturePrefix: artifacts.capturePrefix,
-      sessionDir: artifacts.sessionDir,
-      files: artifacts.files,
-      domSummary: artifacts.domSummary,
-      consoleLog: [] // Placeholder
+    const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
+    const run = async () => {
+      await actions.selectOption(tabIndexOrWsUrl, selector, value);
+      const artifacts = await capturePageArtifacts(tabIndexOrWsUrl, 'select');
+      return {
+        action: 'select',
+        selector,
+        value,
+        pageSize: artifacts.pageSize,
+        capturePrefix: artifacts.capturePrefix,
+        sessionDir: artifacts.sessionDir,
+        files: artifacts.files,
+        domSummary: artifacts.domSummary,
+        consoleLog: [] // Placeholder
+      };
     };
+    if (dialogs && dialogs.withDialogAwareness) {
+      return dialogs.withDialogAwareness('select', wsUrl, { selector }, run);
+    }
+    return run();
   }
 
   async function evaluateWithCapture(tabIndexOrWsUrl, expression) {
-    const result = await actions.evaluate(tabIndexOrWsUrl, expression);
-    const artifacts = await capturePageArtifacts(tabIndexOrWsUrl, 'eval');
-    return {
-      action: 'eval',
-      expression,
-      result,
-      pageSize: artifacts.pageSize,
-      capturePrefix: artifacts.capturePrefix,
-      sessionDir: artifacts.sessionDir,
-      files: artifacts.files,
-      domSummary: artifacts.domSummary,
-      consoleLog: [] // Placeholder
+    const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
+    const run = async () => {
+      const result = await actions.evaluate(tabIndexOrWsUrl, expression);
+      const artifacts = await capturePageArtifacts(tabIndexOrWsUrl, 'eval');
+      return {
+        action: 'eval',
+        expression,
+        result,
+        pageSize: artifacts.pageSize,
+        capturePrefix: artifacts.capturePrefix,
+        sessionDir: artifacts.sessionDir,
+        files: artifacts.files,
+        domSummary: artifacts.domSummary,
+        consoleLog: [] // Placeholder
+      };
     };
+    if (dialogs && dialogs.withDialogAwareness) {
+      return dialogs.withDialogAwareness('eval', wsUrl, {}, run);
+    }
+    return run();
   }
 
   return {

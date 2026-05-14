@@ -92,6 +92,34 @@ describe('capture', () => {
   });
 });
 
+describe('*WithCapture middleware', () => {
+  it('clickWithCapture refuses when dialog open and selector is normal', async () => {
+    const dialogState = { kind: 'alert', payload: { message: 'm', url: '', defaultPrompt: '', hasBrowserHandler: false }, staged: {} };
+    const dialogs = {
+      getOpen: () => dialogState,
+      withDialogAwareness: async (action, _wsUrl, args, fn) => {
+        if (action === 'click' && !args.selector?.startsWith('dialog::')) {
+          return { refused: true, error: 'Page is behind a dialog.', dialog: dialogState, artifacts: { markdown: '# Dialog: alert', html: '', consoleSnapshot: '' } };
+        }
+        return fn();
+      },
+    };
+    const cdp = makeCdpSpy();
+    const { clickWithCapture } = attachCapture({
+      state: { sessionDir: '/tmp/x-' + Date.now() },
+      resolveWsUrl: async () => 'ws://x',
+      sendCdpCommand: cdp,
+      getHtml: async () => '<html></html>',
+      screenshot: async () => Buffer.from(''),
+      actions: { click: async () => { throw new Error('should not run'); } },
+      dialogs,
+    });
+    const out = await clickWithCapture(0, 'button');
+    assert.equal(out.refused, true);
+    assert.match(out.artifacts.markdown, /# Dialog: alert/);
+  });
+});
+
 describe('capturePageArtifacts with open dialog', () => {
   it('returns synthetic markdown when a dialog is open', async () => {
     const dialogState = { kind: 'alert', payload: { message: 'hi', url: 'http://x', defaultPrompt: '', hasBrowserHandler: false }, staged: {} };
