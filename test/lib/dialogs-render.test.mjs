@@ -22,4 +22,40 @@ describe('renderSyntheticArtifacts', () => {
     });
     assert.equal(out.markdown.trim(), golden('dialog-alert.md').trim());
   });
+
+  it('renders confirm matching golden', () => {
+    const out = renderSyntheticArtifacts({
+      kind: 'confirm',
+      payload: { message: 'Are you sure?', url: 'http://example.com', defaultPrompt: '', hasBrowserHandler: false },
+      staged: {},
+    });
+    assert.equal(out.markdown.trim(), golden('dialog-confirm.md').trim());
+  });
+
+  it('renders prompt without default matching golden', () => {
+    const out = renderSyntheticArtifacts({
+      kind: 'prompt',
+      payload: { message: 'Enter your name:', url: 'http://example.com', defaultPrompt: '', hasBrowserHandler: false },
+      staged: {},
+    });
+    assert.equal(out.markdown.trim(), golden('dialog-prompt.md').trim());
+  });
+
+  it('renders prompt with default matching golden', () => {
+    const out = renderSyntheticArtifacts({
+      kind: 'prompt',
+      payload: { message: 'Enter your nickname:', url: 'http://example.com', defaultPrompt: 'guest', hasBrowserHandler: false },
+      staged: {},
+    });
+    assert.equal(out.markdown.trim(), golden('dialog-prompt-default.md').trim());
+  });
+
+  it('renders beforeunload matching golden', () => {
+    const out = renderSyntheticArtifacts({
+      kind: 'beforeunload',
+      payload: { message: 'The page wants to confirm you really want to leave.', url: 'http://example.com', defaultPrompt: '', hasBrowserHandler: false },
+      staged: {},
+    });
+    assert.equal(out.markdown.trim(), golden('dialog-beforeunload.md').trim());
+  });
 });
