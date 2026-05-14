@@ -5,6 +5,16 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { after, describe, it } from 'node:test';
 
+function makeCdpSpy() {
+  const calls = [];
+  const spy = async (wsUrl, method, params) => {
+    calls.push({ wsUrl, method, params });
+    return { result: { value: 'fake' } };
+  };
+  spy.calls = calls;
+  return spy;
+}
+
 const require = createRequire(import.meta.url);
 const { attachCapture } = require('../../skills/browsing/lib/capture.js');
 
@@ -79,5 +89,27 @@ describe('capture', () => {
     const result = await evaluateWithCapture(0, '21+21');
     assert.equal(result.result, 'eval-result');
     assert.equal(result.expression, '21+21');
+  });
+});
+
+describe('capturePageArtifacts with open dialog', () => {
+  it('returns synthetic markdown when a dialog is open', async () => {
+    const dialogState = { kind: 'alert', payload: { message: 'hi', url: 'http://x', defaultPrompt: '', hasBrowserHandler: false }, staged: {} };
+    const dialogs = { getOpen: () => dialogState };
+    const cdp = makeCdpSpy();
+    const { capturePageArtifacts } = attachCapture({
+      state: { sessionDir: '/tmp/test-' + Date.now() },
+      resolveWsUrl: async () => 'ws://x',
+      sendCdpCommand: cdp,
+      getHtml: async () => '<html></html>',
+      screenshot: async () => Buffer.from(''),
+      actions: {},
+      dialogs,
+    });
+    const out = await capturePageArtifacts(0, 'click');
+    assert.match(out.markdown, /# Dialog: alert/);
+    assert.equal(out.png, undefined, 'no PNG should be produced for dialogs');
+    // No CDP DOM-summary call should have happened.
+    assert.ok(!cdp.calls.some(c => c.method === 'Runtime.evaluate'));
   });
 });

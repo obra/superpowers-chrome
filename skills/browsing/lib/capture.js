@@ -45,7 +45,8 @@ function ensureProcessHandlersRegistered() {
  *                 screenshot, actions: { click, fill, selectOption, evaluate } })`
  * returns the bound API.
  */
-function attachCapture({ state, resolveWsUrl, sendCdpCommand, getHtml, screenshot, actions }) {
+function attachCapture({ state, resolveWsUrl, sendCdpCommand, getHtml, screenshot, actions, dialogs }) {
+  const { renderSyntheticArtifacts } = require('./dialogs-render.js');
   function initializeSession() {
     if (!state.sessionDir) {
       // ~/.cache/superpowers/browser/YYYY-MM-DD/session-{timestamp}
@@ -128,10 +129,51 @@ function attachCapture({ state, resolveWsUrl, sendCdpCommand, getHtml, screensho
     return result.result.value;
   }
 
+  // Write content to a file inside dir, silently skipping if dir doesn't exist.
+  function writeIfDir(dir, filename, content) {
+    if (!dir) return;
+    try {
+      fs.writeFileSync(path.join(dir, filename), content);
+    } catch (_err) {
+      // Best-effort; missing session dir is not fatal.
+    }
+  }
+
   // Single post-action snapshot: html + markdown + screenshot + console-log
   // placeholder, all parallelised. Filenames share a numbered prefix so the
   // session dir reads like a flat timeline.
   async function capturePageArtifacts(tabIndexOrWsUrl, actionType = 'navigate') {
+    const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
+
+    // Dialog short-circuit: when a native browser dialog is open on this tab,
+    // return synthetic artifacts without issuing any CDP calls to the page.
+    if (dialogs) {
+      const open = dialogs.getOpen(wsUrl);
+      if (open) {
+        const artifacts = renderSyntheticArtifacts(open);
+        const prefix = createCapturePrefix(actionType);
+        const dir = state.sessionDir;
+        writeIfDir(dir, `${prefix}.md`, artifacts.markdown);
+        writeIfDir(dir, `${prefix}.html`, artifacts.html);
+        writeIfDir(dir, `${prefix}-console.txt`, artifacts.consoleSnapshot);
+        return {
+          capturePrefix: prefix,
+          sessionDir: dir,
+          files: {
+            html: dir ? path.join(dir, `${prefix}.html`) : null,
+            markdown: dir ? path.join(dir, `${prefix}.md`) : null,
+            screenshot: null,
+            consoleLog: dir ? path.join(dir, `${prefix}-console.txt`) : null,
+          },
+          markdown: artifacts.markdown,
+          html: artifacts.html,
+          consoleSnapshot: artifacts.consoleSnapshot,
+          png: undefined,
+          dialog: open,
+        };
+      }
+    }
+
     const prefix = createCapturePrefix(actionType);
     const dir = initializeSession();
 
