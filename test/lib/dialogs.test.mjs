@@ -36,6 +36,7 @@ describe('dialogs attachToConnection', () => {
       'Page.enable',
       'DeviceAccess.enable',
       'Fetch.enable',
+      'Runtime.enable',
       'Page.addScriptToEvaluateOnNewDocument',
       'Runtime.addBinding',
     ]);

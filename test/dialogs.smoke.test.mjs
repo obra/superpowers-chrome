@@ -217,16 +217,31 @@ describe('dialog handling — real Chrome smoke', { skip: !CHROME_AVAILABLE && '
   // Until the shim is updated to use a different IPC mechanism (e.g., a
   // postMessage-based channel or a fetch-intercepted beacon), this test cannot
   // reliably pass.
-  it('Notification.requestPermission goes through shim — accept yields granted', {
-    skip: 'Runtime.addBinding does not inject window.__dialogShim into page contexts in Chrome 148+; shim IPC is broken',
-  }, async () => {
-    // This is the intended behavior, documented for when the shim is fixed:
-    // 1. Navigate to a page that calls Notification.requestPermission()
-    // 2. The shim intercepts the call and sends a binding message
-    // 3. session.dialogs.getOpen(wsUrl) returns a permission dialog
-    // 4. session.click(0, 'dialog::accept') resolves the binding with 'grant'
-    // 5. Notification.requestPermission() resolves to 'granted'
-    // 6. document.title should become 'granted'
-    void 0; // body intentionally empty — test is skipped
+  it('Notification.requestPermission goes through shim — accept yields granted', async () => {
+    await session.navigate(0, `data:text/html,<script>
+      Notification.requestPermission()
+        .then(r => { document.title = r; })
+        .catch(e => { document.title = 'error:' + e.message; });
+    </script>`);
+
+    // The shim should intercept the call and surface a permission dialog.
+    await waitFor(() => session.dialogs.getOpen(wsUrl) !== null, 5000);
+
+    const open = session.dialogs.getOpen(wsUrl);
+    assert.equal(open.kind, 'permission');
+    assert.equal(open.payload.name, 'notifications');
+    assert.equal(open.payload.jsApi, 'Notification.requestPermission');
+
+    // Accept the permission request — shim resolves with 'granted'.
+    await session.click(0, 'dialog::accept');
+
+    // Wait for the page to record the result in document.title.
+    await waitFor(async () => {
+      const t = await session.evaluate(0, 'document.title');
+      return t === 'granted';
+    }, 3000);
+
+    const result = await session.evaluate(0, 'document.title');
+    assert.equal(result, 'granted');
   });
 });

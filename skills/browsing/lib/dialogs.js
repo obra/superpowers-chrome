@@ -33,6 +33,7 @@ function attachDialogs({ state, sendCdpCommand, _resolveWsUrl }) {
       handleAuthRequests: true,
       patterns: [{ urlPattern: '*' }],
     });
+    await sendCdpCommand(wsUrl, 'Runtime.enable', {});
     await sendCdpCommand(wsUrl, 'Page.addScriptToEvaluateOnNewDocument', { source: SHIM_SOURCE });
     await sendCdpCommand(wsUrl, 'Runtime.addBinding', { name: '__dialogShim' });
     conn.eventHandler = (msg) => handleCdpEvent(wsUrl, msg);
