@@ -155,3 +155,28 @@ describe('synthetic html', () => {
     assert.match(out.html, /<input[^>]*id="dialog-password"[^>]*type="password"/);
   });
 });
+
+describe('renderResponseSummary', () => {
+  const { renderResponseSummary } = require('../../skills/browsing/lib/dialogs-render.js');
+
+  it('summarizes a confirm dialog inline', () => {
+    const summary = renderResponseSummary({
+      kind: 'confirm',
+      payload: { message: 'Are you sure?', url: 'http://x', defaultPrompt: '', hasBrowserHandler: false },
+      staged: {},
+    }, 0);
+    assert.match(summary, /Dialog open on tab 0: confirm/);
+    assert.match(summary, /Message: "Are you sure\?"/);
+    assert.match(summary, /Handle with: click dialog::accept \| click dialog::dismiss/);
+    assert.match(summary, /no screenshot — dialog overlay is browser-native UI/);
+  });
+
+  it('uses a one-button hint for alert', () => {
+    const summary = renderResponseSummary({
+      kind: 'alert',
+      payload: { message: 'hi', url: 'http://x', defaultPrompt: '', hasBrowserHandler: false },
+      staged: {},
+    }, 1);
+    assert.match(summary, /Handle with: click dialog::accept$/m);
+  });
+});

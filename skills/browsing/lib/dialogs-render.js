@@ -132,4 +132,23 @@ function renderSyntheticArtifacts(s) {
   return { markdown, html, consoleSnapshot: '' };
 }
 
-module.exports = { renderSyntheticArtifacts };
+function renderResponseSummary(s, tabIndex) {
+  const lines = [];
+  lines.push(`Dialog open on tab ${tabIndex}: ${s.kind}`);
+  if (s.payload.message) lines.push(`  Message: "${s.payload.message}"`);
+  if (s.kind === 'alert') {
+    lines.push(`  Handle with: click dialog::accept`);
+  } else if (s.kind === 'device-chooser') {
+    lines.push(`  Handle with: click dialog::device[id="..."] | click dialog::dismiss`);
+  } else if (s.kind === 'basic-auth') {
+    lines.push(`  Handle with: type dialog::username, type dialog::password, click dialog::accept | click dialog::dismiss`);
+  } else if (s.kind === 'prompt') {
+    lines.push(`  Handle with: type dialog::prompt, click dialog::accept | click dialog::dismiss`);
+  } else {
+    lines.push(`  Handle with: click dialog::accept | click dialog::dismiss`);
+  }
+  lines.push(`(no screenshot — dialog overlay is browser-native UI)`);
+  return lines.join('\n');
+}
+
+module.exports = { renderSyntheticArtifacts, renderResponseSummary };
