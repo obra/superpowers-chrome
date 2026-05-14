@@ -199,3 +199,29 @@ describe('Fetch.requestPaused', () => {
     assert.equal(sendCdpCommand.calls.find(c => c.method === 'Fetch.continueWithAuth'), undefined);
   });
 });
+
+describe('action classification', () => {
+  const { PAGE_TARGET_ACTIONS, BROWSER_TARGET_ACTIONS } = require('../../skills/browsing/lib/dialogs.js');
+
+  it('PAGE_TARGET_ACTIONS contains the expected set', () => {
+    const expected = [
+      'navigate', 'click', 'type', 'extract', 'screenshot', 'eval', 'select', 'attr',
+      'await_element', 'await_text', 'hover', 'drag_drop', 'mouse_move', 'scroll',
+      'double_click', 'right_click', 'file_upload', 'keyboard_press',
+      'set_viewport', 'clear_viewport', 'get_viewport',
+    ];
+    assert.deepEqual([...PAGE_TARGET_ACTIONS].sort(), expected.sort());
+  });
+
+  it('BROWSER_TARGET_ACTIONS contains the expected set', () => {
+    const expected = [
+      'list_tabs', 'new_tab', 'close_tab', 'show_browser', 'hide_browser',
+      'browser_mode', 'set_profile', 'get_profile', 'help', 'clear_cookies',
+    ];
+    assert.deepEqual([...BROWSER_TARGET_ACTIONS].sort(), expected.sort());
+  });
+
+  it('the two sets are disjoint', () => {
+    for (const a of PAGE_TARGET_ACTIONS) assert.ok(!BROWSER_TARGET_ACTIONS.has(a), `${a} in both`);
+  });
+});

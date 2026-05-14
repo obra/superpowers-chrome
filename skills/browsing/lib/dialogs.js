@@ -1,5 +1,17 @@
 'use strict';
 
+const PAGE_TARGET_ACTIONS = new Set([
+  'navigate', 'click', 'type', 'extract', 'screenshot', 'eval', 'select', 'attr',
+  'await_element', 'await_text', 'hover', 'drag_drop', 'mouse_move', 'scroll',
+  'double_click', 'right_click', 'file_upload', 'keyboard_press',
+  'set_viewport', 'clear_viewport', 'get_viewport',
+]);
+
+const BROWSER_TARGET_ACTIONS = new Set([
+  'list_tabs', 'new_tab', 'close_tab', 'show_browser', 'hide_browser',
+  'browser_mode', 'set_profile', 'get_profile', 'help', 'clear_cookies',
+]);
+
 function attachDialogs({ state, sendCdpCommand, resolveWsUrl }) {
   if (!state.dialogs) state.dialogs = new Map();
 
@@ -96,4 +108,4 @@ function attachDialogs({ state, sendCdpCommand, resolveWsUrl }) {
   return { getOpen, clear, attachToConnection };
 }
 
-module.exports = { attachDialogs };
+module.exports = { attachDialogs, PAGE_TARGET_ACTIONS, BROWSER_TARGET_ACTIONS };
