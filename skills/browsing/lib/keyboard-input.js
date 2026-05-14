@@ -18,7 +18,8 @@ const { throwIfExceptionDetails } = require('./cdp-utils');
  * returns the bound API. `click` is the mouse-side click — humanType
  * uses it to focus a target before typing.
  */
-function attachKeyboardInput({ state, resolveWsUrl, sendCdpCommand, click }) {
+function attachKeyboardInput({ state, resolveWsUrl, sendCdpCommand, click, dialogs }) {
+  const { tryHandleDialogSelector } = require('./dialogs-router.js');
   /**
    * Press a named key (Tab, Enter, F1-F12, arrows, etc.) with optional
    * modifiers. Sends both keyDown and keyUp; if the key has a `text`
@@ -76,6 +77,15 @@ function attachKeyboardInput({ state, resolveWsUrl, sendCdpCommand, click }) {
    */
   async function fill(tabIndexOrWsUrl, selector, value) {
     const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
+
+    if (selector && selector.startsWith('dialog::') && dialogs) {
+      const dialogState = dialogs.getOpen(wsUrl);
+      const routed = await tryHandleDialogSelector({ selector, op: 'type', payload: value, state: dialogState, sendCdpCommand, wsUrl });
+      if (routed.handled) {
+        if (routed.error) throw new Error(routed.error);
+        return routed.result;
+      }
+    }
 
     if (selector) {
       const focusJs = `

@@ -96,3 +96,17 @@ describe('keyboard-input', () => {
     assert.equal(keys.length, 0);
   });
 });
+
+describe('keyboard-input fill routes dialog::* selectors', () => {
+  it('type dialog::prompt stages text without DOM resolution', async () => {
+    const cdp = makeCdpSpy();
+    const dialogState = { kind: 'prompt', payload: { message: 'q', url: '', defaultPrompt: '', hasBrowserHandler: false }, staged: {} };
+    const dialogs = { getOpen: () => dialogState };
+    const { fill } = attachKeyboardInput({
+      state: {}, resolveWsUrl: async () => 'ws://x', sendCdpCommand: cdp, click: async () => {}, dialogs,
+    });
+    await fill(0, 'dialog::prompt', 'answer');
+    assert.equal(dialogState.staged.promptText, 'answer');
+    assert.ok(!cdp.calls.some(c => c.method === 'Runtime.evaluate'));
+  });
+});
