@@ -66,14 +66,57 @@ CHROME_EXTRA_ARGS="--use-gl=angle --use-angle=swiftshader-webgl --enable-unsafe-
 
 ## Dialog Handling
 
-Pages that open JS dialogs, device choosers, permission prompts, or HTTP basic-auth challenges no longer wedge the connection. The dialog appears as a synthetic page response with `dialog::*` selector buttons. Agents handle them with the existing `click` and `type` actions:
+Pages that open JavaScript dialogs (`alert`, `confirm`, `prompt`, `beforeunload`), WebUSB/Bluetooth/Serial/HID device choosers, HTTP basic-auth challenges, or permission prompts (camera, microphone, notifications, geolocation, clipboard) no longer wedge the connection. The dialog is surfaced as a synthetic page response and the agent interacts with it using the existing `click` and `type` actions against a small `dialog::*` selector grammar.
+
+### What an agent sees
+
+While a dialog is open, any page-targeted action (`extract`, `screenshot`, `eval`, `attr`, `click <real-selector>`, etc.) returns a clear refusal with the dialog content and instructions:
 
 ```
-click selector="dialog::accept"
-type  selector="dialog::prompt" value="my answer"
-click selector="dialog::accept"
-click selector="dialog::device[id=\"...\"]"
+Page is behind a dialog. Handle dialog::accept or dialog::dismiss first.
+
+# Dialog: confirm
+Tab origin: https://example.com
+
+> Are you sure you want to leave?
+
+Buttons:
+  - dialog::accept   (OK)
+  - dialog::dismiss  (Cancel)
+
+To interact:
+  click selector="dialog::accept"
+  click selector="dialog::dismiss"
 ```
+
+Browser-targeted actions (`list_tabs`, `new_tab`, `close_tab`, etc.) pass through unaffected.
+
+### Selector grammar
+
+| Selector | Purpose |
+|---|---|
+| `click dialog::accept` | OK / Grant / Provide credentials, depending on dialog kind |
+| `click dialog::dismiss` | Cancel / Deny |
+| `type dialog::prompt <value>` | Stage prompt text; commit on `dialog::accept` |
+| `click dialog::device[id="…"]` | Pick a device in the chooser (USB, BT, Serial, HID) |
+| `type dialog::username <value>` / `type dialog::password <value>` | Basic-auth credentials |
+
+### Worked example
+
+```
+# 1. Page on load: alert('Saved!')
+extract payload=text
+# → refused with synthetic dialog markdown
+
+# 2. Dismiss
+click selector="dialog::accept"
+
+# 3. Page is interactive again
+extract payload=text
+# → returns the page text
+```
+
+Permission prompts (`getUserMedia`, `Notification.requestPermission`, geolocation, clipboard) are caught by a `document_start` JS-API shim and surfaced through the same flow.
 
 See `docs/superpowers/specs/2026-05-13-dialog-handling-design.md` for the full design.
 
