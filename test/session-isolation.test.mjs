@@ -29,7 +29,6 @@ describe('chrome-ws-lib createSession() isolation', () => {
     assert.notStrictEqual(a, b);
     assert.notStrictEqual(a.getProfileName, b.getProfileName);
     assert.notStrictEqual(a.setProfileName, b.setProfileName);
-    assert.notStrictEqual(a.closeAllConnections, b.closeAllConnections);
   });
 
   it('setProfileName on one session does not leak into the other', () => {
@@ -52,11 +51,11 @@ describe('chrome-ws-lib createSession() isolation', () => {
     assert.equal(b.getActivePort(), 22222);
   });
 
-  it('closeAllConnections is a per-session no-op when nothing is connected', () => {
+  it('each session has an independent dialogs instance', () => {
     const a = createSession();
     const b = createSession();
-    assert.doesNotThrow(() => a.closeAllConnections());
-    assert.doesNotThrow(() => b.closeAllConnections());
+    assert.notStrictEqual(a.dialogs, b.dialogs);
+    assert.notStrictEqual(a.dialogs.getOpen, b.dialogs.getOpen);
   });
 });
 

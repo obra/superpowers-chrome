@@ -4,10 +4,10 @@ const { createOverride } = require('../host-override');
  * Build the per-session mutable state bag.
  *
  * Every Chrome session has a small set of mutable values that the rest of
- * the library reads and writes: the active CDP port, the connection pool,
- * per-tab console-message buffers, the launched Chrome process handle,
- * the chosen profile name and data directory, the headless flag, and the
- * auto-capture session directory and counter.
+ * the library reads and writes: the active CDP port, per-tab
+ * console-message buffers, the launched Chrome process handle, the chosen
+ * profile name and data directory, the headless flag, and the auto-capture
+ * session directory and counter.
  *
  * Pulling them into one object (and one file) makes the per-session
  * surface explicit, lets methods that get extracted to sibling files
@@ -26,9 +26,6 @@ function createState({ host, port } = {}) {
 
     // Dynamic port: updated by startChrome() when Chrome launches or reconnects.
     activePort: hostOverride.getPort(),
-
-    // wsUrl -> { ws: WebSocketClient, pendingRequests: Map, messageIdCounter: number }
-    connectionPool: new Map(),
 
     // Per-tab buffer of console messages for auto-capture.
     consoleMessages: new Map(),

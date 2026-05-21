@@ -32,7 +32,6 @@ const { attachTabs, createPageSessionResolver } = require('./lib/tabs');
 const { createBrowserSession } = require('./lib/browser-session');
 const { attachBrowserBridge } = require('./lib/browser-bridge');
 const { attachFileUpload } = require('./lib/file-upload');
-const { attachCdpConnection } = require('./lib/cdp-connection');
 const { attachConsoleLogging } = require('./lib/console-logging');
 const { attachSelectOption } = require('./lib/select-option');
 const { attachDialogs, DialogRefusedError } = require('./lib/dialogs');
@@ -116,11 +115,6 @@ function createSession({ host, port, _testFakes } = {}) {
   const state = createState({ host, port });
 
   // =============================================================================
-  const {
-    closePooledConnection,
-    closeAllConnections,
-  } = attachCdpConnection({ state });
-
   const dialogs = attachDialogs({ state });
 
   const { chromeHttp, resolveWsUrl, getTabs, newTab, closeTab } = attachTabs({ state });
@@ -374,10 +368,6 @@ function createSession({ host, port, _testFakes } = {}) {
     // DOM diff capture (before/after with diff)
     generateHtmlDiff,
     captureActionWithDiff,
-
-    // Connection management (JRV-130)
-    closePooledConnection,
-    closeAllConnections,
 
     // Dynamic port allocation and per-profile meta.json
     getActivePort,
