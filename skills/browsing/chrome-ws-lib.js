@@ -29,6 +29,8 @@ const { attachKeyboardInput } = require('./lib/keyboard-input');
 const { attachExtraction } = require('./lib/extraction');
 const { attachScreenshot } = require('./lib/screenshot');
 const { attachTabs } = require('./lib/tabs');
+const { createBrowserSession } = require('./lib/browser-session');
+const { attachBrowserBridge } = require('./lib/browser-bridge');
 const { attachFileUpload } = require('./lib/file-upload');
 const { attachCdpConnection } = require('./lib/cdp-connection');
 const { attachConsoleLogging } = require('./lib/console-logging');
@@ -110,7 +112,7 @@ const PAGE_TARGET_SESSION_METHODS = new Set([
  * one-line consumer migration is `require(...)` becomes
  * `require(...).createSession()`.
  */
-function createSession({ host, port } = {}) {
+function createSession({ host, port, _testFakes } = {}) {
   const state = createState({ host, port });
 
   // =============================================================================
@@ -125,6 +127,38 @@ function createSession({ host, port } = {}) {
   cdpApi.setDialogs(dialogs);
 
   const { chromeHttp, resolveWsUrl, getTabs, newTab, closeTab } = attachTabs({ state });
+
+  // Bridge primitives — coexist with the per-tab pool during the migration.
+  // The browser-session is constructed immediately (lazy connect on first use).
+  // attachBrowserBridge issues Target.setDiscoverTargets which connects the root
+  // WS, so we defer it behind state.ensureBridge() (lazy).
+  const effectiveChromeHttp = (_testFakes && _testFakes.chromeHttp) ? _testFakes.chromeHttp : chromeHttp;
+  state.browserSession = createBrowserSession({
+    host: state.hostOverride.getHost(),
+    port: state.hostOverride.getPort(),
+    rewriteWsUrl: state.rewriteWsUrl,
+    chromeHttp: effectiveChromeHttp,
+    WebSocketClient: _testFakes && _testFakes.WebSocketClient,
+  });
+
+  let bridgePromise = null;
+  state.ensureBridge = () => {
+    if (state.browserBridge) return Promise.resolve(state.browserBridge);
+    if (bridgePromise) return bridgePromise;
+    bridgePromise = (async () => {
+      const bridge = await attachBrowserBridge({
+        browser: state.browserSession,
+        host: state.hostOverride.getHost(),
+        port: state.hostOverride.getPort(),
+        rewriteWsUrl: state.rewriteWsUrl,
+      });
+      state.browserBridge = bridge;
+      return bridge;
+    })();
+    // Clear bridgePromise on failure so the next call retries
+    bridgePromise.catch(() => { bridgePromise = null; });
+    return bridgePromise;
+  };
 
   const { click, hover, drag, mouseMove, scroll, doubleClick, rightClick } =
     attachMouse({ resolveWsUrl, sendCdpCommand, dialogs });
@@ -220,6 +254,9 @@ function createSession({ host, port } = {}) {
 
   // Build the raw session object, then wrap page-target methods.
   const rawSession = {
+    // State bag (exposed for bridge consumers and testing)
+    state,
+
     // Internal helpers (exported for testing)
     getElementSelector,
 
