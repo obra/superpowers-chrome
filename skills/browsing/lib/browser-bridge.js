@@ -1,7 +1,7 @@
 'use strict';
 
 const { createCdpRouter } = require('./cdp-router');
-const { attachPageSession } = require('./page-session');
+const { attachPageSession, buildPageSessionFromAttached } = require('./page-session');
 
 /**
  * attachBrowserBridge({browser, host, port, rewriteWsUrl}) — consumer-facing
@@ -49,6 +49,27 @@ async function attachBrowserBridge({ browser, host, port, rewriteWsUrl, autoAtta
           try { fn(t); } catch (e) { console.error('targets onDestroyed handler threw:', e); }
         }
       }
+    }
+  });
+
+  // Handle auto-attached targets (popups, child frames, etc.) when autoAttach is on.
+  // Chrome emits this with an already-allocated sessionId — no Target.attachToTarget needed.
+  router.getRootListeners().add(async (msg) => {
+    if (msg.method !== 'Target.attachedToTarget') return;
+    const { sessionId, targetInfo, waitingForDebugger } = msg.params;
+
+    const ps = buildPageSessionFromAttached({ browser, router, sessionId, targetId: targetInfo.targetId });
+
+    if (onPageSession) {
+      try { await onPageSession(ps); }
+      catch (e) { console.error('onPageSession hook threw:', e); }
+    }
+
+    // Resume the paused target AFTER the hook so any shims (e.g. dialog) are
+    // installed before the page's scripts run.
+    if (waitingForDebugger) {
+      try { await ps.send('Runtime.runIfWaitingForDebugger', {}); }
+      catch (e) { console.error('Runtime.runIfWaitingForDebugger failed:', e); }
     }
   });
 

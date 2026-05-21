@@ -14,8 +14,16 @@
  * There is no fallback. If the browser-WS dies, the call rejects and the caller decides
  * what to do.
  */
-async function attachPageSession({ browser, router }, targetId) {
-  const { sessionId } = await browser.send('Target.attachToTarget', { targetId, flatten: true });
+
+/**
+ * buildPageSessionFromAttached — constructs a pageSession from an already-attached
+ * sessionId (e.g. from Target.attachedToTarget autoAttach) without making any CDP
+ * calls. The caller is responsible for registering the session with the router
+ * BEFORE calling this function — or passing the sess object from registerSession.
+ *
+ * Both attachPageSession and the auto-attach handler in browser-bridge use this.
+ */
+function buildPageSessionFromAttached({ browser, router, sessionId, targetId }) {
   const sess = router.registerSession(sessionId);
   let messageIdCounter = 1;
   let detached = false;
@@ -90,4 +98,9 @@ async function attachPageSession({ browser, router }, targetId) {
   return { sessionId, targetId, send, onEvent, waitForEvent, enableDomain, detach };
 }
 
-module.exports = { attachPageSession };
+async function attachPageSession({ browser, router }, targetId) {
+  const { sessionId } = await browser.send('Target.attachToTarget', { targetId, flatten: true });
+  return buildPageSessionFromAttached({ browser, router, sessionId, targetId });
+}
+
+module.exports = { attachPageSession, buildPageSessionFromAttached };
