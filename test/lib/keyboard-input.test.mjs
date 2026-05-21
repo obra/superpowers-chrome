@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
 import { createRequire } from 'node:module';
-import { makeCdpSpy, makeResolveWsUrl } from './_helpers.mjs';
+import { makePageSessionFake } from './_helpers.mjs';
 
 const require = createRequire(import.meta.url);
 const { attachKeyboardInput } = require('../../skills/browsing/lib/keyboard-input.js');
@@ -9,23 +9,24 @@ const { attachKeyboardInput } = require('../../skills/browsing/lib/keyboard-inpu
 describe('keyboard-input', () => {
   function setup({ headless = true, handlers = {}, click = async () => ({ clicked: true }) } = {}) {
     const state = { chromeHeadless: headless };
-    const sendCdpCommand = makeCdpSpy({
+    const ps = makePageSessionFake({
       'Runtime.evaluate': () => ({ result: { value: { isTextarea: false } } }),
       'Input.insertText': () => ({}),
       'Input.dispatchKeyEvent': () => ({}),
       ...handlers
     });
+    const getPageSession = async () => ps;
     return {
-      ...attachKeyboardInput({ state, resolveWsUrl: makeResolveWsUrl(), sendCdpCommand, click }),
-      sendCdpCommand,
+      ...attachKeyboardInput({ state, getPageSession, click }),
+      ps,
       state
     };
   }
 
   it('keyboardPress(Enter) sends keyDown + keyUp with text="\\r"', async () => {
-    const { keyboardPress, sendCdpCommand } = setup();
+    const { keyboardPress, ps } = setup();
     await keyboardPress(0, 'Enter');
-    const keys = sendCdpCommand.calls.filter(c => c.method === 'Input.dispatchKeyEvent');
+    const keys = ps.calls.filter(c => c.method === 'Input.dispatchKeyEvent');
     assert.equal(keys.length, 2);
     assert.equal(keys[0].params.type, 'keyDown');
     assert.equal(keys[0].params.text, '\r');
@@ -33,9 +34,9 @@ describe('keyboard-input', () => {
   });
 
   it('keyboardPress with modifiers sets the modifier bitmask', async () => {
-    const { keyboardPress, sendCdpCommand } = setup();
+    const { keyboardPress, ps } = setup();
     await keyboardPress(0, 'Tab', { shift: true });
-    const keys = sendCdpCommand.calls.filter(c => c.method === 'Input.dispatchKeyEvent');
+    const keys = ps.calls.filter(c => c.method === 'Input.dispatchKeyEvent');
     assert.equal(keys[0].params.modifiers, 8); // shift = 8
   });
 
@@ -46,18 +47,18 @@ describe('keyboard-input', () => {
 
   it('fill in headed mode types each char as insertText (not keyDown for plain chars)', async () => {
     // (humanType is per-char keyDown/keyUp; fill is buffered insertText.)
-    const { fill, sendCdpCommand } = setup({ headless: false });
+    const { fill, ps } = setup({ headless: false });
     await fill(0, null, 'abc');
-    const inserts = sendCdpCommand.calls.filter(c => c.method === 'Input.insertText');
+    const inserts = ps.calls.filter(c => c.method === 'Input.insertText');
     // fill buffers and sends one insertText with the full string
     assert.equal(inserts.length, 1);
     assert.equal(inserts[0].params.text, 'abc');
   });
 
   it('fill splits on \\t and emits Tab key press between segments', async () => {
-    const { fill, sendCdpCommand } = setup();
+    const { fill, ps } = setup();
     await fill(0, null, 'foo\tbar');
-    const calls = sendCdpCommand.calls;
+    const calls = ps.calls;
     // insertText('foo'), keyDown(Tab), keyUp(Tab), insertText('bar')
     const inserts = calls.filter(c => c.method === 'Input.insertText');
     const keys = calls.filter(c => c.method === 'Input.dispatchKeyEvent');
@@ -67,46 +68,47 @@ describe('keyboard-input', () => {
   });
 
   it('fill in textarea inserts \\n as literal newline rather than Enter', async () => {
-    const { fill, sendCdpCommand } = setup({
+    const { fill, ps } = setup({
       handlers: {
         'Runtime.evaluate': () => ({ result: { value: { isTextarea: true } } })
       }
     });
     await fill(0, null, 'a\nb');
-    const calls = sendCdpCommand.calls;
+    const calls = ps.calls;
     const inserts = calls.filter(c => c.method === 'Input.insertText');
     // 'a' buffered + flushed; '\n' inserted as literal; 'b' buffered + flushed
     assert.deepEqual(inserts.map(c => c.params.text), ['a', '\n', 'b']);
   });
 
   it('humanType in headed mode sends keyDown/keyUp around each char', async () => {
-    const { humanType, sendCdpCommand } = setup({ headless: false });
+    const { humanType, ps } = setup({ headless: false });
     await humanType(0, null, 'ab', { delay: 0, jitter: 0 });
-    const inserts = sendCdpCommand.calls.filter(c => c.method === 'Input.insertText');
-    const keys = sendCdpCommand.calls.filter(c => c.method === 'Input.dispatchKeyEvent');
+    const inserts = ps.calls.filter(c => c.method === 'Input.insertText');
+    const keys = ps.calls.filter(c => c.method === 'Input.dispatchKeyEvent');
     assert.equal(inserts.length, 2);
     // 2 chars × (rawKeyDown + keyUp) = 4 key events
     assert.equal(keys.length, 4);
   });
 
   it('humanType in headless mode skips keyDown/keyUp (rawKeyDown navigates away)', async () => {
-    const { humanType, sendCdpCommand } = setup({ headless: true });
+    const { humanType, ps } = setup({ headless: true });
     await humanType(0, null, 'ab', { delay: 0, jitter: 0 });
-    const keys = sendCdpCommand.calls.filter(c => c.method === 'Input.dispatchKeyEvent');
+    const keys = ps.calls.filter(c => c.method === 'Input.dispatchKeyEvent');
     assert.equal(keys.length, 0);
   });
 });
 
 describe('keyboard-input fill routes dialog::* selectors', () => {
   it('type dialog::prompt stages text without DOM resolution', async () => {
-    const cdp = makeCdpSpy();
+    const ps = makePageSessionFake();
     const dialogState = { kind: 'prompt', payload: { message: 'q', url: '', defaultPrompt: '', hasBrowserHandler: false }, staged: {} };
-    const dialogs = { getOpen: () => dialogState };
+    const dialogs = { getOpen: () => dialogState, clear: () => {} };
+    const getPageSession = async () => ps;
     const { fill } = attachKeyboardInput({
-      state: {}, resolveWsUrl: async () => 'ws://x', sendCdpCommand: cdp, click: async () => {}, dialogs,
+      state: {}, getPageSession, click: async () => {}, dialogs,
     });
     await fill(0, 'dialog::prompt', 'answer');
     assert.equal(dialogState.staged.promptText, 'answer');
-    assert.ok(!cdp.calls.some(c => c.method === 'Runtime.evaluate'));
+    assert.ok(!ps.calls.some(c => c.method === 'Runtime.evaluate'));
   });
 });

@@ -195,7 +195,7 @@ function createSession({ host, port, _testFakes } = {}) {
     attachMouse({ resolveWsUrl, sendCdpCommand, dialogs });
 
   const { keyboardPress, fill, humanType } =
-    attachKeyboardInput({ state, resolveWsUrl, sendCdpCommand, click, dialogs });
+    attachKeyboardInput({ state, getPageSession, click, dialogs });
 
   const { fileUpload } = attachFileUpload({ getPageSession });
 

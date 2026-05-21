@@ -14,12 +14,12 @@ const { throwIfExceptionDetails } = require('./cdp-utils');
  * so headless skips key events and relies on `Input.insertText` plus
  * per-character timing for whatever realism it can offer.
  *
- * `attachKeyboardInput({ state, resolveWsUrl, sendCdpCommand, click })`
+ * `attachKeyboardInput({ state, getPageSession, click, dialogs })`
  * returns the bound API. `click` is the mouse-side click — humanType
  * uses it to focus a target before typing.
  */
-function attachKeyboardInput({ state, resolveWsUrl, sendCdpCommand, click, dialogs }) {
-  const { tryHandleDialogSelector } = require('./dialogs-router.js');
+function attachKeyboardInput({ state, getPageSession, click, dialogs }) {
+  const { tryHandleDialogSelectorForSession } = require('./dialogs-router.js');
   /**
    * Press a named key (Tab, Enter, F1-F12, arrows, etc.) with optional
    * modifiers. Sends both keyDown and keyUp; if the key has a `text`
@@ -28,7 +28,7 @@ function attachKeyboardInput({ state, resolveWsUrl, sendCdpCommand, click, dialo
    * submission depends on.
    */
   async function keyboardPress(tabIndexOrWsUrl, keyName, modifiers = {}) {
-    const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
+    const ps = await getPageSession(tabIndexOrWsUrl);
 
     const keyDef = KEY_DEFINITIONS[keyName];
     if (!keyDef) {
@@ -41,7 +41,7 @@ function attachKeyboardInput({ state, resolveWsUrl, sendCdpCommand, click, dialo
     if (modifiers.meta) modifierFlags |= 4;
     if (modifiers.shift) modifierFlags |= 8;
 
-    await sendCdpCommand(wsUrl, 'Input.dispatchKeyEvent', {
+    await ps.send('Input.dispatchKeyEvent', {
       type: 'keyDown',
       key: keyDef.key,
       code: keyDef.code,
@@ -51,7 +51,7 @@ function attachKeyboardInput({ state, resolveWsUrl, sendCdpCommand, click, dialo
       ...(keyDef.text && { text: keyDef.text })
     });
 
-    await sendCdpCommand(wsUrl, 'Input.dispatchKeyEvent', {
+    await ps.send('Input.dispatchKeyEvent', {
       type: 'keyUp',
       key: keyDef.key,
       code: keyDef.code,
@@ -76,14 +76,14 @@ function attachKeyboardInput({ state, resolveWsUrl, sendCdpCommand, click, dialo
    * often arrive with the escapes un-evaluated.
    */
   async function fill(tabIndexOrWsUrl, selector, value) {
-    const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
+    const ps = await getPageSession(tabIndexOrWsUrl);
 
     if (selector && selector.startsWith('dialog::') && dialogs) {
-      const dialogState = dialogs.getOpen(wsUrl);
-      const routed = await tryHandleDialogSelector({ selector, op: 'type', payload: value, state: dialogState, sendCdpCommand, wsUrl });
+      const dialogState = dialogs.getOpen(ps.sessionId);
+      const routed = await tryHandleDialogSelectorForSession({ selector, op: 'type', payload: value, state: dialogState, pageSession: ps });
       if (routed.handled) {
         if (routed.error) throw new Error(routed.error);
-        if (routed.clearDialog) dialogs.clear(wsUrl);
+        if (routed.clearDialog) dialogs.clear(ps.sessionId);
         return routed.result;
       }
     }
@@ -97,7 +97,7 @@ function attachKeyboardInput({ state, resolveWsUrl, sendCdpCommand, click, dialo
           return { success: true, focused: document.activeElement === el };
         })()
       `;
-      const focusResult = await sendCdpCommand(wsUrl, 'Runtime.evaluate', {
+      const focusResult = await ps.send('Runtime.evaluate', {
         expression: focusJs,
         returnByValue: true
       });
@@ -121,7 +121,7 @@ function attachKeyboardInput({ state, resolveWsUrl, sendCdpCommand, click, dialo
 
       if (char === '\t') {
         if (buffer) {
-          await sendCdpCommand(wsUrl, 'Input.insertText', { text: buffer });
+          await ps.send('Input.insertText', { text: buffer });
           await settle();
           buffer = '';
         }
@@ -129,12 +129,12 @@ function attachKeyboardInput({ state, resolveWsUrl, sendCdpCommand, click, dialo
         await settle();
       } else if (char === '\n') {
         if (buffer) {
-          await sendCdpCommand(wsUrl, 'Input.insertText', { text: buffer });
+          await ps.send('Input.insertText', { text: buffer });
           await settle();
           buffer = '';
         }
         // Re-check focus — Tab may have shifted it to a different element type.
-        const currentFocus = await sendCdpCommand(wsUrl, 'Runtime.evaluate', {
+        const currentFocus = await ps.send('Runtime.evaluate', {
           expression: `({ isTextarea: document.activeElement?.tagName === 'TEXTAREA' })`,
           returnByValue: true
         });
@@ -142,7 +142,7 @@ function attachKeyboardInput({ state, resolveWsUrl, sendCdpCommand, click, dialo
         const currentlyInTextarea = currentFocus.result?.value?.isTextarea || false;
 
         if (currentlyInTextarea) {
-          await sendCdpCommand(wsUrl, 'Input.insertText', { text: '\n' });
+          await ps.send('Input.insertText', { text: '\n' });
         } else {
           await keyboardPress(tabIndexOrWsUrl, 'Enter');
         }
@@ -153,7 +153,7 @@ function attachKeyboardInput({ state, resolveWsUrl, sendCdpCommand, click, dialo
     }
 
     if (buffer) {
-      await sendCdpCommand(wsUrl, 'Input.insertText', { text: buffer });
+      await ps.send('Input.insertText', { text: buffer });
     }
 
     return { typed: true, value };
@@ -172,7 +172,7 @@ function attachKeyboardInput({ state, resolveWsUrl, sendCdpCommand, click, dialo
    * @param {number} [options.jitter=80] - Random jitter range (ms) — total ~80–160ms/char
    */
   async function humanType(tabIndexOrWsUrl, selector, text, options = {}) {
-    const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
+    const ps = await getPageSession(tabIndexOrWsUrl);
     const delay = options.delay !== undefined ? options.delay : 80;
     const jitter = options.jitter !== undefined ? options.jitter : 80;
 
@@ -192,7 +192,7 @@ function attachKeyboardInput({ state, resolveWsUrl, sendCdpCommand, click, dialo
 
         if (sendKeyEvents) {
           if (keyDef.shift) {
-            await sendCdpCommand(wsUrl, 'Input.dispatchKeyEvent', {
+            await ps.send('Input.dispatchKeyEvent', {
               type: 'keyDown',
               key: 'Shift',
               code: 'ShiftLeft',
@@ -202,7 +202,7 @@ function attachKeyboardInput({ state, resolveWsUrl, sendCdpCommand, click, dialo
             });
           }
 
-          await sendCdpCommand(wsUrl, 'Input.dispatchKeyEvent', {
+          await ps.send('Input.dispatchKeyEvent', {
             type: 'rawKeyDown',
             key: keyDef.key,
             code: keyDef.code,
@@ -213,12 +213,12 @@ function attachKeyboardInput({ state, resolveWsUrl, sendCdpCommand, click, dialo
         }
 
         // insertText drives the character into the field reliably in both modes.
-        await sendCdpCommand(wsUrl, 'Input.insertText', {
+        await ps.send('Input.insertText', {
           text: keyDef.text
         });
 
         if (sendKeyEvents) {
-          await sendCdpCommand(wsUrl, 'Input.dispatchKeyEvent', {
+          await ps.send('Input.dispatchKeyEvent', {
             type: 'keyUp',
             key: keyDef.key,
             code: keyDef.code,
@@ -228,7 +228,7 @@ function attachKeyboardInput({ state, resolveWsUrl, sendCdpCommand, click, dialo
           });
 
           if (keyDef.shift) {
-            await sendCdpCommand(wsUrl, 'Input.dispatchKeyEvent', {
+            await ps.send('Input.dispatchKeyEvent', {
               type: 'keyUp',
               key: 'Shift',
               code: 'ShiftLeft',
