@@ -236,7 +236,7 @@ function createSession({ host, port, _testFakes } = {}) {
   const { navigate, waitForElement, waitForText } =
     attachNavigation({ state, resolveWsUrl, sendCdpCommand, capturePageArtifacts, evaluate });
 
-  const { setViewport, clearViewport, getViewport } = attachViewport({ resolveWsUrl, sendCdpCommand });
+  const { setViewport, clearViewport, getViewport } = attachViewport({ getPageSession });
   const { clearCookies } = attachCookies({ getPageSession });
 
   // ---------------------------------------------------------------------------

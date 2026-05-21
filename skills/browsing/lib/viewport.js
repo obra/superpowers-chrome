@@ -7,11 +7,11 @@ const MOBILE_USER_AGENT = 'Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/
  * Emulation.setDeviceMetricsOverride state. Mobile emulation toggles touch
  * input and a Pixel-7-class user-agent string in lockstep with the metrics.
  *
- * `attachViewport({ resolveWsUrl, sendCdpCommand })` returns the bound
- * actions. No session state is read directly — the helpers carry it via
- * closure capture.
+ * `attachViewport({ getPageSession })` returns the bound actions.
+ * `getPageSession(tabIndexOrWsUrl)` resolves to a page-session object
+ * with a `send(method, params)` interface.
  */
-function attachViewport({ resolveWsUrl, sendCdpCommand }) {
+function attachViewport({ getPageSession }) {
   /**
    * Set device viewport / emulation parameters (CDP: Emulation.setDeviceMetricsOverride).
    *
@@ -27,7 +27,7 @@ function attachViewport({ resolveWsUrl, sendCdpCommand }) {
       throw new Error('setViewport requires a params object');
     }
 
-    const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
+    const ps = await getPageSession(tabIndexOrWsUrl);
 
     const viewportParams = {
       width: params.width ?? 1200,
@@ -46,17 +46,15 @@ function attachViewport({ resolveWsUrl, sendCdpCommand }) {
       throw new Error(`Invalid deviceScaleFactor ${viewportParams.deviceScaleFactor} (must be 0.25-5)`);
     }
 
-    await sendCdpCommand(wsUrl, 'Emulation.setDeviceMetricsOverride', viewportParams);
+    await ps.send('Emulation.setDeviceMetricsOverride', viewportParams);
 
     if (viewportParams.mobile) {
-      await sendCdpCommand(wsUrl, 'Emulation.setTouchEmulationEnabled', { enabled: true });
-      await sendCdpCommand(wsUrl, 'Emulation.setUserAgentOverride', {
-        userAgent: MOBILE_USER_AGENT
-      });
+      await ps.send('Emulation.setTouchEmulationEnabled', { enabled: true });
+      await ps.send('Emulation.setUserAgentOverride', { userAgent: MOBILE_USER_AGENT });
     } else {
-      await sendCdpCommand(wsUrl, 'Emulation.setTouchEmulationEnabled', { enabled: false });
+      await ps.send('Emulation.setTouchEmulationEnabled', { enabled: false });
       // Empty UA string resets to browser default (CDP convention)
-      await sendCdpCommand(wsUrl, 'Emulation.setUserAgentOverride', { userAgent: '' });
+      await ps.send('Emulation.setUserAgentOverride', { userAgent: '' });
     }
 
     return { ...viewportParams, touch: viewportParams.mobile };
@@ -67,10 +65,10 @@ function attachViewport({ resolveWsUrl, sendCdpCommand }) {
    * metrics, touch emulation, and UA override.
    */
   async function clearViewport(tabIndexOrWsUrl) {
-    const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
-    await sendCdpCommand(wsUrl, 'Emulation.clearDeviceMetricsOverride', {});
-    await sendCdpCommand(wsUrl, 'Emulation.setTouchEmulationEnabled', { enabled: false });
-    await sendCdpCommand(wsUrl, 'Emulation.setUserAgentOverride', { userAgent: '' });
+    const ps = await getPageSession(tabIndexOrWsUrl);
+    await ps.send('Emulation.clearDeviceMetricsOverride', {});
+    await ps.send('Emulation.setTouchEmulationEnabled', { enabled: false });
+    await ps.send('Emulation.setUserAgentOverride', { userAgent: '' });
   }
 
   /**
@@ -79,9 +77,9 @@ function attachViewport({ resolveWsUrl, sendCdpCommand }) {
    *          devicePixelRatio, orientation }.
    */
   async function getViewport(tabIndexOrWsUrl) {
-    const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
+    const ps = await getPageSession(tabIndexOrWsUrl);
 
-    const result = await sendCdpCommand(wsUrl, 'Runtime.evaluate', {
+    const result = await ps.send('Runtime.evaluate', {
       expression: `({
         innerWidth: window.innerWidth,
         innerHeight: window.innerHeight,
