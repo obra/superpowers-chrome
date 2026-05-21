@@ -28,17 +28,10 @@ const DEFAULT_CDP_TIMEOUT_MS = 30000;
  * the persistent socket without spinning up a second one).
  *
  * `attachCdpConnection({ state, dialogs, WebSocketClient })` returns the
- * bound API. `dialogs` is optional — when provided, `dialogs.attachToConnection`
- * is called each time a new pooled connection is created. `WebSocketClient` is
- * optional — defaults to the real implementation (injectable for tests).
+ * `WebSocketClient` is optional — defaults to the real implementation
+ * (injectable for tests).
  */
-function attachCdpConnection({ state, dialogs: initialDialogs, WebSocketClient = DefaultWebSocketClient }) {
-  let dialogs = initialDialogs;
-
-  function setDialogs(d) {
-    dialogs = d;
-  }
-
+function attachCdpConnection({ state, WebSocketClient = DefaultWebSocketClient }) {
   async function getPooledConnection(wsUrl) {
     let conn = state.connectionPool.get(wsUrl);
 
@@ -94,10 +87,6 @@ function attachCdpConnection({ state, dialogs: initialDialogs, WebSocketClient =
 
     await ws.connect();
     state.connectionPool.set(wsUrl, conn);
-
-    if (dialogs) {
-      await dialogs.attachToConnection(conn, wsUrl);
-    }
 
     return conn;
   }
@@ -195,7 +184,6 @@ function attachCdpConnection({ state, dialogs: initialDialogs, WebSocketClient =
     sendCdpCommandSingle,
     closePooledConnection,
     closeAllConnections,
-    setDialogs,
   };
 }
 

@@ -193,9 +193,9 @@ describe('popup dialog integration (Phase F headline win)', {
     assert.ok(popupTarget.targetId, 'popup target has a targetId');
 
     // Build the popup's pseudo-wsUrl so dialogs.getOpen() can cross-reference
-    // targetId → sessionId via the internal _targetIdToSessionId map.
-    // (The actual wsUrl isn't needed — the targetId embedded in the path is
-    // what getOpen() uses to find the bridge-path sessionId.)
+    // targetId → sessionId via the _targetIdToSessionId map populated by
+    // attachToPageSession. The targetId embedded in the path is what getOpen()
+    // uses to find the bridge-path sessionId.
     const activePort = session.getActivePort();
     const popupWsUrl = `ws://127.0.0.1:${activePort}/devtools/page/${popupTarget.targetId}`;
 

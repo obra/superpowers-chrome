@@ -116,15 +116,12 @@ function createSession({ host, port, _testFakes } = {}) {
   const state = createState({ host, port });
 
   // =============================================================================
-  const cdpApi = attachCdpConnection({ state });
   const {
-    sendCdpCommand,
     closePooledConnection,
     closeAllConnections,
-  } = cdpApi;
+  } = attachCdpConnection({ state });
 
-  const dialogs = attachDialogs({ state, sendCdpCommand });
-  cdpApi.setDialogs(dialogs);
+  const dialogs = attachDialogs({ state });
 
   const { chromeHttp, resolveWsUrl, getTabs, newTab, closeTab } = attachTabs({ state });
 
@@ -249,23 +246,8 @@ function createSession({ host, port, _testFakes } = {}) {
     dialogs,
   });
 
-  const { navigate: navigateCore, waitForElement, waitForText } =
+  const { navigate, waitForElement, waitForText } =
     attachNavigation({ state, getPageSession, capturePageArtifacts, evaluate });
-
-  // Wrap navigate to proactively open the pooled CDP connection after page load
-  // succeeds, while the page is idle. This preserves the pre-bridge invariant
-  // where dialogs.attachToConnection ran during navigate (via sendCdpCommand),
-  // guaranteeing that Page.enable and the dialog subscription are active before
-  // any blocking page action (e.g. alert()) can occur.
-  async function navigate(tabIndexOrWsUrl, url, autoCapture) {
-    const result = await navigateCore(tabIndexOrWsUrl, url, autoCapture);
-    // Fire-and-forget: open pool connection while page is idle so
-    // dialogs.attachToConnection sets up before any JS alert can block CDP.
-    resolveWsUrl(tabIndexOrWsUrl)
-      .then(wsUrl => sendCdpCommand(wsUrl, 'Page.getFrameTree', {}))
-      .catch(() => {}); // best-effort; ignore if Chrome not running etc.
-    return result;
-  }
 
   const { setViewport, clearViewport, getViewport } = attachViewport({ getPageSession });
   const { clearCookies } = attachCookies({ getPageSession });
@@ -297,18 +279,10 @@ function createSession({ host, port, _testFakes } = {}) {
         return fn(tabIndexOrWsUrl, secondArg, ...rest);
       }
 
-      // Check for an open dialog via the pooled-connection path (keyed by wsUrl)
-      // or the bridge path (keyed by sessionId). The bridge path is used by any
-      // lib that migrated to getPageSession; the sessionId is obtained via a
-      // synchronous cache peek so we don't do I/O on every action.
-      let open = dialogs.getOpen(wsUrl);
-      if (!open && state.pageSessionResolver) {
-        const targetIdMatch = /\/devtools\/page\/([^/]+)$/.exec(wsUrl);
-        if (targetIdMatch) {
-          const ps = state.pageSessionResolver.peek(targetIdMatch[1]);
-          if (ps) open = dialogs.getOpen(ps.sessionId);
-        }
-      }
+      // Look up dialog state keyed by sessionId (via targetId→sessionId map populated
+      // by attachToPageSession). dialogs.getOpen() handles both direct sessionId keys
+      // and wsUrl paths by extracting the targetId from the URL.
+      const open = dialogs.getOpen(wsUrl);
 
       const isDialogSelector = typeof secondArg === 'string' && secondArg.startsWith('dialog::');
 

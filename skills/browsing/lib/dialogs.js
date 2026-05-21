@@ -32,20 +32,20 @@ const BROWSER_TARGET_ACTIONS = new Set([
   'browser_mode', 'set_profile', 'get_profile', 'help', 'clear_cookies',
 ]);
 
-function attachDialogs({ state, sendCdpCommand, _resolveWsUrl }) {
+function attachDialogs({ state, _resolveWsUrl }) {
   if (!state.dialogs) state.dialogs = new Map();
   // Maps CDP targetId → sessionId for bridge-path sessions. Allows getOpen(wsUrl)
   // to find dialog state stored under sessionId by extracting targetId from the wsUrl.
   if (!state._targetIdToSessionId) state._targetIdToSessionId = new Map();
-  // Reverse map: sessionId → targetId. Allows clear(sessionId) to also remove the
-  // pooled-connection entry stored under wsUrl (which embeds the targetId).
-  if (!state._sessionIdToTargetId) state._sessionIdToTargetId = new Map();
 
   function getOpen(wsUrlOrSid) {
-    // Direct lookup (works for both wsUrl keys and sessionId keys).
+    // Direct lookup (works for sessionId keys).
     const direct = state.dialogs.get(wsUrlOrSid);
     if (direct) return direct;
     // Fall back: extract targetId from a ws:// URL and look up the bridge sessionId.
+    // Used by callers (e.g. popup integration test, wrapWithDialogGate) that have a
+    // wsUrl rather than a sessionId. The _targetIdToSessionId map is populated by
+    // attachToPageSession.
     const m = /\/devtools\/page\/([^/]+)$/.exec(wsUrlOrSid);
     if (m) {
       const sid = state._targetIdToSessionId.get(m[1]);
@@ -62,120 +62,6 @@ function attachDialogs({ state, sendCdpCommand, _resolveWsUrl }) {
       const sid = state._targetIdToSessionId.get(wsMatch[1]);
       if (sid) state.dialogs.delete(sid);
     }
-    // If called with a sessionId: also clear the pooled-connection wsUrl entry.
-    // Both paths receive shim events, so the dialog may be stored under both keys.
-    const targetId = state._sessionIdToTargetId.get(wsUrlOrSid);
-    if (targetId) {
-      for (const key of state.dialogs.keys()) {
-        if (key.endsWith(`/devtools/page/${targetId}`)) {
-          state.dialogs.delete(key);
-          break;
-        }
-      }
-    }
-  }
-
-  async function attachToConnection(conn, wsUrl) {
-    await sendCdpCommand(wsUrl, 'Page.enable', {});
-    await sendCdpCommand(wsUrl, 'DeviceAccess.enable', {});
-    await sendCdpCommand(wsUrl, 'Fetch.enable', {
-      handleAuthRequests: true,
-      patterns: [{ urlPattern: '*' }],
-    });
-    await sendCdpCommand(wsUrl, 'Runtime.enable', {});
-    await sendCdpCommand(wsUrl, 'Page.addScriptToEvaluateOnNewDocument', { source: SHIM_SOURCE });
-    await sendCdpCommand(wsUrl, 'Runtime.addBinding', { name: '__dialogShim' });
-    conn.eventHandler = (msg) => handleCdpEvent(wsUrl, msg);
-  }
-
-  function handleCdpEvent(wsUrl, msg) {
-    if (msg.method === 'Runtime.bindingCalled') {
-      if (msg.params.name !== '__dialogShim') return;
-      let data;
-      try { data = JSON.parse(msg.params.payload); } catch { return; }
-      if (data.type === 'permission-request') {
-        if (state.dialogs.has(wsUrl)) {
-          console.error(`[dialogs] permission request while dialog open on ${wsUrl}; preserving original`);
-          return;
-        }
-        state.dialogs.set(wsUrl, {
-          kind: 'permission',
-          openedAt: Date.now(),
-          payload: { name: data.name, origin: data.origin, jsApi: data.jsApi },
-          staged: { _shimId: data.id },
-        });
-      }
-      return;
-    }
-    if (msg.method === 'Page.javascriptDialogOpening') {
-      if (state.dialogs.has(wsUrl)) {
-        console.error(`[dialogs] second javascriptDialogOpening on ${wsUrl}; preserving original`);
-        return;
-      }
-      const p = msg.params;
-      state.dialogs.set(wsUrl, {
-        kind: p.type, // CDP uses 'alert' | 'confirm' | 'prompt' | 'beforeunload'
-        openedAt: Date.now(),
-        payload: {
-          message: p.message,
-          defaultPrompt: p.defaultPrompt,
-          url: p.url,
-          hasBrowserHandler: p.hasBrowserHandler,
-        },
-        staged: {},
-      });
-      return;
-    }
-    if (msg.method === 'DeviceAccess.deviceRequestPrompted') {
-      if (state.dialogs.has(wsUrl)) {
-        console.error(`[dialogs] second prompt on ${wsUrl}; preserving original`);
-        return;
-      }
-      state.dialogs.set(wsUrl, {
-        kind: 'device-chooser',
-        openedAt: Date.now(),
-        payload: {
-          requestId: msg.params.id,
-          deviceKind: msg.params.deviceKind || 'usb', // CDP older versions may omit; default to usb
-          devices: msg.params.devices || [],
-        },
-        staged: {},
-      });
-      return;
-    }
-    if (msg.method === 'Page.javascriptDialogClosed') {
-      state.dialogs.delete(wsUrl);
-      return;
-    }
-    if (msg.method === 'Page.frameNavigated') {
-      if (msg.params.frame && !msg.params.frame.parentId) {
-        state.dialogs.delete(wsUrl);
-      }
-      return;
-    }
-    if (msg.method === 'Fetch.requestPaused') {
-      const p = msg.params;
-      if (p.authChallenge) {
-        if (state.dialogs.has(wsUrl)) {
-          console.error(`[dialogs] auth challenge while dialog open on ${wsUrl}; preserving original`);
-          return;
-        }
-        state.dialogs.set(wsUrl, {
-          kind: 'basic-auth',
-          openedAt: Date.now(),
-          payload: {
-            requestId: p.requestId,
-            origin: p.authChallenge.origin,
-            scheme: p.authChallenge.scheme,
-            realm: p.authChallenge.realm || '',
-          },
-          staged: {},
-        });
-      } else {
-        sendCdpCommand(wsUrl, 'Fetch.continueRequest', { requestId: p.requestId }).catch(() => {});
-      }
-      return;
-    }
   }
 
   // Track which page sessions have already had dialog setup applied.
@@ -185,11 +71,10 @@ function attachDialogs({ state, sendCdpCommand, _resolveWsUrl }) {
     const sid = pageSession.sessionId;
     if (state._dialogPageSessions.has(sid)) return;
     state._dialogPageSessions.add(sid);
-    // Register targetId ↔ sessionId so getOpen(wsUrl) and clear(sessionId)
-    // can cross-reference entries stored under either key.
+    // Register targetId → sessionId so getOpen(wsUrl) can find dialog state
+    // stored under sessionId by extracting targetId from the wsUrl.
     if (pageSession.targetId) {
       state._targetIdToSessionId.set(pageSession.targetId, sid);
-      state._sessionIdToTargetId.set(sid, pageSession.targetId);
     }
     await pageSession.send('Page.enable', {});
     await pageSession.send('DeviceAccess.enable', {});
@@ -359,7 +244,7 @@ function attachDialogs({ state, sendCdpCommand, _resolveWsUrl }) {
     return fn();
   }
 
-  return { getOpen, clear, attachToConnection, attachToPageSession, withDialogAwareness, withDialogAwarenessForSession };
+  return { getOpen, clear, attachToPageSession, withDialogAwareness, withDialogAwarenessForSession };
 }
 
 module.exports = { attachDialogs, PAGE_TARGET_ACTIONS, BROWSER_TARGET_ACTIONS, DialogRefusedError };

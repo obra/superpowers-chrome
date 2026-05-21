@@ -12,8 +12,9 @@ describe('chrome-ws-lib exposes dialogs API', () => {
     const session = createSession();
     assert.equal(typeof session.dialogs.getOpen, 'function');
     assert.equal(typeof session.dialogs.clear, 'function');
-    assert.equal(typeof session.dialogs.attachToConnection, 'function');
+    assert.equal(typeof session.dialogs.attachToPageSession, 'function');
     assert.equal(typeof session.dialogs.withDialogAwareness, 'function');
+    assert.equal(typeof session.dialogs.withDialogAwarenessForSession, 'function');
   });
 });
 
@@ -39,12 +40,9 @@ describe('dialogs wiring — withDialogAwareness integration', () => {
     const session = createSession();
     const wsUrl = 'ws://fake/with-dialog';
 
-    // Stage a dialog by wiring through attachToConnection, which registers the
-    // event handler. Here we call getOpen to confirm no dialog is staged, then
-    // simulate the dialog-open state by directly using withDialogAwareness with
-    // a URL that has a dialog in session state. Since we can't inject CDP events
-    // in a unit test, we use the dialogs object's internal state indirectly:
-    // call getOpen to confirm it returns null first (no dialog staged).
+    // Confirm no dialog is staged for the test URL. Since we can't inject CDP
+    // events in a unit test without a live Chrome, we verify the gate is real by
+    // inspecting what getOpen returns for unseen URLs.
     assert.equal(session.dialogs.getOpen(wsUrl), null, 'no dialog before staging');
 
     // We can't stage a dialog without a live CDP connection, so we verify the
@@ -76,24 +74,29 @@ describe('dialogs wiring — withDialogAwareness integration', () => {
 // call) and assert the refusal shape is returned.
 // ---------------------------------------------------------------------------
 
-// Helper: create a fake sendCdpCommand that resolves immediately.
-function makeFakeSendCdpCommand() {
-  return async (_wsUrl, _method, _params = {}) => ({});
-}
-
-// Helper: build a dialogs instance with a fake sendCdpCommand and stage an
-// alert dialog on the given wsUrl.  Returns the dialogs object.
+// Helper: build a dialogs instance with a staged alert dialog on the given wsUrl.
+// Uses attachToPageSession with a fake page session so dialog state is stored under
+// a sessionId; registers the targetId→sessionId mapping so getOpen(wsUrl) works.
 async function stageAlertDialog(wsUrl) {
   const state = { dialogs: new Map() };
-  const sendCdpCommand = makeFakeSendCdpCommand();
-  const dialogs = attachDialogs({ state, sendCdpCommand });
+  const dialogs = attachDialogs({ state });
 
-  // attachToConnection registers conn.eventHandler; fake conn just captures it.
-  const conn = {};
-  await dialogs.attachToConnection(conn, wsUrl);
+  // Extract targetId from wsUrl so attachToPageSession can register the mapping.
+  const m = /\/devtools\/page\/([^/]+)$/.exec(wsUrl);
+  const targetId = m ? m[1] : 'unit-test-target';
+  const sessionId = `session-${targetId}`;
+
+  let registeredHandler = null;
+  const ps = {
+    sessionId,
+    targetId,
+    send: async () => ({}),
+    onEvent: (fn) => { registeredHandler = fn; return () => {}; },
+  };
+  await dialogs.attachToPageSession(ps);
 
   // Inject the dialog-opening event directly into the registered handler.
-  conn.eventHandler({
+  registeredHandler({
     method: 'Page.javascriptDialogOpening',
     params: {
       type: 'alert',
