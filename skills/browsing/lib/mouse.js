@@ -49,8 +49,9 @@ function attachMouse({ resolveWsUrl, sendCdpCommand, dialogs }) {
 
   /**
    * Click element using CDP mouse events (works with React and all frameworks).
-   * Falls back to `el.click()` if CDP coordinate resolution throws (hidden
-   * elements with no bounding rect).
+   * Falls back to `el.click()` if CDP coordinate resolution throws but the
+   * element exists. Throws if the element cannot be found at all — never
+   * report a fake-success click on a missing selector.
    */
   async function click(tabIndexOrWsUrl, selector) {
     const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
@@ -77,10 +78,24 @@ function attachMouse({ resolveWsUrl, sendCdpCommand, dialogs }) {
 
       return { clicked: true, x, y };
     } catch (_e) {
-      // Fallback for edge cases (e.g., hidden elements with zero bounding rect).
-      const js = `${getElementSelector(selector)}?.click()`;
-      const fallbackResult = await sendCdpCommand(wsUrl, 'Runtime.evaluate', { expression: js });
+      // Fallback for cases where CDP coordinate resolution failed but the
+      // element actually exists (e.g., hidden / zero bounding rect). Resolve
+      // the element first, click via JS only if it's really there, and
+      // propagate a not-found error otherwise — never silently succeed.
+      const js = `(() => {
+        const _el = ${getElementSelector(selector)};
+        if (!_el) return { found: false };
+        _el.click();
+        return { found: true };
+      })()`;
+      const fallbackResult = await sendCdpCommand(wsUrl, 'Runtime.evaluate', {
+        expression: js,
+        returnByValue: true,
+      });
       throwIfExceptionDetails(fallbackResult);
+      if (!fallbackResult.result.value || !fallbackResult.result.value.found) {
+        throw new Error(`Element not found: ${selector}`);
+      }
       return { clicked: true, fallback: true };
     }
   }

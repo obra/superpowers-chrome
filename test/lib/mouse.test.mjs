@@ -28,16 +28,33 @@ describe('mouse', () => {
     assert.equal(mouseCalls[0].params.y, 200);
   });
 
-  it('click falls back to el.click() when element resolution fails', async () => {
-    const { click, sendCdpCommand } = setup({
+  it('click throws when selector matches no element (no silent success)', async () => {
+    // Both resolveCenter and the fallback see the element as missing.
+    // The function must propagate that as an error rather than returning
+    // { clicked: true, fallback: true } — that lies to the caller.
+    const { click } = setup({
       'Runtime.evaluate': () => ({ result: { value: { found: false } } })
     });
-    const result = await click(0, '#missing');
+    await assert.rejects(
+      () => click(0, '#nonexistent'),
+      /not found/i,
+    );
+  });
+
+  it('click falls back to el.click() when CDP coord resolution throws but element exists', async () => {
+    let callCount = 0;
+    const { click, sendCdpCommand } = setup({
+      'Runtime.evaluate': () => {
+        callCount++;
+        // 1st call: resolveCenter — return found:false so it throws.
+        // 2nd call: fallback — return found:true so click succeeds.
+        return { result: { value: { found: callCount === 1 ? false : true } } };
+      },
+    });
+    const result = await click(0, '#hidden-but-exists');
     assert.equal(result.fallback, true);
-    // Two Runtime.evaluate calls: the resolveCenter that fails + the fallback el.click()
     const evals = sendCdpCommand.calls.filter(c => c.method === 'Runtime.evaluate');
     assert.equal(evals.length, 2);
-    assert.match(evals[1].params.expression, /\?\.click\(\)/);
   });
 
   it('hover sends a single mouseMoved at element center', async () => {
