@@ -98,4 +98,11 @@ async function tryHandleDialogSelector({ selector, op, payload, state, sendCdpCo
   return { handled: true, error: `Unknown dialog selector: ${selector}. Valid: ${validSelectors.join(', ')}.` };
 }
 
-module.exports = { tryHandleDialogSelector };
+async function tryHandleDialogSelectorForSession({ selector, op, payload, state, pageSession }) {
+  // Adapt pageSession.send to the (sendCdpCommand, wsUrl) shape used by tryHandleDialogSelector.
+  // wsUrl is unused — the adapter ignores it and dispatches through pageSession.send.
+  const sendCdpCommand = async (_wsUrl, method, params) => pageSession.send(method, params);
+  return tryHandleDialogSelector({ selector, op, payload, state, sendCdpCommand, wsUrl: null });
+}
+
+module.exports = { tryHandleDialogSelector, tryHandleDialogSelectorForSession };

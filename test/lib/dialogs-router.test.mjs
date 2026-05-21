@@ -4,7 +4,7 @@ import { createRequire } from 'node:module';
 import { makeCdpSpy } from './_helpers.mjs';
 
 const require = createRequire(import.meta.url);
-const { tryHandleDialogSelector } = require('../../skills/browsing/lib/dialogs-router.js');
+const { tryHandleDialogSelector, tryHandleDialogSelectorForSession } = require('../../skills/browsing/lib/dialogs-router.js');
 
 function jsAlert() {
   return { kind: 'alert', payload: { message: 'x', url: '', defaultPrompt: '', hasBrowserHandler: false }, staged: {} };
@@ -152,5 +152,134 @@ describe('router errors', () => {
     const r = await tryHandleDialogSelector({ selector: 'dialog::accept', op: 'attr', state: jsAlert(), sendCdpCommand: cdp, wsUrl: 'ws://x' });
     assert.equal(r.handled, true);
     assert.match(r.error, /unsupported operation/i);
+  });
+});
+
+describe('tryHandleDialogSelectorForSession', () => {
+  function makePageSessionSpy() {
+    const calls = [];
+    return {
+      sessionId: 'S1',
+      send: async (method, params) => {
+        calls.push({ method, params });
+        return {};
+      },
+      calls,
+    };
+  }
+
+  it('returns unhandled for non-dialog selectors', async () => {
+    const ps = makePageSessionSpy();
+    const r = await tryHandleDialogSelectorForSession({
+      selector: 'button.foo', op: 'click', payload: null, state: null, pageSession: ps,
+    });
+    assert.equal(r.handled, false);
+    assert.equal(ps.calls.length, 0);
+  });
+
+  it('returns error when dialog selector used with no dialog open', async () => {
+    const ps = makePageSessionSpy();
+    const r = await tryHandleDialogSelectorForSession({
+      selector: 'dialog::accept', op: 'click', payload: null, state: null, pageSession: ps,
+    });
+    assert.equal(r.handled, true);
+    assert.match(r.error, /No dialog open/);
+    assert.equal(ps.calls.length, 0);
+  });
+
+  it('dialog::accept on a confirm calls Page.handleJavaScriptDialog({accept:true}) via pageSession.send', async () => {
+    const ps = makePageSessionSpy();
+    const state = { kind: 'confirm', staged: {}, payload: {} };
+    const r = await tryHandleDialogSelectorForSession({
+      selector: 'dialog::accept', op: 'click', payload: null, state, pageSession: ps,
+    });
+    assert.equal(r.handled, true);
+    assert.deepEqual(ps.calls[0], { method: 'Page.handleJavaScriptDialog', params: { accept: true } });
+  });
+
+  it('dialog::accept on a prompt with staged promptText forwards the text', async () => {
+    const ps = makePageSessionSpy();
+    const state = { kind: 'prompt', staged: { promptText: 'hello' }, payload: {} };
+    const r = await tryHandleDialogSelectorForSession({
+      selector: 'dialog::accept', op: 'click', payload: null, state, pageSession: ps,
+    });
+    assert.equal(r.handled, true);
+    assert.deepEqual(ps.calls[0], { method: 'Page.handleJavaScriptDialog', params: { accept: true, promptText: 'hello' } });
+  });
+
+  it('dialog::dismiss on a JS dialog calls Page.handleJavaScriptDialog({accept:false})', async () => {
+    const ps = makePageSessionSpy();
+    const state = { kind: 'confirm', staged: {}, payload: {} };
+    const r = await tryHandleDialogSelectorForSession({
+      selector: 'dialog::dismiss', op: 'click', payload: null, state, pageSession: ps,
+    });
+    assert.equal(r.handled, true);
+    assert.deepEqual(ps.calls[0], { method: 'Page.handleJavaScriptDialog', params: { accept: false } });
+  });
+
+  it('dialog::prompt with type op stages promptText', async () => {
+    const ps = makePageSessionSpy();
+    const state = { kind: 'prompt', staged: {}, payload: {} };
+    const r = await tryHandleDialogSelectorForSession({
+      selector: 'dialog::prompt', op: 'type', payload: 'typed text', state, pageSession: ps,
+    });
+    assert.equal(r.handled, true);
+    assert.equal(state.staged.promptText, 'typed text');
+    assert.equal(ps.calls.length, 0); // staging only, no CDP send yet
+  });
+
+  it('dialog::device[id="X"] on device-chooser sends DeviceAccess.selectPrompt', async () => {
+    const ps = makePageSessionSpy();
+    const state = { kind: 'device-chooser', staged: {}, payload: { requestId: 'REQ-1' } };
+    const r = await tryHandleDialogSelectorForSession({
+      selector: 'dialog::device[id="dev-42"]', op: 'click', payload: null, state, pageSession: ps,
+    });
+    assert.equal(r.handled, true);
+    assert.equal(r.clearDialog, true);
+    assert.deepEqual(ps.calls[0], { method: 'DeviceAccess.selectPrompt', params: { id: 'REQ-1', deviceId: 'dev-42' } });
+  });
+
+  it('dialog::accept on basic-auth sends Fetch.continueWithAuth with staged credentials', async () => {
+    const ps = makePageSessionSpy();
+    const state = { kind: 'basic-auth', staged: { username: 'u', password: 'p' }, payload: { requestId: 'REQ-2' } };
+    const r = await tryHandleDialogSelectorForSession({
+      selector: 'dialog::accept', op: 'click', payload: null, state, pageSession: ps,
+    });
+    assert.equal(r.handled, true);
+    assert.equal(r.clearDialog, true);
+    assert.equal(ps.calls[0].method, 'Fetch.continueWithAuth');
+    assert.equal(ps.calls[0].params.authChallengeResponse.username, 'u');
+    assert.equal(ps.calls[0].params.authChallengeResponse.password, 'p');
+  });
+
+  it('dialog::dismiss on basic-auth sends Fetch.continueWithAuth with CancelAuth', async () => {
+    const ps = makePageSessionSpy();
+    const state = { kind: 'basic-auth', staged: {}, payload: { requestId: 'REQ-3' } };
+    const r = await tryHandleDialogSelectorForSession({
+      selector: 'dialog::dismiss', op: 'click', payload: null, state, pageSession: ps,
+    });
+    assert.equal(r.handled, true);
+    assert.equal(ps.calls[0].params.authChallengeResponse.response, 'CancelAuth');
+  });
+
+  it('dialog::accept on permission resolves the shim via Runtime.evaluate', async () => {
+    const ps = makePageSessionSpy();
+    const state = { kind: 'permission', staged: { _shimId: 'SHIM-A' }, payload: {} };
+    const r = await tryHandleDialogSelectorForSession({
+      selector: 'dialog::accept', op: 'click', payload: null, state, pageSession: ps,
+    });
+    assert.equal(r.handled, true);
+    assert.equal(ps.calls[0].method, 'Runtime.evaluate');
+    assert.match(ps.calls[0].params.expression, /window\.__dialogShim_resolve\('SHIM-A',\s*'grant'\)/);
+  });
+
+  it('unknown dialog selector returns handled+error', async () => {
+    const ps = makePageSessionSpy();
+    const state = { kind: 'confirm', staged: {}, payload: {} };
+    const r = await tryHandleDialogSelectorForSession({
+      selector: 'dialog::weird', op: 'click', payload: null, state, pageSession: ps,
+    });
+    assert.equal(r.handled, true);
+    assert.match(r.error, /Unknown dialog selector/);
   });
 });
