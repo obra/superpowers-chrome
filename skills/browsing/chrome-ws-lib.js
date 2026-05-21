@@ -214,7 +214,7 @@ function createSession({ host, port, _testFakes } = {}) {
     attachChromeProcess({ state, chromeHttp, getTabs, newTab });
 
   const { enableConsoleLogging, getConsoleMessages, clearConsoleMessages } =
-    attachConsoleLogging({ state, resolveWsUrl });
+    attachConsoleLogging({ state, getPageSession });
 
   const {
     initializeSession,
