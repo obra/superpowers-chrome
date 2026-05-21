@@ -19,7 +19,7 @@ const { attachPageSession } = require('./page-session');
  * per-page WS URLs for callers that still want one (the bridge itself never uses
  * them — page sessions ride the browser-WS).
  */
-async function attachBrowserBridge({ browser, host, port, rewriteWsUrl }) {
+async function attachBrowserBridge({ browser, host, port, rewriteWsUrl, autoAttach = false, onPageSession = null }) {
   // The cdp-router sits between browser-session and bridge consumers.
   // Page-session-tagged messages dispatch to the right session; root-session
   // events (Target.*, etc.) fire root listeners. Command responses without
@@ -54,6 +54,14 @@ async function attachBrowserBridge({ browser, host, port, rewriteWsUrl }) {
 
   // Subscribe — replays existing targets as targetCreated events.
   await browser.send('Target.setDiscoverTargets', { discover: true });
+
+  if (autoAttach) {
+    await browser.send('Target.setAutoAttach', {
+      autoAttach: true,
+      waitForDebuggerOnStart: true,
+      flatten: true,
+    });
+  }
 
   function list() { return Array.from(targetMap.values()); }
   function onCreated(fn) { onCreatedFns.add(fn); return () => onCreatedFns.delete(fn); }

@@ -67,3 +67,29 @@ describe('browser-bridge: BrowserContext', () => {
     assert.ok(browser.sendCalls.some(c => c.method === 'Target.disposeBrowserContext'));
   });
 });
+
+describe('browser-bridge: autoAttach', () => {
+  it('calls Target.setAutoAttach with waitForDebuggerOnStart:true and flatten:true when autoAttach option is true', async () => {
+    const { browser } = setup();
+    browser.setResolver('Target.setAutoAttach', () => ({}));
+    await attachBrowserBridge({
+      browser, host: 'localhost', port: 9222, rewriteWsUrl: (u) => u,
+      autoAttach: true,
+    });
+    const aa = browser.sendCalls.find(c => c.method === 'Target.setAutoAttach');
+    assert.ok(aa, 'Target.setAutoAttach was called');
+    assert.deepEqual(aa.params, {
+      autoAttach: true,
+      waitForDebuggerOnStart: true,
+      flatten: true,
+    });
+  });
+
+  it('does NOT call Target.setAutoAttach when autoAttach option is false (default)', async () => {
+    const { browser } = setup();
+    await attachBrowserBridge({
+      browser, host: 'localhost', port: 9222, rewriteWsUrl: (u) => u,
+    });
+    assert.ok(!browser.sendCalls.some(c => c.method === 'Target.setAutoAttach'));
+  });
+});
