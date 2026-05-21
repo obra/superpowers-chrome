@@ -122,3 +122,63 @@ describe('browser-session: failure recovery', () => {
     assert.equal(attempts, 2);
   });
 });
+
+describe('browser-session: events and sendRaw', () => {
+  it('fans tagged messages (with sessionId) to event listeners', async () => {
+    const f = makeFixtures();
+    const bs = createBrowserSession({
+      host: 'localhost', port: 9222,
+      rewriteWsUrl: f.rewriteWsUrl, chromeHttp: f.chromeHttp,
+      WebSocketClient: f.WebSocketClient,
+    });
+    const seen = [];
+    bs.onEvent((msg) => seen.push(msg));
+    bs.send('Foo').catch(() => {});
+    await new Promise((r) => setImmediate(r));
+    f.ws.injectMessage(JSON.stringify({ sessionId: 'S1', id: 1, result: { ok: true } }));
+    f.ws.injectMessage(JSON.stringify({ method: 'Target.targetCreated', params: { targetInfo: {} } }));
+    assert.equal(seen.length, 2);
+    assert.equal(seen[0].sessionId, 'S1');
+    assert.equal(seen[1].method, 'Target.targetCreated');
+  });
+
+  it('does NOT fan untagged command responses to event listeners', async () => {
+    const f = makeFixtures();
+    const bs = createBrowserSession({
+      host: 'localhost', port: 9222,
+      rewriteWsUrl: f.rewriteWsUrl, chromeHttp: f.chromeHttp,
+      WebSocketClient: f.WebSocketClient,
+    });
+    const seen = [];
+    bs.onEvent((msg) => seen.push(msg));
+    const p = bs.send('Foo');
+    await new Promise((r) => setImmediate(r));
+    const sent = JSON.parse(f.ws.sent[0]);
+    f.ws.injectMessage(JSON.stringify({ id: sent.id, result: { ok: true } }));
+    await p;
+    assert.equal(seen.length, 0);
+  });
+
+  it('sendRaw throws when not connected', async () => {
+    const f = makeFixtures();
+    const bs = createBrowserSession({
+      host: 'localhost', port: 9222,
+      rewriteWsUrl: f.rewriteWsUrl, chromeHttp: f.chromeHttp,
+      WebSocketClient: f.WebSocketClient,
+    });
+    assert.throws(() => bs.sendRaw('{}'), /not connected/);
+  });
+
+  it('close() rejects in-flight pending requests', async () => {
+    const f = makeFixtures();
+    const bs = createBrowserSession({
+      host: 'localhost', port: 9222,
+      rewriteWsUrl: f.rewriteWsUrl, chromeHttp: f.chromeHttp,
+      WebSocketClient: f.WebSocketClient,
+    });
+    const p = bs.send('Foo');
+    await new Promise((r) => setImmediate(r));
+    await bs.close();
+    await assert.rejects(p, /closed/);
+  });
+});
