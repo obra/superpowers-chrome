@@ -161,6 +161,30 @@ function createSession({ host, port, _testFakes } = {}) {
     return bridgePromise;
   };
 
+  // getPageSession(tabIndexOrWsUrl) — shared resolver for pageSession-migrated libs.
+  // Accepts either a numeric tab index or a ws:// URL, lazy-boots the bridge, and
+  // returns a cached pageSession for the target. Reused by E2-E13 migration libs.
+  async function getPageSession(tabIndexOrWsUrl) {
+    await state.ensureBridge();
+    let tab;
+    if (typeof tabIndexOrWsUrl === 'number') {
+      const tabs = await getTabs();
+      tab = tabs[tabIndexOrWsUrl];
+      if (!tab) throw new Error(`No tab at index ${tabIndexOrWsUrl}`);
+    } else if (typeof tabIndexOrWsUrl === 'string') {
+      // Extract targetId from a ws URL like ws://host:port/devtools/page/<targetId>
+      const m = /\/devtools\/page\/([^/]+)$/.exec(tabIndexOrWsUrl);
+      if (!m) throw new Error(`Cannot extract targetId from: ${tabIndexOrWsUrl}`);
+      tab = { id: m[1] };
+    } else if (tabIndexOrWsUrl && tabIndexOrWsUrl.id) {
+      // Already a tab handle
+      tab = tabIndexOrWsUrl;
+    } else {
+      throw new Error('Unrecognized tabIndexOrWsUrl');
+    }
+    return state.pageSessionResolver(tab);
+  }
+
   const { click, hover, drag, mouseMove, scroll, doubleClick, rightClick } =
     attachMouse({ resolveWsUrl, sendCdpCommand, dialogs });
 
@@ -213,7 +237,7 @@ function createSession({ host, port, _testFakes } = {}) {
     attachNavigation({ state, resolveWsUrl, sendCdpCommand, capturePageArtifacts, evaluate });
 
   const { setViewport, clearViewport, getViewport } = attachViewport({ resolveWsUrl, sendCdpCommand });
-  const { clearCookies } = attachCookies({ resolveWsUrl, sendCdpCommand });
+  const { clearCookies } = attachCookies({ getPageSession });
 
   // ---------------------------------------------------------------------------
   // Session-boundary dialog gate

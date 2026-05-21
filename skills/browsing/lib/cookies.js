@@ -1,15 +1,14 @@
 /**
  * Cookie management — currently just a single "clear everything" action.
  *
- * Builds against any session-scoped pair of `resolveWsUrl` (tab index → ws URL)
- * and `sendCdpCommand` (CDP request) — see `attachCookies({ resolveWsUrl,
- * sendCdpCommand })`. The returned methods carry the session binding through
- * closure capture of those helpers.
+ * Takes `getPageSession(tabIndexOrWsUrl)`: a resolver provided by chrome-ws-lib
+ * that handles both tab-index and ws-url inputs, lazy-bootstraps the CDP bridge,
+ * and returns a pageSession driving CDP via flatten mode.
  */
-function attachCookies({ resolveWsUrl, sendCdpCommand }) {
+function attachCookies({ getPageSession }) {
   async function clearCookies(tabIndexOrWsUrl) {
-    const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
-    await sendCdpCommand(wsUrl, 'Network.clearBrowserCookies', {});
+    const ps = await getPageSession(tabIndexOrWsUrl);
+    await ps.send('Network.clearBrowserCookies', {});
   }
 
   return { clearCookies };
