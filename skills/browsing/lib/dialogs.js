@@ -281,7 +281,39 @@ function attachDialogs({ state, sendCdpCommand, _resolveWsUrl }) {
     return fn();
   }
 
-  return { getOpen, clear, attachToConnection, attachToPageSession, withDialogAwareness };
+  async function withDialogAwarenessForSession(actionName, pageSession, args, fn) {
+    const sid = pageSession && pageSession.sessionId;
+    const open = sid ? state.dialogs.get(sid) : null;
+    const isDialogSelector = typeof args?.selector === 'string' && args.selector.startsWith('dialog::');
+
+    if (open && PAGE_TARGET_ACTIONS.has(actionName) && !isDialogSelector) {
+      return {
+        refused: true,
+        error: 'Page is behind a dialog. Handle dialog::accept or dialog::dismiss first.',
+        dialog: open,
+        artifacts: renderSyntheticArtifacts(open),
+      };
+    }
+
+    if (!open && PAGE_TARGET_ACTIONS.has(actionName)) {
+      const before = sid ? state.dialogs.has(sid) : false;
+      const actionResult = await fn();
+      const afterOpen = sid ? state.dialogs.get(sid) : null;
+      if (!before && afterOpen) {
+        return {
+          midFlight: true,
+          actionResult,
+          dialog: afterOpen,
+          artifacts: renderSyntheticArtifacts(afterOpen),
+        };
+      }
+      return actionResult;
+    }
+
+    return fn();
+  }
+
+  return { getOpen, clear, attachToConnection, attachToPageSession, withDialogAwareness, withDialogAwarenessForSession };
 }
 
 module.exports = { attachDialogs, PAGE_TARGET_ACTIONS, BROWSER_TARGET_ACTIONS, DialogRefusedError };

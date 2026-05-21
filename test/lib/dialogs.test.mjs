@@ -440,3 +440,55 @@ describe('dialogs.attachToPageSession', () => {
     assert.equal(state.dialogs.get('S1').kind, 'confirm');
   });
 });
+
+describe('dialogs.withDialogAwarenessForSession', () => {
+  it('refuses page-target actions when a dialog is open for the sessionId', async () => {
+    const state = { dialogs: new Map() };
+    state.dialogs.set('S1', { kind: 'alert', openedAt: 0, payload: { message: 'hi' }, staged: {} });
+    const dialogs = attachDialogs({ state });
+    const ps = { sessionId: 'S1' };
+    const result = await dialogs.withDialogAwarenessForSession('click', ps, { selector: 'button' }, async () => 'ran');
+    assert.equal(result.refused, true);
+    assert.equal(result.dialog.kind, 'alert');
+    assert.ok(result.artifacts);
+  });
+
+  it('passes through when no dialog open', async () => {
+    const state = { dialogs: new Map() };
+    const dialogs = attachDialogs({ state });
+    const ps = { sessionId: 'S1' };
+    const result = await dialogs.withDialogAwarenessForSession('click', ps, { selector: 'button' }, async () => 'ran');
+    assert.equal(result, 'ran');
+  });
+
+  it('allows dialog:: selectors through even when a dialog is open', async () => {
+    const state = { dialogs: new Map([['S1', { kind: 'confirm', staged: {} }]]) };
+    const dialogs = attachDialogs({ state });
+    const ps = { sessionId: 'S1' };
+    const result = await dialogs.withDialogAwarenessForSession('click', ps, { selector: 'dialog::accept' }, async () => 'handled');
+    assert.equal(result, 'handled');
+  });
+
+  it('detects mid-flight dialogs (action ran, dialog appeared)', async () => {
+    const state = { dialogs: new Map() };
+    const dialogs = attachDialogs({ state });
+    const ps = { sessionId: 'S1' };
+    const result = await dialogs.withDialogAwarenessForSession('click', ps, { selector: 'button' }, async () => {
+      // Action triggers a dialog mid-flight
+      state.dialogs.set('S1', { kind: 'confirm', openedAt: Date.now(), payload: { message: 'sure?' }, staged: {} });
+      return 'action-result';
+    });
+    assert.equal(result.midFlight, true);
+    assert.equal(result.actionResult, 'action-result');
+    assert.equal(result.dialog.kind, 'confirm');
+    assert.ok(result.artifacts);
+  });
+
+  it('does not refuse browser-target actions (e.g. list_tabs) when a dialog is open', async () => {
+    const state = { dialogs: new Map([['S1', { kind: 'alert', staged: {} }]]) };
+    const dialogs = attachDialogs({ state });
+    const ps = { sessionId: 'S1' };
+    const result = await dialogs.withDialogAwarenessForSession('list_tabs', ps, {}, async () => 'tabs');
+    assert.equal(result, 'tabs');
+  });
+});
