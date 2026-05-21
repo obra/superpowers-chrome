@@ -322,3 +322,121 @@ describe('permission shim integration', () => {
     assert.equal(s.payload.jsApi, 'getUserMedia');
   });
 });
+
+describe('dialogs.attachToPageSession', () => {
+  it('enables Page/DeviceAccess/Fetch/Runtime, adds script + binding via pageSession.send', async () => {
+    const sent = [];
+    const ps = {
+      sessionId: 'S1',
+      send: async (method, params) => { sent.push({ method, params }); return {}; },
+      onEvent: () => () => {},
+    };
+    const state = { dialogs: new Map() };
+    const dialogs = attachDialogs({ state });
+    await dialogs.attachToPageSession(ps);
+    const methods = sent.map(s => s.method);
+    assert.ok(methods.includes('Page.enable'));
+    assert.ok(methods.includes('DeviceAccess.enable'));
+    assert.ok(methods.includes('Fetch.enable'));
+    assert.ok(methods.includes('Runtime.enable'));
+    assert.ok(methods.includes('Page.addScriptToEvaluateOnNewDocument'));
+    assert.ok(methods.includes('Runtime.addBinding'));
+  });
+
+  it('registers a pageSession.onEvent handler that captures Page.javascriptDialogOpening keyed by sessionId', async () => {
+    let registeredHandler = null;
+    const ps = {
+      sessionId: 'S1',
+      send: async () => ({}),
+      onEvent: (fn) => { registeredHandler = fn; return () => { registeredHandler = null; }; },
+    };
+    const state = { dialogs: new Map() };
+    const dialogs = attachDialogs({ state });
+    await dialogs.attachToPageSession(ps);
+    assert.equal(typeof registeredHandler, 'function');
+    // Fire a dialog event
+    registeredHandler({ method: 'Page.javascriptDialogOpening', params: { type: 'alert', message: 'hi' } });
+    assert.ok(state.dialogs.has('S1'));
+    assert.equal(state.dialogs.get('S1').kind, 'alert');
+    assert.equal(state.dialogs.get('S1').payload.message, 'hi');
+  });
+
+  it('captures permission-request via Runtime.bindingCalled __dialogShim', async () => {
+    let handler = null;
+    const ps = {
+      sessionId: 'S1',
+      send: async () => ({}),
+      onEvent: (fn) => { handler = fn; return () => {}; },
+    };
+    const state = { dialogs: new Map() };
+    const dialogs = attachDialogs({ state });
+    await dialogs.attachToPageSession(ps);
+    handler({
+      method: 'Runtime.bindingCalled',
+      params: {
+        name: '__dialogShim',
+        payload: JSON.stringify({ type: 'permission-request', name: 'notifications', origin: 'https://example.com', jsApi: 'Notification.requestPermission', id: 'shim-1' }),
+      },
+    });
+    assert.ok(state.dialogs.has('S1'));
+    assert.equal(state.dialogs.get('S1').kind, 'permission');
+    assert.equal(state.dialogs.get('S1').payload.name, 'notifications');
+  });
+
+  it('clears dialog state on Page.javascriptDialogClosed', async () => {
+    let handler = null;
+    const ps = {
+      sessionId: 'S1',
+      send: async () => ({}),
+      onEvent: (fn) => { handler = fn; return () => {}; },
+    };
+    const state = { dialogs: new Map([['S1', { kind: 'alert', staged: {} }]]) };
+    const dialogs = attachDialogs({ state });
+    await dialogs.attachToPageSession(ps);
+    handler({ method: 'Page.javascriptDialogClosed', params: {} });
+    assert.equal(state.dialogs.has('S1'), false);
+  });
+
+  it('clears dialog state on main-frame Page.frameNavigated', async () => {
+    let handler = null;
+    const ps = {
+      sessionId: 'S1',
+      send: async () => ({}),
+      onEvent: (fn) => { handler = fn; return () => {}; },
+    };
+    const state = { dialogs: new Map([['S1', { kind: 'alert', staged: {} }]]) };
+    const dialogs = attachDialogs({ state });
+    await dialogs.attachToPageSession(ps);
+    handler({ method: 'Page.frameNavigated', params: { frame: { parentId: undefined } } });
+    assert.equal(state.dialogs.has('S1'), false);
+  });
+
+  it('does NOT clear dialog state on subframe Page.frameNavigated', async () => {
+    let handler = null;
+    const ps = {
+      sessionId: 'S1',
+      send: async () => ({}),
+      onEvent: (fn) => { handler = fn; return () => {}; },
+    };
+    const state = { dialogs: new Map([['S1', { kind: 'alert', staged: {} }]]) };
+    const dialogs = attachDialogs({ state });
+    await dialogs.attachToPageSession(ps);
+    handler({ method: 'Page.frameNavigated', params: { frame: { parentId: 'F-parent' } } });
+    assert.equal(state.dialogs.has('S1'), true);
+  });
+
+  it('suppresses a second javascriptDialogOpening while one is already open', async () => {
+    let handler = null;
+    const ps = {
+      sessionId: 'S1',
+      send: async () => ({}),
+      onEvent: (fn) => { handler = fn; return () => {}; },
+    };
+    const state = { dialogs: new Map([['S1', { kind: 'confirm', payload: { message: 'first' }, staged: {} }]]) };
+    const dialogs = attachDialogs({ state });
+    await dialogs.attachToPageSession(ps);
+    handler({ method: 'Page.javascriptDialogOpening', params: { type: 'alert', message: 'second' } });
+    // First one preserved
+    assert.equal(state.dialogs.get('S1').kind, 'confirm');
+  });
+});

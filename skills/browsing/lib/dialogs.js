@@ -146,6 +146,110 @@ function attachDialogs({ state, sendCdpCommand, _resolveWsUrl }) {
     }
   }
 
+  async function attachToPageSession(pageSession) {
+    const sid = pageSession.sessionId;
+    await pageSession.send('Page.enable', {});
+    await pageSession.send('DeviceAccess.enable', {});
+    await pageSession.send('Fetch.enable', {
+      handleAuthRequests: true,
+      patterns: [{ urlPattern: '*' }],
+    });
+    await pageSession.send('Runtime.enable', {});
+    await pageSession.send('Page.addScriptToEvaluateOnNewDocument', { source: SHIM_SOURCE });
+    await pageSession.send('Runtime.addBinding', { name: '__dialogShim' });
+    pageSession.onEvent((msg) => handleCdpEventForSession(sid, msg));
+  }
+
+  // Equivalent of handleCdpEvent but keyed by sessionId. This is a faithful port —
+  // every state.dialogs.get(wsUrl)/set(wsUrl, ...) becomes get(sid)/set(sid, ...).
+  function handleCdpEventForSession(sid, msg) {
+    if (msg.method === 'Runtime.bindingCalled') {
+      if (msg.params.name !== '__dialogShim') return;
+      let data;
+      try { data = JSON.parse(msg.params.payload); } catch { return; }
+      if (data.type === 'permission-request') {
+        if (state.dialogs.has(sid)) {
+          console.error(`[dialogs] permission request while dialog open on ${sid}; preserving original`);
+          return;
+        }
+        state.dialogs.set(sid, {
+          kind: 'permission',
+          openedAt: Date.now(),
+          payload: { name: data.name, origin: data.origin, jsApi: data.jsApi },
+          staged: { _shimId: data.id },
+        });
+      }
+      return;
+    }
+    if (msg.method === 'Page.javascriptDialogOpening') {
+      if (state.dialogs.has(sid)) {
+        console.error(`[dialogs] second javascriptDialogOpening on ${sid}; preserving original`);
+        return;
+      }
+      const p = msg.params;
+      state.dialogs.set(sid, {
+        kind: p.type,
+        openedAt: Date.now(),
+        payload: {
+          message: p.message, defaultPrompt: p.defaultPrompt, url: p.url, hasBrowserHandler: p.hasBrowserHandler,
+        },
+        staged: {},
+      });
+      return;
+    }
+    if (msg.method === 'DeviceAccess.deviceRequestPrompted') {
+      if (state.dialogs.has(sid)) {
+        console.error(`[dialogs] second prompt on ${sid}; preserving original`);
+        return;
+      }
+      state.dialogs.set(sid, {
+        kind: 'device-chooser',
+        openedAt: Date.now(),
+        payload: {
+          requestId: msg.params.id,
+          deviceKind: msg.params.deviceKind || 'usb',
+          devices: msg.params.devices || [],
+        },
+        staged: {},
+      });
+      return;
+    }
+    if (msg.method === 'Page.javascriptDialogClosed') {
+      state.dialogs.delete(sid);
+      return;
+    }
+    if (msg.method === 'Page.frameNavigated') {
+      if (msg.params.frame && !msg.params.frame.parentId) {
+        state.dialogs.delete(sid);
+      }
+      return;
+    }
+    if (msg.method === 'Fetch.requestPaused') {
+      const p = msg.params;
+      if (p.authChallenge) {
+        if (state.dialogs.has(sid)) {
+          console.error(`[dialogs] auth challenge while dialog open on ${sid}; preserving original`);
+          return;
+        }
+        state.dialogs.set(sid, {
+          kind: 'basic-auth',
+          openedAt: Date.now(),
+          payload: {
+            requestId: p.requestId,
+            origin: p.authChallenge.origin,
+            scheme: p.authChallenge.scheme,
+            realm: p.authChallenge.realm || '',
+          },
+          staged: {},
+        });
+      }
+      // For non-auth Fetch.requestPaused, the wsUrl path calls Fetch.continueRequest via sendCdpCommand.
+      // In the pageSession path, the dialog router will handle continuation via pageSession.send when migrated in D3.
+      // For now, do nothing here — non-auth requests will block until the dialog router catches up.
+      return;
+    }
+  }
+
   async function withDialogAwareness(actionName, wsUrl, args, fn) {
     const open = getOpen(wsUrl);
     const isDialogSelector = typeof args?.selector === 'string' && args.selector.startsWith('dialog::');
@@ -177,7 +281,7 @@ function attachDialogs({ state, sendCdpCommand, _resolveWsUrl }) {
     return fn();
   }
 
-  return { getOpen, clear, attachToConnection, withDialogAwareness };
+  return { getOpen, clear, attachToConnection, attachToPageSession, withDialogAwareness };
 }
 
 module.exports = { attachDialogs, PAGE_TARGET_ACTIONS, BROWSER_TARGET_ACTIONS, DialogRefusedError };
