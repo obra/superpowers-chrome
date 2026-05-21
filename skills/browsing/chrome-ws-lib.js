@@ -202,7 +202,7 @@ function createSession({ host, port, _testFakes } = {}) {
   const { extractText, getHtml, getAttribute } = attachExtraction({ getPageSession });
 
 
-  const { screenshot } = attachScreenshot({ resolveWsUrl, sendCdpCommand });
+  const { screenshot } = attachScreenshot({ getPageSession });
 
   const { startChrome, killChrome, showBrowser, hideBrowser, getBrowserMode, getChromePid, getActivePort, getProfileName, setProfileName } =
     attachChromeProcess({ state, chromeHttp, getTabs, newTab });
