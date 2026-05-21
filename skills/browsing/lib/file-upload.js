@@ -7,32 +7,31 @@
  * or `DOM.performSearch` + `DOM.getSearchResults` for XPath, then attaches
  * the absolute file paths to the input.
  *
- * `attachFileUpload({ resolveWsUrl, sendCdpCommand })` returns the bound
- * action.
+ * `attachFileUpload({ getPageSession })` returns the bound action.
  */
-function attachFileUpload({ resolveWsUrl, sendCdpCommand }) {
+function attachFileUpload({ getPageSession }) {
   async function fileUpload(tabIndexOrWsUrl, selector, filePaths) {
-    const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
+    const pageSession = await getPageSession(tabIndexOrWsUrl);
 
-    const docResult = await sendCdpCommand(wsUrl, 'DOM.getDocument', {});
+    const docResult = await pageSession.send('DOM.getDocument', {});
     const rootNodeId = docResult.root.nodeId;
 
     let nodeId;
     if (selector.startsWith('/') || selector.startsWith('//')) {
-      const searchResult = await sendCdpCommand(wsUrl, 'DOM.performSearch', {
+      const searchResult = await pageSession.send('DOM.performSearch', {
         query: selector
       });
       if (searchResult.resultCount === 0) {
         throw new Error(`File input not found: ${selector}`);
       }
-      const nodesResult = await sendCdpCommand(wsUrl, 'DOM.getSearchResults', {
+      const nodesResult = await pageSession.send('DOM.getSearchResults', {
         searchId: searchResult.searchId,
         fromIndex: 0,
         toIndex: 1
       });
       nodeId = nodesResult.nodeIds[0];
     } else {
-      const queryResult = await sendCdpCommand(wsUrl, 'DOM.querySelector', {
+      const queryResult = await pageSession.send('DOM.querySelector', {
         nodeId: rootNodeId,
         selector: selector
       });
@@ -43,7 +42,7 @@ function attachFileUpload({ resolveWsUrl, sendCdpCommand }) {
       throw new Error(`File input not found: ${selector}`);
     }
 
-    await sendCdpCommand(wsUrl, 'DOM.setFileInputFiles', {
+    await pageSession.send('DOM.setFileInputFiles', {
       files: filePaths,
       nodeId: nodeId
     });
