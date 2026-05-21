@@ -42,6 +42,10 @@ function createState({ host, port } = {}) {
     chromeHeadless: true,
     chromeUserDataDir: null,
     chromeProfileName: 'superpowers-chrome',
+
+    // Bridge primitives: the session's BrowserBridge instance and active BrowserSession.
+    browserBridge: null,
+    browserSession: null,
   };
 }
 
