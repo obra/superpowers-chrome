@@ -32,7 +32,7 @@ const BROWSER_TARGET_ACTIONS = new Set([
   'browser_mode', 'set_profile', 'get_profile', 'help', 'clear_cookies',
 ]);
 
-function attachDialogs({ state, _resolveWsUrl }) {
+function attachDialogs({ state }) {
   if (!state.dialogs) state.dialogs = new Map();
   // Maps CDP targetId → sessionId for bridge-path sessions. Allows getOpen(wsUrl)
   // to find dialog state stored under sessionId by extracting targetId from the wsUrl.

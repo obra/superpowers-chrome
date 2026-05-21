@@ -119,7 +119,7 @@ function createSession({ host, port, _testFakes } = {}) {
 
   const { chromeHttp, resolveWsUrl, getTabs, newTab, closeTab } = attachTabs({ state });
 
-  // Bridge primitives — coexist with the per-tab pool during the migration.
+  // Bridge primitives — single root WebSocket with flatten-mode page sessions.
   // The browser-session is constructed immediately (lazy connect on first use).
   // attachBrowserBridge issues Target.setDiscoverTargets which connects the root
   // WS, so we defer it behind state.ensureBridge() (lazy).
@@ -187,8 +187,7 @@ function createSession({ host, port, _testFakes } = {}) {
     const ps = await state.pageSessionResolver(tab);
     // Ensure dialog event listeners are wired up on the bridge session the first
     // time a page session is obtained. This enables Page.javascriptDialogOpening
-    // events to arrive via the bridge path (stored under sessionId) in addition
-    // to the pooled-connection path (stored under wsUrl).
+    // events to arrive via the bridge path (stored under sessionId).
     await dialogs.attachToPageSession(ps);
     return ps;
   }
