@@ -2,6 +2,34 @@
 
 All notable changes to the superpowers-chrome MCP project.
 
+## [2.2.0] - 2026-05-21 - Flatten-mode CDP bridge + popup support
+
+### Added
+- **Flatten-mode CDP bridge.** The per-page WebSocket pool is replaced with a single browser-WS using CDP flatten mode + sessionId routing. Four new modules under `skills/browsing/lib/`: `browser-session.js` (the one root WS, lazy connect, sendRaw escape hatch), `cdp-router.js` (sessionId-aware dispatcher), `page-session.js` (per-page flatten-mode session with independent id-counter), `browser-bridge.js` (targets tracking, BrowserContext, autoAttach).
+- **Popup support via `Target.setAutoAttach`** with `waitForDebuggerOnStart:true`. Every new target (popups, OAuth windows, child frames) is paused at attach; the dialog shim (`Page.addScriptToEvaluateOnNewDocument` + `Runtime.addBinding`) is installed; then `Runtime.runIfWaitingForDebugger` resumes. Popups with synchronously-fired confirm/alert/permission dialogs are now reliable. Integration test at `test/popup-dialog-integration.test.mjs`.
+- **`BrowserContext` API** via `bridge.createBrowserContext({proxyServer?})` — incognito-style isolation with atomic dispose.
+- **6 curated CDP reference cards** under `docs/cdp/` (flatten-mode, per-session-id-counters, target-lifecycle, autoattach-popup-timing, navigation-listener-race, headless-variants) for maintainers.
+- **`state.ensureBridge()`** — lazy bridge attach in chrome-ws-lib; safe to call repeatedly, retries on failure.
+
+### Changed
+- **All 12 action libs migrated** to the `getPageSession` resolver shape: mouse, keyboard-input, evaluation, screenshot, navigation, extraction, file-upload, select-option, viewport, cookies, capture, console-logging. Internal change only — user-facing API (`session.click(tab, selector)` etc.) is unchanged.
+- **Dialog subsystem rewritten** on top of the bridge: state keyed by `sessionId`, event handlers attached via `pageSession.onEvent`. The pool-keyed `dialogs.attachToConnection` path is retired. Dialog selector grammar (`dialog::accept` etc.) and `DialogRefusedError` semantics are unchanged.
+- **Navigation lib simplified.** The second-WebSocket listener pattern (used for streaming console + waiting for `Page.loadEventFired`) is gone — `pageSession.onEvent` + `pageSession.waitForEvent` cover both needs on the one bridge socket.
+- **Console-logging lib simplified.** Same idea — no more separate WebSocket; uses `pageSession.onEvent`.
+- **`killChrome` calls `closeBridge` first** with a 500ms timeout fallback, so SIGTERM isn't blocked by a hung close.
+
+### Removed
+- **`skills/browsing/lib/cdp-connection.js`** — the per-page connection pool. ~190 lines deleted.
+- **`state.connectionPool`** field — no longer needed.
+- The silent single-use-WS fallback in the old `sendCdpCommand` — now a hard fail at the bridge layer; callers decide.
+
+### Architecture notes for maintainers
+- See `docs/cdp/INDEX.md` for the 6 reference cards documenting the CDP semantics we depend on.
+- See `docs/superpowers/plans/2026-05-21-flatten-mode-bridge.md` for the full implementation plan including the E9 timing finding and the Phase F resolution.
+- Inspired by external PR #34 (mhat) — architecture was sound; we rewrote on current main to integrate with the dialog subsystem cleanly and added the autoAttach/popup wiring that wasn't in the original.
+
+---
+
 ## [2.1.0] - 2026-05-14 - Dialog handling
 
 ### Added
