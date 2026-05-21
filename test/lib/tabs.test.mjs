@@ -97,3 +97,64 @@ describe('createPageSessionResolver', () => {
     await assert.rejects(() => resolve(null), /tab\.id/);
   });
 });
+
+describe('closeTab releases page-session before /json/close', () => {
+  it('calls resolver.release(tabId) before chromeHttp(/json/close/...)', async () => {
+    const events = [];
+
+    // A bridge that produces a detachable pageSession for T1
+    const fakeBridge = {
+      attachPageSession: async (targetId) => ({
+        targetId,
+        sessionId: 'S1',
+        detach: async () => { events.push('detach'); },
+      }),
+    };
+
+    const resolver = createPageSessionResolver({ bridge: fakeBridge });
+    // Prime the cache so release has something to detach
+    await resolver({ id: 'T1' });
+
+    // The tab list returned by /json — webSocketDebuggerUrl must match what
+    // closeTab resolves for the ws:// URL we'll pass directly.
+    const WS_URL = 'ws://127.0.0.1:9222/devtools/page/T1';
+    const fakeChromeHttp = async (path) => {
+      if (path === '/json') return [{ id: 'T1', type: 'page', webSocketDebuggerUrl: WS_URL }];
+      events.push('http:' + path);
+      return {};
+    };
+
+    const state = {
+      hostOverride: { getHost: () => '127.0.0.1', getPort: () => 9222 },
+      rewriteWsUrl: (url) => url,
+      activePort: 9222,
+      pageSessionResolver: resolver,
+    };
+
+    const { closeTab } = attachTabs({ state, _chromeHttp: fakeChromeHttp });
+    await closeTab(WS_URL);
+
+    assert.deepEqual(events, ['detach', 'http:/json/close/T1']);
+  });
+
+  it('closeTab works without a pageSessionResolver (resolver not yet initialised)', async () => {
+    const events = [];
+    const WS_URL = 'ws://127.0.0.1:9222/devtools/page/T2';
+    const fakeChromeHttp = async (path) => {
+      if (path === '/json') return [{ id: 'T2', type: 'page', webSocketDebuggerUrl: WS_URL }];
+      events.push('http:' + path);
+      return {};
+    };
+
+    const state = {
+      hostOverride: { getHost: () => '127.0.0.1', getPort: () => 9222 },
+      rewriteWsUrl: (url) => url,
+      activePort: 9222,
+      // pageSessionResolver intentionally absent
+    };
+
+    const { closeTab } = attachTabs({ state, _chromeHttp: fakeChromeHttp });
+    await assert.doesNotReject(() => closeTab(WS_URL));
+    assert.deepEqual(events, ['http:/json/close/T2']);
+  });
+});

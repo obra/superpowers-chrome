@@ -20,12 +20,14 @@ const { chromeHttpAt } = require('./chrome-launcher-helpers');
  * carries the host-override (for `getHost` and `rewriteWsUrl`) and the
  * mutable `activePort`, which is everything the transport helpers need.
  */
-function attachTabs({ state }) {
+function attachTabs({ state, _chromeHttp }) {
   const CHROME_DEBUG_HOST = state.hostOverride.getHost();
   const { rewriteWsUrl } = state;
 
   // HTTP request to Chrome's DevTools endpoint on the session's active port.
+  // _chromeHttp may be injected for testing; state.chromeHttp is also accepted.
   async function chromeHttp(httpPath, method = 'GET') {
+    if (_chromeHttp) return _chromeHttp(httpPath, method);
     return chromeHttpAt(CHROME_DEBUG_HOST, state.activePort, httpPath, method);
   }
 
@@ -86,6 +88,8 @@ function attachTabs({ state }) {
     if (!Array.isArray(tabs)) return;
     const tab = tabs.find(t => t.webSocketDebuggerUrl === wsUrl);
     if (tab) {
+      // Release the cached page-session before Chrome tears down the target.
+      await state.pageSessionResolver?.release(tab.id);
       await chromeHttp(`/json/close/${tab.id}`, 'GET');
     }
   }

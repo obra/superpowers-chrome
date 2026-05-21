@@ -28,7 +28,7 @@ const { attachNavigation } = require('./lib/navigation');
 const { attachKeyboardInput } = require('./lib/keyboard-input');
 const { attachExtraction } = require('./lib/extraction');
 const { attachScreenshot } = require('./lib/screenshot');
-const { attachTabs } = require('./lib/tabs');
+const { attachTabs, createPageSessionResolver } = require('./lib/tabs');
 const { createBrowserSession } = require('./lib/browser-session');
 const { attachBrowserBridge } = require('./lib/browser-bridge');
 const { attachFileUpload } = require('./lib/file-upload');
@@ -153,6 +153,7 @@ function createSession({ host, port, _testFakes } = {}) {
         rewriteWsUrl: state.rewriteWsUrl,
       });
       state.browserBridge = bridge;
+      state.pageSessionResolver = createPageSessionResolver({ bridge });
       return bridge;
     })();
     // Clear bridgePromise on failure so the next call retries
