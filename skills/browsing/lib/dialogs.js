@@ -34,13 +34,33 @@ const BROWSER_TARGET_ACTIONS = new Set([
 
 function attachDialogs({ state, sendCdpCommand, _resolveWsUrl }) {
   if (!state.dialogs) state.dialogs = new Map();
+  // Maps CDP targetId → sessionId for bridge-path sessions. Allows getOpen(wsUrl)
+  // to find dialog state stored under sessionId by extracting targetId from the wsUrl.
+  if (!state._targetIdToSessionId) state._targetIdToSessionId = new Map();
 
-  function getOpen(wsUrl) {
-    return state.dialogs.get(wsUrl) || null;
+  function getOpen(wsUrlOrSid) {
+    // Direct lookup (works for both wsUrl keys and sessionId keys).
+    const direct = state.dialogs.get(wsUrlOrSid);
+    if (direct) return direct;
+    // Fall back: extract targetId from a ws:// URL and look up the bridge sessionId.
+    const m = /\/devtools\/page\/([^/]+)$/.exec(wsUrlOrSid);
+    if (m) {
+      const sid = state._targetIdToSessionId.get(m[1]);
+      if (sid) return state.dialogs.get(sid) || null;
+    }
+    return null;
   }
 
   function clear(wsUrl) {
     state.dialogs.delete(wsUrl);
+    // Also clear the bridge-path sessionId entry (stored under sessionId, not wsUrl).
+    // When a dialog was opened via the bridge, it is stored under sessionId; the
+    // pool-path clear(wsUrl) call would miss it without this fallback.
+    const m = /\/devtools\/page\/([^/]+)$/.exec(wsUrl);
+    if (m) {
+      const sid = state._targetIdToSessionId.get(m[1]);
+      if (sid) state.dialogs.delete(sid);
+    }
   }
 
   async function attachToConnection(conn, wsUrl) {
@@ -146,8 +166,18 @@ function attachDialogs({ state, sendCdpCommand, _resolveWsUrl }) {
     }
   }
 
+  // Track which page sessions have already had dialog setup applied.
+  if (!state._dialogPageSessions) state._dialogPageSessions = new Set();
+
   async function attachToPageSession(pageSession) {
     const sid = pageSession.sessionId;
+    if (state._dialogPageSessions.has(sid)) return;
+    state._dialogPageSessions.add(sid);
+    // Register targetId → sessionId so getOpen(wsUrl) can find dialog state
+    // stored under sessionId by extracting targetId from the wsUrl.
+    if (pageSession.targetId) {
+      state._targetIdToSessionId.set(pageSession.targetId, sid);
+    }
     await pageSession.send('Page.enable', {});
     await pageSession.send('DeviceAccess.enable', {});
     await pageSession.send('Fetch.enable', {

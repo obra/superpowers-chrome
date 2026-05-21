@@ -1,137 +1,51 @@
-const { WebSocketClient } = require('./websocket-client');
 const { getElementSelector } = require('./element-selector');
 
 // Hard cap on the navigate() wait — covers slow servers and pages that
 // never fire Page.loadEventFired.
 const NAVIGATE_TIMEOUT_MS = 30000;
 
-// After Page.loadEventFired, keep the secondary console-capture WebSocket
-// open this long so console messages emitted in the load handler get
-// captured before we close the socket.
+// After Page.loadEventFired, keep the console capture subscription open
+// this long so console messages emitted in the load handler get captured.
 const CONSOLE_LINGER_MS = 1000;
-
-// Fixed CDP request ids for the listener-WS setup commands. Scoped to one
-// connection's lifetime — there's nothing else on this WS sending requests.
-const CMD_PAGE_ENABLE = 100;
-const CMD_RUNTIME_ENABLE = 101;
 
 /**
  * Navigation: page-level navigation, SPA pushState navigation, and the
  * "wait for" predicates.
  *
- * The full-page `navigate` flow is the complex one — it opens a second
- * (persistent) WebSocket alongside the pooled CDP connection so it can
- * stream console messages while waiting for `Page.loadEventFired`. This
- * second connection runs for the duration of the navigation and then
- * closes; the messages it captures land in `state.consoleMessages` so
- * `getConsoleMessages` (still in chrome-ws-lib) can read them after.
+ * The full-page `navigate` flow opens a pageSession (via the bridge) and
+ * subscribes to events on the shared browser-WS instead of opening a second
+ * WebSocket connection. consoleMessages are keyed by sessionId (not wsUrl) so
+ * that getConsoleMessages (console-logging.js) can read them after the fact.
  *
- * SPA navigation, href navigation, and waitForElement/waitForText are
- * thin wrappers around `Runtime.evaluate` and don't need any of that
- * machinery.
+ * Listener-ordering invariant: ps.waitForEvent('Page.loadEventFired') registers
+ * the listener synchronously before `await ps.send('Page.navigate')` fires —
+ * preserving the guarantee that even a fast-loading (data: URL) page won't
+ * lose the event.
  *
- * `attachNavigation({ state, resolveWsUrl, sendCdpCommand,
- * capturePageArtifacts })` returns the bound methods.
+ * `attachNavigation({ state, getPageSession, capturePageArtifacts, evaluate })`
+ * returns the bound methods.
  */
-function attachNavigation({ state, resolveWsUrl, sendCdpCommand, capturePageArtifacts, evaluate }) {
+function attachNavigation({ state, getPageSession, capturePageArtifacts, evaluate }) {
   async function navigate(tabIndexOrWsUrl, url, autoCapture = false) {
-    const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
+    const ps = await getPageSession(tabIndexOrWsUrl);
+    const sid = ps.sessionId;
 
-    // Clear any stale console messages so the auto-capture log is scoped
-    // to just this navigation. (Inline rather than calling
-    // clearConsoleMessages to avoid re-resolving wsUrl.)
+    // Reset console buffer for this session (keyed by sessionId, not wsUrl).
+    // E10 (console-logging) reads from the same key.
+    state.consoleMessages.set(sid, []);
+    const consoleMessages = state.consoleMessages.get(sid);
+
+    await ps.enableDomain('Page');
     if (autoCapture) {
-      state.consoleMessages.set(wsUrl, []);
+      await ps.enableDomain('Runtime');
     }
 
-    // Open a second WebSocket to listen for Page.loadEventFired before
-    // issuing Page.navigate — this order matters for fast-loading pages
-    // (e.g. data: URLs) that complete synchronously: if we navigated first
-    // the load event would fire before the listener was ready, causing every
-    // call to wait for the full 30-second hard cap.
-    let navigateResult;
-    await new Promise((resolve, reject) => {
-      const ws = new WebSocketClient(wsUrl);
-      let pageLoaded = false;
-      let settled = false; // guard against double-resolve from race between events
-      let pageEnableConfirmed = false;
-      let runtimeEnableConfirmed = !autoCapture; // skip if not needed
-      // Chrome broadcasts Page.loadEventFired to all clients that have Page.enable
-      // active when ANY other client first enables Page on an already-loaded tab.
-      // This can cause the navigate listener to resolve prematurely (before the
-      // actual navigation completes). Guard: only accept Page.loadEventFired after
-      // we see Page.frameNavigated — which only fires for real navigation events,
-      // not for the synthetic broadcast.
-      let frameNavigated = false;
-
-      function settle(action) {
-        if (settled) return;
-        settled = true;
-        try { ws.close(); } catch (_e) { /* ignore */ }
-        action();
-      }
-
-      function startNavigateIfReady() {
-        if (!pageEnableConfirmed || !runtimeEnableConfirmed) return;
-        sendCdpCommand(wsUrl, 'Page.navigate', { url })
-          .then((navResult) => { navigateResult = navResult; })
-          .catch((err) => settle(() => reject(err)));
-      }
-
-      // Listener WS errors / unexpected close → reject the navigate. Without
-      // this, a dropped WS mid-flight hangs until the hard-cap timeout.
-      ws.on('error', (err) => {
-        settle(() => reject(new Error(`navigate listener WebSocket error: ${err.message || err}`)));
-      });
-      ws.on('close', () => {
-        if (!pageLoaded) {
-          settle(() => reject(new Error('navigate listener WebSocket closed before Page.loadEventFired')));
-        }
-      });
-
-      ws.on('message', (msg) => {
-        const data = JSON.parse(msg);
-
-        // Wait for our setup commands to be confirmed before navigating.
-        if (data.id === CMD_PAGE_ENABLE) {
-          if (data.error) {
-            settle(() => reject(new Error(`Page.enable failed: ${data.error.message || JSON.stringify(data.error)}`)));
-            return;
-          }
-          pageEnableConfirmed = true;
-          startNavigateIfReady();
-          return;
-        }
-        if (data.id === CMD_RUNTIME_ENABLE) {
-          if (data.error) {
-            settle(() => reject(new Error(`Runtime.enable failed: ${data.error.message || JSON.stringify(data.error)}`)));
-            return;
-          }
-          runtimeEnableConfirmed = true;
-          startNavigateIfReady();
-          return;
-        }
-
-        if (data.method === 'Page.frameNavigated') {
-          const frame = data.params && data.params.frame;
-          if (frame && !frame.parentId) {
-            frameNavigated = true;
-          }
-        }
-
-        if (data.method === 'Page.loadEventFired' && !pageLoaded && frameNavigated) {
-          pageLoaded = true;
-          if (autoCapture) {
-            // Linger so any console messages emitted during the load
-            // event handler get captured before we close the socket.
-            setTimeout(() => settle(() => resolve()), CONSOLE_LINGER_MS);
-          } else {
-            settle(() => resolve());
-          }
-        }
-
-        if (autoCapture && data.method === 'Runtime.consoleAPICalled') {
-          const entry = data.params;
+    let unsubConsole = () => {};
+    if (autoCapture) {
+      // Subscribe to console messages — capture into the buffer.
+      unsubConsole = ps.onEvent((msg) => {
+        if (msg.method === 'Runtime.consoleAPICalled') {
+          const entry = msg.params;
           const timestamp = new Date().toISOString();
           const level = entry.type || 'log';
           const args = entry.args || [];
@@ -144,31 +58,66 @@ function attachNavigation({ state, resolveWsUrl, sendCdpCommand, capturePageArti
             return String(arg.value || arg.description || arg.type);
           }).join(' ');
 
-          const messages = state.consoleMessages.get(wsUrl) || [];
-          messages.push({ timestamp, level, text });
-          state.consoleMessages.set(wsUrl, messages);
+          consoleMessages.push({ timestamp, level, text });
         }
       });
+    }
 
-      ws.connect().then(() => {
-        // Send Page.enable (and Runtime.enable if auto-capturing) on THIS
-        // connection — Chrome scopes events per-connection, so the pooled
-        // sendCdpCommand won't receive Page events here.  Page.navigate is
-        // sent from the message handler above once both enables are confirmed.
-        ws.send(JSON.stringify({ id: CMD_PAGE_ENABLE, method: 'Page.enable' }));
-        if (autoCapture) {
-          ws.send(JSON.stringify({ id: CMD_RUNTIME_ENABLE, method: 'Runtime.enable' }));
+    // Chrome broadcasts Page.loadEventFired to all clients that have Page.enable
+    // active when ANY other client first enables Page on an already-loaded tab.
+    // Guard: only accept Page.loadEventFired after Page.frameNavigated — which
+    // only fires for real navigation events, not for the synthetic broadcast.
+    let frameNavigated = false;
+    const unsubFrameNav = ps.onEvent((msg) => {
+      if (msg.method === 'Page.frameNavigated') {
+        const frame = msg.params && msg.params.frame;
+        if (frame && !frame.parentId) {
+          frameNavigated = true;
         }
-      }).catch((err) => settle(() => reject(err)));
-
-      // Hard cap on the wait — slow servers, hung pages. Reject (don't
-      // silently resolve) so the caller knows the page never loaded.
-      setTimeout(() => {
-        if (!pageLoaded) {
-          settle(() => reject(new Error(`navigate timeout: ${url} did not fire Page.loadEventFired within ${NAVIGATE_TIMEOUT_MS}ms`)));
-        }
-      }, NAVIGATE_TIMEOUT_MS);
+      }
     });
+
+    // Listener-ordering invariant: register the Page.loadEventFired listener
+    // BEFORE sending Page.navigate so a fast-loading page (data: URL) cannot
+    // fire the event before we're ready.
+    const loadPromise = new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        unsubLoad();
+        reject(new Error(`navigate timeout: ${url} did not fire Page.loadEventFired within ${NAVIGATE_TIMEOUT_MS}ms`));
+      }, NAVIGATE_TIMEOUT_MS);
+      const unsubLoad = ps.onEvent((msg) => {
+        if (msg.method === 'Page.loadEventFired' && frameNavigated) {
+          clearTimeout(timeout);
+          unsubLoad();
+          resolve(msg);
+        }
+      });
+    });
+
+    let navigateResult;
+    try {
+      navigateResult = await ps.send('Page.navigate', { url });
+    } catch (err) {
+      unsubConsole();
+      unsubFrameNav();
+      throw err;
+    }
+
+    try {
+      await loadPromise;
+    } catch (err) {
+      unsubConsole();
+      unsubFrameNav();
+      throw err;
+    }
+
+    // Linger to catch trailing console output emitted during load event handlers.
+    if (autoCapture) {
+      await new Promise(r => setTimeout(r, CONSOLE_LINGER_MS));
+    }
+
+    unsubConsole();
+    unsubFrameNav();
 
     if (autoCapture) {
       try {

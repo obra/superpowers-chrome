@@ -124,6 +124,10 @@ function createPageSessionResolver({ bridge }) {
     cache.delete(tabId);
     try { await ps.detach(); } catch { /* best-effort */ }
   };
+  // Synchronous cache peek — returns the cached pageSession for a targetId, or
+  // null if not yet resolved. Used by wrapWithDialogGate to check dialog state
+  // without triggering I/O.
+  resolve.peek = (tabId) => cache.get(tabId) || null;
   return resolve;
 }
 
