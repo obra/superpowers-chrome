@@ -103,3 +103,38 @@ export function makeBrowserSessionFake() {
     sentRaw, sendCalls,
   };
 }
+
+/**
+ * makePageSessionFake — pretends to be a page-session for action-lib tests.
+ *
+ * Records send() calls in `calls`. Returns configured handler result, or {} if
+ * no handler is registered for the method. enableDomain is idempotent and is
+ * also recorded as a `<Domain>.enable` send() call.
+ *
+ * Usage:
+ *   const ps = makePageSessionFake({
+ *     'Page.captureScreenshot': () => ({ data: 'base64data' }),
+ *   });
+ *   await doAction(ps);
+ *   assert.equal(ps.calls.some(c => c.method === 'Page.captureScreenshot'), true);
+ */
+export function makePageSessionFake(handlers = {}, { sessionId = 'S-fake', targetId = 'T-fake' } = {}) {
+  const calls = [];
+  const enabled = new Set();
+  const listeners = new Set();
+  async function send(method, params = {}, opts) {
+    calls.push({ method, params, opts });
+    const handler = handlers[method];
+    if (typeof handler === 'function') return handler(params);
+    if (handler !== undefined) return handler;
+    return {};
+  }
+  async function enableDomain(name) {
+    if (enabled.has(name)) return;
+    enabled.add(name);
+    await send(name + '.enable', {});
+  }
+  function onEvent(fn) { listeners.add(fn); return () => listeners.delete(fn); }
+  function injectEvent(msg) { for (const fn of listeners) fn(msg); }
+  return { sessionId, targetId, send, enableDomain, onEvent, injectEvent, calls };
+}
