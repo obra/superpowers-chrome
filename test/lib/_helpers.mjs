@@ -30,3 +30,40 @@ export function makeCdpSpy(handlers = {}) {
 export function makeResolveWsUrl(wsUrl = 'ws://test/devtools/page/abc') {
   return async () => wsUrl;
 }
+
+// makeFakeWs() returns a deterministic WebSocket fake for bridge tests.
+// Useful for testing transport primitives in isolation. Features:
+//
+//   const ws = makeFakeWs();
+//   await ws.connect();
+//   ws.on('message', (msg) => { ... });
+//   ws.send(payload);
+//   ws.injectMessage(raw);  // Simulate server message
+//   ws.close();
+//   assert.deepEqual(ws.sent, [...]);  // Inspect all sent messages
+//
+// Single-listener semantics: calling on(event, cb) replaces any previous
+// listener for that event (matching the real WebSocketClient interface).
+//
+export function makeFakeWs() {
+  const callbacks = { message: null, close: null, error: null };
+  let connected = false;
+  const sent = [];
+  return {
+    on(event, fn) { callbacks[event] = fn; },
+    send(payload) { sent.push(payload); },
+    async connect() { connected = true; },
+    close() {
+      connected = false;
+      if (callbacks.close) callbacks.close();
+    },
+    isConnected() { return connected; },
+    injectMessage(raw) {
+      if (callbacks.message) callbacks.message(raw);
+    },
+    injectError(err) {
+      if (callbacks.error) callbacks.error(err);
+    },
+    sent,
+  };
+}
