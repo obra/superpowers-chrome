@@ -54,9 +54,17 @@ async function attachBrowserBridge({ browser, host, port, rewriteWsUrl, autoAtta
 
   // Handle auto-attached targets (popups, child frames, etc.) when autoAttach is on.
   // Chrome emits this with an already-allocated sessionId — no Target.attachToTarget needed.
+  //
+  // Only act on targets that are paused (waitingForDebugger: true). Existing tabs
+  // that Chrome retrospectively reports via attachedToTarget (waitingForDebugger: false)
+  // are not paused and will be set up through the normal getPageSession/attachPageSession
+  // path. Installing a page session here for those targets would register the same
+  // sessionId twice in the cdp-router, causing duplicate-id protocol errors.
   router.getRootListeners().add(async (msg) => {
     if (msg.method !== 'Target.attachedToTarget') return;
     const { sessionId, targetInfo, waitingForDebugger } = msg.params;
+
+    if (!waitingForDebugger) return;
 
     const ps = buildPageSessionFromAttached({ browser, router, sessionId, targetId: targetInfo.targetId });
 
@@ -67,10 +75,8 @@ async function attachBrowserBridge({ browser, host, port, rewriteWsUrl, autoAtta
 
     // Resume the paused target AFTER the hook so any shims (e.g. dialog) are
     // installed before the page's scripts run.
-    if (waitingForDebugger) {
-      try { await ps.send('Runtime.runIfWaitingForDebugger', {}); }
-      catch (e) { console.error('Runtime.runIfWaitingForDebugger failed:', e); }
-    }
+    try { await ps.send('Runtime.runIfWaitingForDebugger', {}); }
+    catch (e) { console.error('Runtime.runIfWaitingForDebugger failed:', e); }
   });
 
   // Subscribe — replays existing targets as targetCreated events.

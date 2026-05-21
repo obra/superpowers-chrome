@@ -34,6 +34,37 @@ function makeFakeWebSocketClient() {
   };
 }
 
+// Extended WS fake that also auto-responds to sessionId-scoped commands.
+// Needed so that page-session sends (e.g. Page.enable during attachToPageSession)
+// resolve without hanging.
+function makeFakeWebSocketClientAllRespond() {
+  return function WebSocketClient() {
+    const listeners = { message: null, close: null, error: null };
+    let connected = false;
+    const sent = [];
+    return {
+      on(event, fn) { listeners[event] = fn; },
+      send(json) {
+        sent.push(json);
+        const m = JSON.parse(json);
+        // Auto-respond to any command (root or session-scoped)
+        if (m.id !== undefined) {
+          const reply = { id: m.id, result: {} };
+          if (m.sessionId) reply.sessionId = m.sessionId;
+          queueMicrotask(() => { if (listeners.message) listeners.message(JSON.stringify(reply)); });
+        }
+      },
+      // Expose an inject method so tests can simulate server-push events
+      inject(raw) { if (listeners.message) listeners.message(raw); },
+      close() { connected = false; if (listeners.close) listeners.close(); },
+      isConnected() { return connected; },
+      async connect() { connected = true; },
+      sent,
+      get _listeners() { return listeners; },
+    };
+  };
+}
+
 describe('chrome-ws-lib: bridge init', () => {
   it('createSession constructs a browser-session and stores it on state', () => {
     const session = createSession({
@@ -63,5 +94,75 @@ describe('chrome-ws-lib: bridge init', () => {
     // Second call returns the same handle
     const bridge2 = await session.state.ensureBridge();
     assert.equal(bridge1, bridge2);
+  });
+});
+
+describe('chrome-ws-lib: autoAttach wires onPageSession to install dialog shim', () => {
+  it('injects Target.attachedToTarget → dialogs.attachToPageSession sends Page.enable etc.', async () => {
+    // We need the WS fake to respond to both root-session and page-session commands
+    // because attachToPageSession issues Page.enable / Runtime.enable etc. via the page session.
+    const WsConstructor = makeFakeWebSocketClientAllRespond();
+    let wsInstance = null;
+    const CapturingWsClient = function WebSocketClient(...args) {
+      wsInstance = new (WsConstructor)(...args);
+      return wsInstance;
+    };
+
+    const session = createSession({
+      host: '127.0.0.1', port: 9222,
+      _testFakes: {
+        chromeHttp: makeFakeChromeHttp(),
+        WebSocketClient: CapturingWsClient,
+      },
+    });
+
+    // Boot the bridge (sends Target.setDiscoverTargets + Target.setAutoAttach)
+    await session.state.ensureBridge();
+    assert.ok(wsInstance, 'WS instance was created');
+
+    // Drain any pending microtasks from bridge boot
+    await new Promise((r) => setImmediate(r));
+
+    // Snapshot current sent messages so we can observe only the new ones
+    const sentBefore = wsInstance.sent.length;
+
+    // Auto-respond to Runtime.runIfWaitingForDebugger so it resolves cleanly
+    // (the existing auto-respond logic in CapturingWsClient already handles this
+    // because it replies to every command including sessionId-scoped ones).
+
+    // Inject the auto-attach event: Chrome signalling a new popup attached
+    wsInstance.inject(JSON.stringify({
+      method: 'Target.attachedToTarget',
+      params: {
+        sessionId: 'S-popup',
+        targetInfo: { targetId: 'T-popup', type: 'page' },
+        waitingForDebugger: true,
+      },
+    }));
+
+    // Drain microtasks so the async onPageSession handler completes
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+
+    // Extract only the messages sent after we injected the event
+    const newSent = wsInstance.sent.slice(sentBefore).map(JSON.parse);
+    const newMethods = newSent.map((m) => m.method).filter(Boolean);
+
+    // dialogs.attachToPageSession calls these on the page session
+    assert.ok(newMethods.includes('Page.enable'), `expected Page.enable in ${JSON.stringify(newMethods)}`);
+    assert.ok(newMethods.includes('Runtime.enable'), `expected Runtime.enable in ${JSON.stringify(newMethods)}`);
+    assert.ok(newMethods.includes('Page.addScriptToEvaluateOnNewDocument'),
+      `expected Page.addScriptToEvaluateOnNewDocument in ${JSON.stringify(newMethods)}`);
+    assert.ok(newMethods.includes('Runtime.addBinding'),
+      `expected Runtime.addBinding in ${JSON.stringify(newMethods)}`);
+
+    // All those sends should carry the popup's sessionId
+    const shimSends = newSent.filter((m) => m.method && m.sessionId === 'S-popup');
+    assert.ok(shimSends.length > 0, 'dialog shim commands were scoped to S-popup session');
+
+    // Runtime.runIfWaitingForDebugger should also have been sent (resume after shim install)
+    assert.ok(newMethods.includes('Runtime.runIfWaitingForDebugger'),
+      `expected Runtime.runIfWaitingForDebugger in ${JSON.stringify(newMethods)}`);
   });
 });

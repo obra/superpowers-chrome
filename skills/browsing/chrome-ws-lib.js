@@ -151,6 +151,17 @@ function createSession({ host, port, _testFakes } = {}) {
         host: state.hostOverride.getHost(),
         port: state.hostOverride.getPort(),
         rewriteWsUrl: state.rewriteWsUrl,
+        autoAttach: true,
+        onPageSession: async (ps) => {
+          // Install dialog shim before the paused target resumes.
+          // This gives popups, OAuth windows, and child frames dialog
+          // handling from their very first script.
+          try {
+            await dialogs.attachToPageSession(ps);
+          } catch (e) {
+            console.error('onPageSession dialog attach failed:', e);
+          }
+        },
       });
       state.browserBridge = bridge;
       state.pageSessionResolver = createPageSessionResolver({ bridge });
