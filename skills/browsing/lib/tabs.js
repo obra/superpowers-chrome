@@ -93,4 +93,34 @@ function attachTabs({ state }) {
   return { chromeHttp, resolveWsUrl, getTabs, newTab, closeTab };
 }
 
-module.exports = { attachTabs };
+/**
+ * createPageSessionResolver({bridge}) — returns a resolver that caches one
+ * pageSession per tab.id. The cache is keyed by tab.id (which is the CDP
+ * targetId in our model).
+ *
+ * Usage:
+ *   const getPageSession = createPageSessionResolver({ bridge });
+ *   const ps = await getPageSession(tab);     // attaches once
+ *   await getPageSession(tab);                 // returns the cached session
+ *   await getPageSession.release(tab.id);      // detaches + removes cache
+ */
+function createPageSessionResolver({ bridge }) {
+  const cache = new Map();
+  async function resolve(tab) {
+    if (!tab || !tab.id) throw new Error('createPageSessionResolver: tab.id is required');
+    const cached = cache.get(tab.id);
+    if (cached) return cached;
+    const ps = await bridge.attachPageSession(tab.id);
+    cache.set(tab.id, ps);
+    return ps;
+  }
+  resolve.release = async (tabId) => {
+    const ps = cache.get(tabId);
+    if (!ps) return;
+    cache.delete(tabId);
+    try { await ps.detach(); } catch { /* best-effort */ }
+  };
+  return resolve;
+}
+
+module.exports = { attachTabs, createPageSessionResolver };

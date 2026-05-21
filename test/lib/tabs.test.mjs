@@ -3,7 +3,7 @@ import { createRequire } from 'node:module';
 import { describe, it } from 'node:test';
 
 const require = createRequire(import.meta.url);
-const { attachTabs } = require('../../skills/browsing/lib/tabs.js');
+const { attachTabs, createPageSessionResolver } = require('../../skills/browsing/lib/tabs.js');
 
 describe('tabs', () => {
   function fakeHostOverride() {
@@ -43,5 +43,57 @@ describe('tabs', () => {
     const state = { hostOverride: fakeHostOverride(), rewriteWsUrl: (u) => u, activePort: 9222 };
     const { resolveWsUrl } = attachTabs({ state });
     await assert.rejects(() => resolveWsUrl({}), /Invalid tab specifier/);
+  });
+});
+
+describe('createPageSessionResolver', () => {
+  it('caches per tab.id and returns the same pageSession on repeated calls', async () => {
+    let attached = 0;
+    const bridge = {
+      attachPageSession: async (targetId) => {
+        attached++;
+        return { targetId, sessionId: 'S-' + targetId, detach: async () => {} };
+      },
+    };
+    const resolve = createPageSessionResolver({ bridge });
+    const ps1 = await resolve({ id: 'T1' });
+    const ps2 = await resolve({ id: 'T1' });
+    assert.equal(ps1, ps2);
+    assert.equal(attached, 1);
+  });
+
+  it('release(tabId) detaches the cached session and removes the cache entry', async () => {
+    const detachCalls = [];
+    const bridge = {
+      attachPageSession: async (targetId) => ({
+        targetId, sessionId: 'S-' + targetId,
+        detach: async () => { detachCalls.push(targetId); },
+      }),
+    };
+    const resolve = createPageSessionResolver({ bridge });
+    await resolve({ id: 'T1' });
+    await resolve.release('T1');
+    assert.deepEqual(detachCalls, ['T1']);
+    // After release, the next resolve for T1 attaches fresh
+    let attachedAfter = false;
+    bridge.attachPageSession = async (targetId) => {
+      attachedAfter = true;
+      return { targetId, sessionId: 'S2-' + targetId, detach: async () => {} };
+    };
+    await resolve({ id: 'T1' });
+    assert.equal(attachedAfter, true);
+  });
+
+  it('release on a tab that was never resolved is a no-op (no throw)', async () => {
+    const bridge = { attachPageSession: async () => { throw new Error('should not be called'); } };
+    const resolve = createPageSessionResolver({ bridge });
+    await assert.doesNotReject(() => resolve.release('T-nonexistent'));
+  });
+
+  it('throws if tab has no id', async () => {
+    const bridge = { attachPageSession: async () => { throw new Error('should not be called'); } };
+    const resolve = createPageSessionResolver({ bridge });
+    await assert.rejects(() => resolve({}), /tab\.id/);
+    await assert.rejects(() => resolve(null), /tab\.id/);
   });
 });
