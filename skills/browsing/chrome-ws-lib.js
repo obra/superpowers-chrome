@@ -231,8 +231,7 @@ function createSession({ host, port, _testFakes } = {}) {
     evaluateWithCapture,
   } = attachCapture({
     state,
-    resolveWsUrl,
-    sendCdpCommand,
+    getPageSession,
     getHtml,
     screenshot,
     actions: { click, fill, selectOption, evaluate },

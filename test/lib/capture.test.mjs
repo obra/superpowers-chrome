@@ -5,14 +5,17 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { after, describe, it } from 'node:test';
 
-function makeCdpSpy() {
+function makePageSessionFake(sessionId = 'fake-session-id') {
   const calls = [];
-  const spy = async (wsUrl, method, params) => {
-    calls.push({ wsUrl, method, params });
-    return { result: { value: 'fake' } };
+  const ps = {
+    sessionId,
+    send: async (method, params) => {
+      calls.push({ method, params });
+      return { result: { value: 'fake' } };
+    },
   };
-  spy.calls = calls;
-  return spy;
+  ps.calls = calls;
+  return ps;
 }
 
 const require = createRequire(import.meta.url);
@@ -32,9 +35,9 @@ describe('capture', () => {
 
   function setup() {
     const state = { sessionDir: null, captureCounter: 0 };
-    const calls = { resolveWsUrl: 0, sendCdpCommand: 0, getHtml: 0, screenshot: 0 };
-    const sendCdpCommand = async () => { calls.sendCdpCommand++; return { result: { value: 'fake' } }; };
-    const resolveWsUrl = async (_x) => { calls.resolveWsUrl++; return 'ws://test/x'; };
+    const calls = { getPageSession: 0, getHtml: 0, screenshot: 0 };
+    const ps = makePageSessionFake();
+    const getPageSession = async (_x) => { calls.getPageSession++; return ps; };
     const getHtml = async () => { calls.getHtml++; return '<html></html>'; };
     const screenshot = async (_tab, file) => { calls.screenshot++; fs.writeFileSync(file, ''); return file; };
     const actions = {
@@ -44,7 +47,7 @@ describe('capture', () => {
       evaluate: async () => 'eval-result',
     };
     return {
-      ...attachCapture({ state, resolveWsUrl, sendCdpCommand, getHtml, screenshot, actions }),
+      ...attachCapture({ state, getPageSession, getHtml, screenshot, actions }),
       calls,
       state
     };
@@ -97,18 +100,17 @@ describe('*WithCapture middleware', () => {
     const dialogState = { kind: 'alert', payload: { message: 'm', url: '', defaultPrompt: '', hasBrowserHandler: false }, staged: {} };
     const dialogs = {
       getOpen: () => dialogState,
-      withDialogAwareness: async (action, _wsUrl, args, fn) => {
+      withDialogAwarenessForSession: async (action, _ps, args, fn) => {
         if (action === 'click' && !args.selector?.startsWith('dialog::')) {
           return { refused: true, error: 'Page is behind a dialog.', dialog: dialogState, artifacts: { markdown: '# Dialog: alert', html: '', consoleSnapshot: '' } };
         }
         return fn();
       },
     };
-    const cdp = makeCdpSpy();
+    const ps = makePageSessionFake();
     const { clickWithCapture } = attachCapture({
       state: { sessionDir: '/tmp/x-' + Date.now() },
-      resolveWsUrl: async () => 'ws://x',
-      sendCdpCommand: cdp,
+      getPageSession: async () => ps,
       getHtml: async () => '<html></html>',
       screenshot: async () => Buffer.from(''),
       actions: { click: async () => { throw new Error('should not run'); } },
@@ -124,11 +126,10 @@ describe('capturePageArtifacts with open dialog', () => {
   it('returns synthetic markdown when a dialog is open', async () => {
     const dialogState = { kind: 'alert', payload: { message: 'hi', url: 'http://x', defaultPrompt: '', hasBrowserHandler: false }, staged: {} };
     const dialogs = { getOpen: () => dialogState };
-    const cdp = makeCdpSpy();
+    const ps = makePageSessionFake();
     const { capturePageArtifacts } = attachCapture({
       state: { sessionDir: '/tmp/test-' + Date.now() },
-      resolveWsUrl: async () => 'ws://x',
-      sendCdpCommand: cdp,
+      getPageSession: async () => ps,
       getHtml: async () => '<html></html>',
       screenshot: async () => Buffer.from(''),
       actions: {},
@@ -138,6 +139,6 @@ describe('capturePageArtifacts with open dialog', () => {
     assert.match(out.markdown, /# Dialog: alert/);
     assert.equal(out.png, undefined, 'no PNG should be produced for dialogs');
     // No CDP DOM-summary call should have happened.
-    assert.ok(!cdp.calls.some(c => c.method === 'Runtime.evaluate'));
+    assert.ok(!ps.calls.some(c => c.method === 'Runtime.evaluate'));
   });
 });

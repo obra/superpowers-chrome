@@ -41,11 +41,11 @@ function ensureProcessHandlersRegistered() {
  *   - WithCapture wrappers: thin adapters that pair an action with a
  *     post-action capturePageArtifacts.
  *
- * `attachCapture({ state, resolveWsUrl, sendCdpCommand, getHtml,
+ * `attachCapture({ state, getPageSession, getHtml,
  *                 screenshot, actions: { click, fill, selectOption, evaluate } })`
  * returns the bound API.
  */
-function attachCapture({ state, resolveWsUrl, sendCdpCommand, getHtml, screenshot, actions, dialogs }) {
+function attachCapture({ state, getPageSession, getHtml, screenshot, actions, dialogs }) {
   const { renderSyntheticArtifacts } = require('./dialogs-render.js');
   function initializeSession() {
     if (!state.sessionDir) {
@@ -89,8 +89,8 @@ function attachCapture({ state, resolveWsUrl, sendCdpCommand, getHtml, screensho
   // main/nav landmark detection. Used in the auto-capture artifact bundle so
   // the model can decide whether to read the .md or .html file.
   async function generateDomSummary(tabIndexOrWsUrl) {
-    const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
-    const result = await sendCdpCommand(wsUrl, 'Runtime.evaluate', {
+    const ps = await getPageSession(tabIndexOrWsUrl);
+    const result = await ps.send('Runtime.evaluate', {
       expression: domSummaryScript,
       returnByValue: true
     });
@@ -99,7 +99,7 @@ function attachCapture({ state, resolveWsUrl, sendCdpCommand, getHtml, screensho
   }
 
   async function getPageSize(tabIndexOrWsUrl) {
-    const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
+    const ps = await getPageSession(tabIndexOrWsUrl);
 
     const js = `({
       width: window.innerWidth,
@@ -108,7 +108,7 @@ function attachCapture({ state, resolveWsUrl, sendCdpCommand, getHtml, screensho
       documentHeight: document.documentElement.scrollHeight
     })`;
 
-    const result = await sendCdpCommand(wsUrl, 'Runtime.evaluate', {
+    const result = await ps.send('Runtime.evaluate', {
       expression: js,
       returnByValue: true
     });
@@ -120,8 +120,8 @@ function attachCapture({ state, resolveWsUrl, sendCdpCommand, getHtml, screensho
   // images >= 100x100 in a header summary; inlines image references >= 50x50
   // with size info; skips smaller icons.
   async function generateMarkdown(tabIndexOrWsUrl) {
-    const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
-    const result = await sendCdpCommand(wsUrl, 'Runtime.evaluate', {
+    const ps = await getPageSession(tabIndexOrWsUrl);
+    const result = await ps.send('Runtime.evaluate', {
       expression: markdownScript,
       returnByValue: true
     });
@@ -143,12 +143,12 @@ function attachCapture({ state, resolveWsUrl, sendCdpCommand, getHtml, screensho
   // placeholder, all parallelised. Filenames share a numbered prefix so the
   // session dir reads like a flat timeline.
   async function capturePageArtifacts(tabIndexOrWsUrl, actionType = 'navigate') {
-    const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
+    const ps = await getPageSession(tabIndexOrWsUrl);
 
     // Dialog short-circuit: when a native browser dialog is open on this tab,
     // return synthetic artifacts without issuing any CDP calls to the page.
     if (dialogs) {
-      const open = dialogs.getOpen(wsUrl);
+      const open = dialogs.getOpen(ps.sessionId);
       if (open) {
         const artifacts = renderSyntheticArtifacts(open);
         const prefix = createCapturePrefix(actionType);
@@ -216,10 +216,10 @@ function attachCapture({ state, resolveWsUrl, sendCdpCommand, getHtml, screensho
   async function captureActionWithDiff(tabIndexOrWsUrl, actionType, actionFn, settleTime = 3000) {
     const prefix = createCapturePrefix(actionType);
     const dir = initializeSession();
-    const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
+    const ps = await getPageSession(tabIndexOrWsUrl);
 
     async function saveFocus() {
-      const result = await sendCdpCommand(wsUrl, 'Runtime.evaluate', {
+      const result = await ps.send('Runtime.evaluate', {
         expression: `
           (() => {
             const el = document.activeElement;
@@ -267,7 +267,7 @@ function attachCapture({ state, resolveWsUrl, sendCdpCommand, getHtml, screensho
         })()`;
       }
       if (selector) {
-        const restoreResult = await sendCdpCommand(wsUrl, 'Runtime.evaluate', {
+        const restoreResult = await ps.send('Runtime.evaluate', {
           expression: `(() => { const el = ${selector}; if (el) el.focus(); })()`
         });
         throwIfExceptionDetails(restoreResult);
@@ -332,7 +332,7 @@ function attachCapture({ state, resolveWsUrl, sendCdpCommand, getHtml, screensho
   // The MCP server consumes these directly; the bare action variants stay
   // exported for callers (and tests) that don't want auto-capture.
   async function clickWithCapture(tabIndexOrWsUrl, selector) {
-    const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
+    const ps = await getPageSession(tabIndexOrWsUrl);
     const run = async () => {
       await actions.click(tabIndexOrWsUrl, selector);
       const artifacts = await capturePageArtifacts(tabIndexOrWsUrl, 'click');
@@ -347,14 +347,14 @@ function attachCapture({ state, resolveWsUrl, sendCdpCommand, getHtml, screensho
         consoleLog: [] // Placeholder
       };
     };
-    if (dialogs && dialogs.withDialogAwareness) {
-      return dialogs.withDialogAwareness('click', wsUrl, { selector }, run);
+    if (dialogs && dialogs.withDialogAwarenessForSession) {
+      return dialogs.withDialogAwarenessForSession('click', ps, { selector }, run);
     }
     return run();
   }
 
   async function fillWithCapture(tabIndexOrWsUrl, selector, value) {
-    const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
+    const ps = await getPageSession(tabIndexOrWsUrl);
     const run = async () => {
       await actions.fill(tabIndexOrWsUrl, selector, value);
       const artifacts = await capturePageArtifacts(tabIndexOrWsUrl, 'type');
@@ -370,14 +370,14 @@ function attachCapture({ state, resolveWsUrl, sendCdpCommand, getHtml, screensho
         consoleLog: [] // Placeholder
       };
     };
-    if (dialogs && dialogs.withDialogAwareness) {
-      return dialogs.withDialogAwareness('type', wsUrl, { selector }, run);
+    if (dialogs && dialogs.withDialogAwarenessForSession) {
+      return dialogs.withDialogAwarenessForSession('type', ps, { selector }, run);
     }
     return run();
   }
 
   async function selectOptionWithCapture(tabIndexOrWsUrl, selector, value) {
-    const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
+    const ps = await getPageSession(tabIndexOrWsUrl);
     const run = async () => {
       await actions.selectOption(tabIndexOrWsUrl, selector, value);
       const artifacts = await capturePageArtifacts(tabIndexOrWsUrl, 'select');
@@ -393,14 +393,14 @@ function attachCapture({ state, resolveWsUrl, sendCdpCommand, getHtml, screensho
         consoleLog: [] // Placeholder
       };
     };
-    if (dialogs && dialogs.withDialogAwareness) {
-      return dialogs.withDialogAwareness('select', wsUrl, { selector }, run);
+    if (dialogs && dialogs.withDialogAwarenessForSession) {
+      return dialogs.withDialogAwarenessForSession('select', ps, { selector }, run);
     }
     return run();
   }
 
   async function evaluateWithCapture(tabIndexOrWsUrl, expression) {
-    const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
+    const ps = await getPageSession(tabIndexOrWsUrl);
     const run = async () => {
       const result = await actions.evaluate(tabIndexOrWsUrl, expression);
       const artifacts = await capturePageArtifacts(tabIndexOrWsUrl, 'eval');
@@ -416,8 +416,8 @@ function attachCapture({ state, resolveWsUrl, sendCdpCommand, getHtml, screensho
         consoleLog: [] // Placeholder
       };
     };
-    if (dialogs && dialogs.withDialogAwareness) {
-      return dialogs.withDialogAwareness('eval', wsUrl, {}, run);
+    if (dialogs && dialogs.withDialogAwarenessForSession) {
+      return dialogs.withDialogAwarenessForSession('eval', ps, {}, run);
     }
     return run();
   }
