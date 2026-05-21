@@ -68,7 +68,10 @@ async function attachBrowserBridge({ browser, host, port, rewriteWsUrl, autoAtta
 
     const ps = buildPageSessionFromAttached({ browser, router, sessionId, targetId: targetInfo.targetId });
 
-    if (onPageSession) {
+    // Only run the onPageSession hook for page-type targets. Non-page targets
+    // (service_worker, background_page, etc.) don't support the Page CDP domain
+    // and would cause 'Page.enable' wasn't found errors in the hook.
+    if (onPageSession && targetInfo.type === 'page') {
       try { await onPageSession(ps); }
       catch (e) { console.error('onPageSession hook threw:', e); }
     }

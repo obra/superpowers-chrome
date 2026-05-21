@@ -200,12 +200,13 @@ function attachDialogs({ state, sendCdpCommand, _resolveWsUrl }) {
     await pageSession.send('Runtime.enable', {});
     await pageSession.send('Page.addScriptToEvaluateOnNewDocument', { source: SHIM_SOURCE });
     await pageSession.send('Runtime.addBinding', { name: '__dialogShim' });
-    pageSession.onEvent((msg) => handleCdpEventForSession(sid, msg));
+    pageSession.onEvent((msg) => handleCdpEventForSession(sid, msg, pageSession.send));
   }
 
   // Equivalent of handleCdpEvent but keyed by sessionId. This is a faithful port —
   // every state.dialogs.get(wsUrl)/set(wsUrl, ...) becomes get(sid)/set(sid, ...).
-  function handleCdpEventForSession(sid, msg) {
+  // sendPageCmd is pageSession.send — needed to continue intercepted Fetch requests.
+  function handleCdpEventForSession(sid, msg, sendPageCmd) {
     if (msg.method === 'Runtime.bindingCalled') {
       if (msg.params.name !== '__dialogShim') return;
       let data;
@@ -286,9 +287,11 @@ function attachDialogs({ state, sendCdpCommand, _resolveWsUrl }) {
           staged: {},
         });
       }
-      // For non-auth Fetch.requestPaused, the wsUrl path calls Fetch.continueRequest via sendCdpCommand.
-      // In the pageSession path, the dialog router will handle continuation via pageSession.send when migrated in D3.
-      // For now, do nothing here — non-auth requests will block until the dialog router catches up.
+      // For non-auth Fetch.requestPaused, continue the request immediately.
+      // (Auth challenges are held as dialogs above; all other interceptions are passthrough.)
+      else if (sendPageCmd) {
+        sendPageCmd('Fetch.continueRequest', { requestId: p.requestId }).catch(() => {});
+      }
       return;
     }
   }
