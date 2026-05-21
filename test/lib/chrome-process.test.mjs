@@ -76,3 +76,89 @@ describe('chrome-process', () => {
     assert.equal(mode.port, 9444);
   });
 });
+
+describe('chrome-process: shutdown closes bridge before SIGTERM', () => {
+  function setupWithMockKill() {
+    const events = [];
+    const mockKill = (_pid, sig) => { events.push('kill:' + sig); };
+
+    const state = {
+      hostOverride: {
+        getHost: () => '127.0.0.1',
+        getPort: () => 9222,
+      },
+      activePort: 9222,
+      chromeHeadless: true,
+      chromeProcess: { pid: 1234 },
+      chromeProfileName: 'superpowers-chrome',
+      chromeUserDataDir: null,
+    };
+    const chromeHttp = async () => ({});
+    const getTabs = async () => [];
+    const newTab = async () => ({});
+
+    return { state, events, mockKill, chromeHttp, getTabs, newTab };
+  }
+
+  it('calls browserSession.close() before sending SIGTERM to Chrome', async () => {
+    const { state, events, mockKill, chromeHttp, getTabs, newTab } = setupWithMockKill();
+
+    state.browserSession = {
+      close: async () => { events.push('bridge-close'); },
+    };
+
+    const originalKill = process.kill;
+    process.kill = mockKill;
+    try {
+      const { killChrome } = attachChromeProcess({ state, chromeHttp, getTabs, newTab });
+      await killChrome();
+    } finally {
+      process.kill = originalKill;
+    }
+
+    assert.ok(events.includes('bridge-close'), 'bridge-close should be recorded');
+    assert.ok(events.includes('kill:SIGTERM'), 'kill:SIGTERM should be recorded');
+    assert.ok(
+      events.indexOf('bridge-close') < events.indexOf('kill:SIGTERM'),
+      `bridge-close (${events.indexOf('bridge-close')}) must precede kill:SIGTERM (${events.indexOf('kill:SIGTERM')})`
+    );
+  });
+
+  it('does not hang if browserSession.close() never resolves; falls back to kill after timeout', async () => {
+    const { state, events, mockKill, chromeHttp, getTabs, newTab } = setupWithMockKill();
+
+    state.browserSession = {
+      close: () => new Promise(() => {}), // never resolves
+    };
+
+    const originalKill = process.kill;
+    process.kill = mockKill;
+    const start = Date.now();
+    try {
+      const { killChrome } = attachChromeProcess({ state, chromeHttp, getTabs, newTab });
+      await killChrome();
+    } finally {
+      process.kill = originalKill;
+    }
+    const elapsed = Date.now() - start;
+
+    assert.ok(elapsed < 2000, `should not hang waiting for close (took ${elapsed}ms)`);
+    assert.ok(events.includes('kill:SIGTERM'), 'kill:SIGTERM should be recorded even when close hangs');
+  });
+
+  it('proceeds normally when browserSession is absent', async () => {
+    const { state, events, mockKill, chromeHttp, getTabs, newTab } = setupWithMockKill();
+    // No browserSession on state
+
+    const originalKill = process.kill;
+    process.kill = mockKill;
+    try {
+      const { killChrome } = attachChromeProcess({ state, chromeHttp, getTabs, newTab });
+      await killChrome();
+    } finally {
+      process.kill = originalKill;
+    }
+
+    assert.ok(events.includes('kill:SIGTERM'), 'kill:SIGTERM should be recorded');
+  });
+});

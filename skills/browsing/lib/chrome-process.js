@@ -142,7 +142,17 @@ function attachChromeProcess({ state, chromeHttp, getTabs, newTab }) {
     console.error(`Chrome started in ${mode} mode (PID: ${proc.pid}, port: ${chosenPort}, profile: ${state.chromeProfileName})`);
   }
 
+  async function closeBridge() {
+    if (!state.browserSession) return;
+    // Race against a short timeout — don't let a hung close block SIGTERM.
+    await Promise.race([
+      Promise.resolve().then(() => state.browserSession.close()).catch(() => {}),
+      new Promise((r) => setTimeout(r, 500)),
+    ]);
+  }
+
   async function killChrome() {
+    await closeBridge();
     let pidToKill = null;
 
     if (state.chromeProcess && state.chromeProcess.pid) {
