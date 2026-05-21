@@ -199,7 +199,7 @@ function createSession({ host, port, _testFakes } = {}) {
 
   // =============================================================================
 
-  const { extractText, getHtml, getAttribute } = attachExtraction({ resolveWsUrl, sendCdpCommand });
+  const { extractText, getHtml, getAttribute } = attachExtraction({ getPageSession });
 
 
   const { screenshot } = attachScreenshot({ resolveWsUrl, sendCdpCommand });
