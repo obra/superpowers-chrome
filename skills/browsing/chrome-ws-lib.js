@@ -192,7 +192,7 @@ function createSession({ host, port, _testFakes } = {}) {
   }
 
   const { click, hover, drag, mouseMove, scroll, doubleClick, rightClick } =
-    attachMouse({ resolveWsUrl, sendCdpCommand, dialogs });
+    attachMouse({ getPageSession, dialogs });
 
   const { keyboardPress, fill, humanType } =
     attachKeyboardInput({ state, getPageSession, click, dialogs });

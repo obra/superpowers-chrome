@@ -37,6 +37,9 @@ function attachDialogs({ state, sendCdpCommand, _resolveWsUrl }) {
   // Maps CDP targetId → sessionId for bridge-path sessions. Allows getOpen(wsUrl)
   // to find dialog state stored under sessionId by extracting targetId from the wsUrl.
   if (!state._targetIdToSessionId) state._targetIdToSessionId = new Map();
+  // Reverse map: sessionId → targetId. Allows clear(sessionId) to also remove the
+  // pooled-connection entry stored under wsUrl (which embeds the targetId).
+  if (!state._sessionIdToTargetId) state._sessionIdToTargetId = new Map();
 
   function getOpen(wsUrlOrSid) {
     // Direct lookup (works for both wsUrl keys and sessionId keys).
@@ -51,15 +54,24 @@ function attachDialogs({ state, sendCdpCommand, _resolveWsUrl }) {
     return null;
   }
 
-  function clear(wsUrl) {
-    state.dialogs.delete(wsUrl);
-    // Also clear the bridge-path sessionId entry (stored under sessionId, not wsUrl).
-    // When a dialog was opened via the bridge, it is stored under sessionId; the
-    // pool-path clear(wsUrl) call would miss it without this fallback.
-    const m = /\/devtools\/page\/([^/]+)$/.exec(wsUrl);
-    if (m) {
-      const sid = state._targetIdToSessionId.get(m[1]);
+  function clear(wsUrlOrSid) {
+    state.dialogs.delete(wsUrlOrSid);
+    // If called with a wsUrl: also clear the bridge-path sessionId entry.
+    const wsMatch = /\/devtools\/page\/([^/]+)$/.exec(wsUrlOrSid);
+    if (wsMatch) {
+      const sid = state._targetIdToSessionId.get(wsMatch[1]);
       if (sid) state.dialogs.delete(sid);
+    }
+    // If called with a sessionId: also clear the pooled-connection wsUrl entry.
+    // Both paths receive shim events, so the dialog may be stored under both keys.
+    const targetId = state._sessionIdToTargetId.get(wsUrlOrSid);
+    if (targetId) {
+      for (const key of state.dialogs.keys()) {
+        if (key.endsWith(`/devtools/page/${targetId}`)) {
+          state.dialogs.delete(key);
+          break;
+        }
+      }
     }
   }
 
@@ -173,10 +185,11 @@ function attachDialogs({ state, sendCdpCommand, _resolveWsUrl }) {
     const sid = pageSession.sessionId;
     if (state._dialogPageSessions.has(sid)) return;
     state._dialogPageSessions.add(sid);
-    // Register targetId → sessionId so getOpen(wsUrl) can find dialog state
-    // stored under sessionId by extracting targetId from the wsUrl.
+    // Register targetId ↔ sessionId so getOpen(wsUrl) and clear(sessionId)
+    // can cross-reference entries stored under either key.
     if (pageSession.targetId) {
       state._targetIdToSessionId.set(pageSession.targetId, sid);
+      state._sessionIdToTargetId.set(sid, pageSession.targetId);
     }
     await pageSession.send('Page.enable', {});
     await pageSession.send('DeviceAccess.enable', {});

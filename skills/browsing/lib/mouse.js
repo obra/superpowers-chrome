@@ -13,16 +13,16 @@ const DRAG_SETTLE_MS = 50;
  * path; the older `el.click()` route survives only as a fallback for
  * hidden-element edge cases inside `click`.
  *
- * `attachMouse({ resolveWsUrl, sendCdpCommand })` returns the bound action
+ * `attachMouse({ getPageSession, dialogs })` returns the bound action
  * methods. The pre-action element-coordinate lookup uses the shared
  * `getElementSelector` from lib/element-selector — same visibility-aware
  * picker the rest of the library uses.
  */
-function attachMouse({ resolveWsUrl, sendCdpCommand, dialogs }) {
-  const { tryHandleDialogSelector } = require('./dialogs-router.js');
+function attachMouse({ getPageSession, dialogs }) {
+  const { tryHandleDialogSelectorForSession } = require('./dialogs-router.js');
   // Common helper: resolve a CSS/XPath selector to centered viewport coords
   // after scrolling the element into view. Returns { x, y } or throws.
-  async function resolveCenter(wsUrl, selector, label = 'Element') {
+  async function resolveCenter(ps, selector, label = 'Element') {
     const js = `
       (() => {
         const el = ${getElementSelector(selector)};
@@ -36,7 +36,7 @@ function attachMouse({ resolveWsUrl, sendCdpCommand, dialogs }) {
         };
       })()
     `;
-    const result = await sendCdpCommand(wsUrl, 'Runtime.evaluate', {
+    const result = await ps.send('Runtime.evaluate', {
       expression: js,
       returnByValue: true
     });
@@ -54,25 +54,25 @@ function attachMouse({ resolveWsUrl, sendCdpCommand, dialogs }) {
    * report a fake-success click on a missing selector.
    */
   async function click(tabIndexOrWsUrl, selector) {
-    const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
+    const ps = await getPageSession(tabIndexOrWsUrl);
 
     if (selector && selector.startsWith('dialog::') && dialogs) {
-      const state = dialogs.getOpen(wsUrl);
-      const routed = await tryHandleDialogSelector({ selector, op: 'click', state, sendCdpCommand, wsUrl });
+      const state = dialogs.getOpen(ps.sessionId);
+      const routed = await tryHandleDialogSelectorForSession({ selector, op: 'click', state, pageSession: ps });
       if (routed.handled) {
         if (routed.error) throw new Error(routed.error);
-        if (routed.clearDialog) dialogs.clear(wsUrl);
+        if (routed.clearDialog) dialogs.clear(ps.sessionId);
         return routed.result;
       }
     }
 
     try {
-      const { x, y } = await resolveCenter(wsUrl, selector);
+      const { x, y } = await resolveCenter(ps, selector);
 
-      await sendCdpCommand(wsUrl, 'Input.dispatchMouseEvent', {
+      await ps.send('Input.dispatchMouseEvent', {
         type: 'mousePressed', x, y, button: 'left', clickCount: 1
       });
-      await sendCdpCommand(wsUrl, 'Input.dispatchMouseEvent', {
+      await ps.send('Input.dispatchMouseEvent', {
         type: 'mouseReleased', x, y, button: 'left', clickCount: 1
       });
 
@@ -88,7 +88,7 @@ function attachMouse({ resolveWsUrl, sendCdpCommand, dialogs }) {
         _el.click();
         return { found: true };
       })()`;
-      const fallbackResult = await sendCdpCommand(wsUrl, 'Runtime.evaluate', {
+      const fallbackResult = await ps.send('Runtime.evaluate', {
         expression: js,
         returnByValue: true,
       });
@@ -105,10 +105,10 @@ function attachMouse({ resolveWsUrl, sendCdpCommand, dialogs }) {
    * Triggers CSS :hover, mouseenter/mouseover events, tooltips, dropdown menus.
    */
   async function hover(tabIndexOrWsUrl, selector) {
-    const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
-    const { x, y } = await resolveCenter(wsUrl, selector);
+    const ps = await getPageSession(tabIndexOrWsUrl);
+    const { x, y } = await resolveCenter(ps, selector);
 
-    await sendCdpCommand(wsUrl, 'Input.dispatchMouseEvent', {
+    await ps.send('Input.dispatchMouseEvent', {
       type: 'mouseMoved', x, y
     });
 
@@ -128,25 +128,25 @@ function attachMouse({ resolveWsUrl, sendCdpCommand, dialogs }) {
    *                                     the browser's ~4px drag-detection threshold)
    */
   async function drag(tabIndexOrWsUrl, sourceSelector, target, options = {}) {
-    const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
+    const ps = await getPageSession(tabIndexOrWsUrl);
     const steps = options.steps || 8;
 
-    const src = await resolveCenter(wsUrl, sourceSelector, 'Source element');
+    const src = await resolveCenter(ps, sourceSelector, 'Source element');
 
     let dst;
     if (typeof target === 'object' && target.x !== undefined && target.y !== undefined) {
       dst = { x: target.x, y: target.y };
     } else {
-      dst = await resolveCenter(wsUrl, target, 'Target element');
+      dst = await resolveCenter(ps, target, 'Target element');
     }
 
-    await sendCdpCommand(wsUrl, 'Input.dispatchMouseEvent', {
+    await ps.send('Input.dispatchMouseEvent', {
       type: 'mousePressed', x: src.x, y: src.y, button: 'left', clickCount: 1
     });
 
     for (let i = 1; i <= steps; i++) {
       const ratio = i / steps;
-      await sendCdpCommand(wsUrl, 'Input.dispatchMouseEvent', {
+      await ps.send('Input.dispatchMouseEvent', {
         type: 'mouseMoved',
         x: Math.round(src.x + (dst.x - src.x) * ratio),
         y: Math.round(src.y + (dst.y - src.y) * ratio),
@@ -157,7 +157,7 @@ function attachMouse({ resolveWsUrl, sendCdpCommand, dialogs }) {
     // Brief pause for apps that process drag events asynchronously.
     await new Promise(resolve => setTimeout(resolve, DRAG_SETTLE_MS));
 
-    await sendCdpCommand(wsUrl, 'Input.dispatchMouseEvent', {
+    await ps.send('Input.dispatchMouseEvent', {
       type: 'mouseReleased',
       x: Math.round(dst.x),
       y: Math.round(dst.y),
@@ -174,11 +174,11 @@ function attachMouse({ resolveWsUrl, sendCdpCommand, dialogs }) {
    * hover effects on coordinate-based targets.
    */
   async function mouseMove(tabIndexOrWsUrl, x, y, options = {}) {
-    const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
+    const ps = await getPageSession(tabIndexOrWsUrl);
     const steps = options.steps || 1;
 
     if (steps <= 1 || (options.fromX === undefined && options.fromY === undefined)) {
-      await sendCdpCommand(wsUrl, 'Input.dispatchMouseEvent', {
+      await ps.send('Input.dispatchMouseEvent', {
         type: 'mouseMoved',
         x: Math.round(x),
         y: Math.round(y)
@@ -188,7 +188,7 @@ function attachMouse({ resolveWsUrl, sendCdpCommand, dialogs }) {
       const startY = options.fromY || 0;
       for (let i = 1; i <= steps; i++) {
         const ratio = i / steps;
-        await sendCdpCommand(wsUrl, 'Input.dispatchMouseEvent', {
+        await ps.send('Input.dispatchMouseEvent', {
           type: 'mouseMoved',
           x: Math.round(startX + (x - startX) * ratio),
           y: Math.round(startY + (y - startY) * ratio)
@@ -209,7 +209,7 @@ function attachMouse({ resolveWsUrl, sendCdpCommand, dialogs }) {
    * @param {number} [options.deltaY=0] - Vertical scroll (positive = down)
    */
   async function scroll(tabIndexOrWsUrl, options = {}) {
-    const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
+    const ps = await getPageSession(tabIndexOrWsUrl);
 
     let x = options.x || 100;
     let y = options.y || 100;
@@ -230,7 +230,7 @@ function attachMouse({ resolveWsUrl, sendCdpCommand, dialogs }) {
           };
         })()
       `;
-      const result = await sendCdpCommand(wsUrl, 'Runtime.evaluate', {
+      const result = await ps.send('Runtime.evaluate', {
         expression: js,
         returnByValue: true
       });
@@ -241,7 +241,7 @@ function attachMouse({ resolveWsUrl, sendCdpCommand, dialogs }) {
       }
     }
 
-    await sendCdpCommand(wsUrl, 'Input.dispatchMouseEvent', {
+    await ps.send('Input.dispatchMouseEvent', {
       type: 'mouseWheel',
       x: Math.round(x),
       y: Math.round(y),
@@ -257,20 +257,20 @@ function attachMouse({ resolveWsUrl, sendCdpCommand, dialogs }) {
    * Fires mousedown, mouseup, click, mousedown, mouseup, click, dblclick.
    */
   async function doubleClick(tabIndexOrWsUrl, selector) {
-    const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
-    const { x, y } = await resolveCenter(wsUrl, selector);
+    const ps = await getPageSession(tabIndexOrWsUrl);
+    const { x, y } = await resolveCenter(ps, selector);
 
-    await sendCdpCommand(wsUrl, 'Input.dispatchMouseEvent', {
+    await ps.send('Input.dispatchMouseEvent', {
       type: 'mousePressed', x, y, button: 'left', clickCount: 1
     });
-    await sendCdpCommand(wsUrl, 'Input.dispatchMouseEvent', {
+    await ps.send('Input.dispatchMouseEvent', {
       type: 'mouseReleased', x, y, button: 'left', clickCount: 1
     });
     // Second click with clickCount: 2 triggers dblclick.
-    await sendCdpCommand(wsUrl, 'Input.dispatchMouseEvent', {
+    await ps.send('Input.dispatchMouseEvent', {
       type: 'mousePressed', x, y, button: 'left', clickCount: 2
     });
-    await sendCdpCommand(wsUrl, 'Input.dispatchMouseEvent', {
+    await ps.send('Input.dispatchMouseEvent', {
       type: 'mouseReleased', x, y, button: 'left', clickCount: 2
     });
 
@@ -282,13 +282,13 @@ function attachMouse({ resolveWsUrl, sendCdpCommand, dialogs }) {
    * Fires mousedown (button 2), mouseup (button 2), contextmenu.
    */
   async function rightClick(tabIndexOrWsUrl, selector) {
-    const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
-    const { x, y } = await resolveCenter(wsUrl, selector);
+    const ps = await getPageSession(tabIndexOrWsUrl);
+    const { x, y } = await resolveCenter(ps, selector);
 
-    await sendCdpCommand(wsUrl, 'Input.dispatchMouseEvent', {
+    await ps.send('Input.dispatchMouseEvent', {
       type: 'mousePressed', x, y, button: 'right', clickCount: 1
     });
-    await sendCdpCommand(wsUrl, 'Input.dispatchMouseEvent', {
+    await ps.send('Input.dispatchMouseEvent', {
       type: 'mouseReleased', x, y, button: 'right', clickCount: 1
     });
 
