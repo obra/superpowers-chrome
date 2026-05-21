@@ -195,7 +195,7 @@ function createSession({ host, port, _testFakes } = {}) {
 
   const { selectOption } = attachSelectOption({ resolveWsUrl, sendCdpCommand });
 
-  const { evaluate } = attachEvaluation({ resolveWsUrl, sendCdpCommand });
+  const { evaluate } = attachEvaluation({ getPageSession });
 
   // =============================================================================
 

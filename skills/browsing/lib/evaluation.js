@@ -15,15 +15,15 @@
  *   full RemoteObject including `objectId`). For callers that need the
  *   raw CDP shape.
  *
- * `attachEvaluation({ resolveWsUrl, sendCdpCommand })` binds them to a
- * session via the helpers' closure capture.
+ * `attachEvaluation({ getPageSession })` binds them to a session via the
+ * pageSession resolver.
  */
 const { throwIfExceptionDetails } = require('./cdp-utils');
 
-function attachEvaluation({ resolveWsUrl, sendCdpCommand }) {
+function attachEvaluation({ getPageSession }) {
   async function evaluate(tabIndexOrWsUrl, expression) {
-    const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
-    const result = await sendCdpCommand(wsUrl, 'Runtime.evaluate', {
+    const pageSession = await getPageSession(tabIndexOrWsUrl);
+    const result = await pageSession.send('Runtime.evaluate', {
       expression,
       returnByValue: true,
       awaitPromise: true
@@ -33,7 +33,7 @@ function attachEvaluation({ resolveWsUrl, sendCdpCommand }) {
   }
 
   async function evaluateJson(tabIndexOrWsUrl, expression) {
-    const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
+    const pageSession = await getPageSession(tabIndexOrWsUrl);
 
     const wrappedExpression = `
       (() => {
@@ -60,7 +60,7 @@ function attachEvaluation({ resolveWsUrl, sendCdpCommand }) {
       })()
     `;
 
-    const result = await sendCdpCommand(wsUrl, 'Runtime.evaluate', {
+    const result = await pageSession.send('Runtime.evaluate', {
       expression: wrappedExpression,
       returnByValue: true,
       awaitPromise: true
@@ -70,8 +70,8 @@ function attachEvaluation({ resolveWsUrl, sendCdpCommand }) {
   }
 
   async function evaluateRaw(tabIndexOrWsUrl, expression) {
-    const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
-    const result = await sendCdpCommand(wsUrl, 'Runtime.evaluate', {
+    const pageSession = await getPageSession(tabIndexOrWsUrl);
+    const result = await pageSession.send('Runtime.evaluate', {
       expression,
       returnByValue: false
     });
