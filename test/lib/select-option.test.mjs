@@ -2,31 +2,31 @@ import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
 import { createRequire } from 'node:module';
 import { JSDOM } from 'jsdom';
+import { makePageSessionFake } from './_helpers.mjs';
 
 const require = createRequire(import.meta.url);
 const { attachSelectOption } = require('../../skills/browsing/lib/select-option.js');
 
 describe('selectOption (jsdom)', () => {
-  // Build a fake CDP layer that evaluates Runtime.evaluate against a jsdom DOM.
+  // Build a fake pageSession that evaluates Runtime.evaluate against a jsdom DOM.
   function setup(html) {
     // runScripts: 'dangerously' is required for window.eval to have access to
     // document and the DOM globals — the standard jsdom approach for unit tests
     // that exercise page-side code paths.
     const dom = new JSDOM(html, { runScripts: 'dangerously' });
     const { window } = dom;
-    const sendCdpCommand = async (_wsUrl, method, params) => {
-      if (method !== 'Runtime.evaluate') {
-        throw new Error(`Unexpected CDP method: ${method}`);
+    const ps = makePageSessionFake({
+      'Runtime.evaluate': (params) => {
+        // Evaluate the expression directly in jsdom's window context.
+        // IIFEs evaluate to their return value; plain expressions evaluate
+        // to their value. No function wrapper needed.
+        const result = window.eval(params.expression);
+        // wrap to match returnByValue: true CDP shape
+        return { result: { value: result } };
       }
-      // Evaluate the expression directly in jsdom's window context.
-      // IIFEs evaluate to their return value; plain expressions evaluate
-      // to their value. No function wrapper needed.
-      const result = window.eval(params.expression);
-      // wrap to match returnByValue: true CDP shape
-      return { result: { value: result } };
-    };
-    const resolveWsUrl = async () => 'ws://jsdom';
-    return attachSelectOption({ resolveWsUrl, sendCdpCommand });
+    });
+    const getPageSession = async () => ps;
+    return attachSelectOption({ getPageSession });
   }
 
   const SINGLE = `<select id="single">

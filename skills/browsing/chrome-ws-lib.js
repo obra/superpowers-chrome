@@ -193,7 +193,7 @@ function createSession({ host, port, _testFakes } = {}) {
 
   const { fileUpload } = attachFileUpload({ resolveWsUrl, sendCdpCommand });
 
-  const { selectOption } = attachSelectOption({ resolveWsUrl, sendCdpCommand });
+  const { selectOption } = attachSelectOption({ getPageSession });
 
   const { evaluate } = attachEvaluation({ getPageSession });
 

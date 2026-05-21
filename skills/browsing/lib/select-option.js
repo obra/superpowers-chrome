@@ -15,16 +15,15 @@ const { throwIfExceptionDetails } = require('./cdp-utils');
  * one element on the page, we use the element at `index` (default 0)
  * and emit a warning so the caller knows the selector is ambiguous.
  *
- * `attachSelectOption({ resolveWsUrl, sendCdpCommand })` returns the
- * bound action.
+ * `attachSelectOption({ getPageSession })` returns the bound action.
  */
-function attachSelectOption({ resolveWsUrl, sendCdpCommand }) {
+function attachSelectOption({ getPageSession }) {
   async function selectOption(tabIndexOrWsUrl, selector, value, index = 0) {
-    const wsUrl = await resolveWsUrl(tabIndexOrWsUrl);
+    const pageSession = await getPageSession(tabIndexOrWsUrl);
     const values = Array.isArray(value) ? value : [value];
 
     const countJs = `${getElementSelectorAll(selector)}.length`;
-    const countResult = await sendCdpCommand(wsUrl, 'Runtime.evaluate', {
+    const countResult = await pageSession.send('Runtime.evaluate', {
       expression: countJs,
       returnByValue: true
     });
@@ -74,7 +73,7 @@ function attachSelectOption({ resolveWsUrl, sendCdpCommand }) {
       })()
     `;
 
-    const result = await sendCdpCommand(wsUrl, 'Runtime.evaluate', {
+    const result = await pageSession.send('Runtime.evaluate', {
       expression: js,
       returnByValue: true
     });
