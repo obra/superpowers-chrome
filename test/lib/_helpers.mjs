@@ -67,3 +67,39 @@ export function makeFakeWs() {
     sent,
   };
 }
+
+/**
+ * makeBrowserSessionFake — pretends to be a browser-session for page-session tests.
+ * Records send() calls, lets the test inject responses via onEvent listeners
+ * (the cdp-router subscribes there), exposes sendRaw passthrough that captures the
+ * raw JSON.
+ *
+ * Usage:
+ *   const browser = makeBrowserSessionFake();
+ *   browser.setResolver('Target.attachToTarget', () => ({ sessionId: 'S1' }));
+ *   const router = createCdpRouter({ browser });
+ *   const ps = await attachPageSession({ browser, router }, 'T1');
+ *   ps.send('Page.navigate', { url: '...' }).then(...);
+ *   const sent = JSON.parse(browser.sentRaw[0]);
+ *   browser.inject({ sessionId: 'S1', id: sent.id, result: {} });
+ */
+export function makeBrowserSessionFake() {
+  const sentRaw = [];
+  const sendCalls = [];
+  const resolvers = new Map();
+  const handlers = new Set();
+  return {
+    send: async (method, params, opts) => {
+      sendCalls.push({ method, params, opts });
+      const r = resolvers.get(method);
+      if (!r) throw new Error(`makeBrowserSessionFake: no resolver for ${method}`);
+      return r(params);
+    },
+    sendRaw: (json) => { sentRaw.push(json); },
+    onEvent: (fn) => { handlers.add(fn); return () => handlers.delete(fn); },
+    isConnected: () => true,
+    inject: (msg) => { for (const fn of handlers) fn(msg); },
+    setResolver: (method, fn) => resolvers.set(method, fn),
+    sentRaw, sendCalls,
+  };
+}
