@@ -116,6 +116,13 @@ function attachChromeProcess({ state, chromeHttp, getTabs, newTab }) {
     state.chromeProcess = proc;
     state.activePort = chosenPort;
 
+    // Clear the handle if Chrome exits on its own after launch.
+    proc.on('exit', () => {
+      if (state.chromeProcess === proc) {
+        state.chromeProcess = null;
+      }
+    });
+
     // Poll until Chrome's debug port is accepting connections (or 15s timeout).
     const POLL_INTERVAL_MS = 200;
     const POLL_TIMEOUT_MS = 15000;
@@ -125,6 +132,7 @@ function attachChromeProcess({ state, chromeHttp, getTabs, newTab }) {
       await new Promise(resolve => setTimeout(resolve, POLL_INTERVAL_MS));
     }
     if (!(await isPortAlive(CHROME_DEBUG_HOST, chosenPort))) {
+      state.chromeProcess = null;
       throw new Error(`Chrome did not become ready on port ${chosenPort} within ${POLL_TIMEOUT_MS}ms`);
     }
 
@@ -218,9 +226,10 @@ function attachChromeProcess({ state, chromeHttp, getTabs, newTab }) {
       // Chrome not running — nothing to capture.
     }
 
-    const savedPort = state.activePort;
     await killChrome();
-    await startChrome(targetHeadless, null, savedPort);
+    // killChrome() resets state.activePort to CHROME_DEBUG_PORT; use that
+    // reset value rather than a pre-kill snapshot which may carry a wedged port.
+    await startChrome(targetHeadless, null, null);
 
     if (currentTabs.length > 0) {
       console.error(`Reopening ${currentTabs.length} tab(s)...`);
@@ -285,6 +294,7 @@ function attachChromeProcess({ state, chromeHttp, getTabs, newTab }) {
     }
     state.chromeProfileName = profileName;
     state.chromeUserDataDir = null; // Reset so next startChrome() uses new profile
+    state.activePort = CHROME_DEBUG_PORT; // Reset so a prior rotated port doesn't carry forward
     return `Profile set to: ${profileName}`;
   }
 

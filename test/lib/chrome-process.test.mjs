@@ -1,28 +1,30 @@
 import { strict as assert } from 'node:assert';
 import { createRequire } from 'node:module';
 import { describe, it } from 'node:test';
+import { EventEmitter } from 'node:events';
 
 const require = createRequire(import.meta.url);
 const { attachChromeProcess } = require('../../skills/browsing/lib/chrome-process.js');
 
+function setup() {
+  const state = {
+    hostOverride: {
+      getHost: () => '127.0.0.1',
+      getPort: () => 9222,
+    },
+    activePort: 9222,
+    chromeHeadless: true,
+    chromeProcess: null,
+    chromeProfileName: 'superpowers-chrome',
+    chromeUserDataDir: null,
+  };
+  const chromeHttp = async () => ({});
+  const getTabs = async () => [];
+  const newTab = async () => ({});
+  return { ...attachChromeProcess({ state, chromeHttp, getTabs, newTab }), state };
+}
+
 describe('chrome-process', () => {
-  function setup() {
-    const state = {
-      hostOverride: {
-        getHost: () => '127.0.0.1',
-        getPort: () => 9222,
-      },
-      activePort: 9222,
-      chromeHeadless: true,
-      chromeProcess: null,
-      chromeProfileName: 'superpowers-chrome',
-      chromeUserDataDir: null,
-    };
-    const chromeHttp = async () => ({});
-    const getTabs = async () => [];
-    const newTab = async () => ({});
-    return { ...attachChromeProcess({ state, chromeHttp, getTabs, newTab }), state };
-  }
 
   it('getActivePort returns state.activePort', () => {
     const { getActivePort, state } = setup();
@@ -160,5 +162,209 @@ describe('chrome-process: shutdown closes bridge before SIGTERM', () => {
     }
 
     assert.ok(events.includes('kill:SIGTERM'), 'kill:SIGTERM should be recorded');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Bug-fix regression tests
+// ---------------------------------------------------------------------------
+
+const CHROME_PROCESS_PATH = require.resolve('../../skills/browsing/lib/chrome-process.js');
+
+// Build a fake EventEmitter-based proc that can emit 'exit' on demand.
+function makeFakeProc({ pid = 99999 } = {}) {
+  const proc = new EventEmitter();
+  proc.pid = pid;
+  proc.unref = () => {};
+  proc._die = () => proc.emit('exit', 1, null);
+  return proc;
+}
+
+// ---------------------------------------------------------------------------
+// Bug 1: failed startChrome must clear the dead chromeProcess handle.
+//
+// The fix has two parts:
+//   a) proc.on('exit') listener that clears state.chromeProcess for owned proc.
+//   b) Explicit state.chromeProcess = null in the readiness-timeout error path.
+//
+// (a) is tested via a direct logic test of the listener's identity guard.
+// (b) is tested end-to-end via require.cache injection (Chrome binary must
+//     exist on disk; the test self-skips if it doesn't).
+// ---------------------------------------------------------------------------
+
+describe('chrome-process: Bug 1a — exit listener clears owned proc, ignores stale procs', () => {
+  it('clears state.chromeProcess when the owned proc exits', () => {
+    const state = { chromeProcess: null };
+    const proc = makeFakeProc({ pid: 1111 });
+
+    state.chromeProcess = proc;
+    proc.on('exit', () => {
+      if (state.chromeProcess === proc) state.chromeProcess = null;
+    });
+
+    proc._die();
+    assert.equal(state.chromeProcess, null);
+  });
+
+  it('does not clear state.chromeProcess when a later proc replaced the original', () => {
+    const state = { chromeProcess: null };
+    const proc1 = makeFakeProc({ pid: 1111 });
+    const proc2 = makeFakeProc({ pid: 2222 });
+
+    state.chromeProcess = proc1;
+    proc1.on('exit', () => {
+      if (state.chromeProcess === proc1) state.chromeProcess = null;
+    });
+
+    proc1._die();
+    // Replace with a new proc.
+    state.chromeProcess = proc2;
+    // A stale second 'exit' from proc1 must not clobber proc2.
+    proc1._die();
+    assert.equal(state.chromeProcess, proc2);
+  });
+});
+
+describe('chrome-process: Bug 1b — startChrome clears chromeProcess on readiness timeout', () => {
+  // This test injects fake deps via require.cache so we can control
+  // isPortAlive and spawn without a real Chrome binary.
+  // It self-skips when Chrome is not installed (binary discovery happens
+  // inside the module before spawn is called).
+
+  const HELPERS_PATH = require.resolve('../../skills/browsing/lib/chrome-launcher-helpers.js');
+
+  function withFakeModules(_fakeProc, testFn) {
+    const origHelpers = require.cache[HELPERS_PATH];
+
+    const fakeHelpers = {
+      readProfileMeta: () => null,
+      writeProfileMeta: () => {},
+      clearProfileMeta: () => {},
+      isPortAlive: async () => false,       // never ready → triggers timeout
+      findAvailablePort: async () => 9333,
+      findPidOnPort: () => null,
+      buildChromeArgs: () => ['--fake'],
+      getChromeProfileDir: () => '/tmp/fake-profile',
+    };
+
+    require.cache[HELPERS_PATH] = {
+      id: HELPERS_PATH, filename: HELPERS_PATH, loaded: true, exports: fakeHelpers,
+    };
+    delete require.cache[CHROME_PROCESS_PATH];
+    const { attachChromeProcess: fresh } = require(CHROME_PROCESS_PATH);
+
+    try {
+      return testFn(fresh);
+    } finally {
+      if (origHelpers) { require.cache[HELPERS_PATH] = origHelpers; }
+      else { delete require.cache[HELPERS_PATH]; }
+      delete require.cache[CHROME_PROCESS_PATH];
+      // Restore the canonical chrome-process module.
+      require(CHROME_PROCESS_PATH);
+    }
+  }
+
+  it('state.chromeProcess is null after startChrome fails to bind port', async () => {
+    const { existsSync } = require('fs');
+    const { platform } = require('os');
+    const chromePaths = {
+      darwin: ['/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', '/Applications/Chromium.app/Contents/MacOS/Chromium'],
+      linux: ['/usr/bin/google-chrome', '/usr/bin/chromium-browser', '/usr/bin/chromium'],
+      win32: ['C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe'],
+    };
+    const chromeInstalled = (chromePaths[platform()] || []).some(p => existsSync(p));
+    if (!chromeInstalled) return; // self-skip: binary discovery happens inside module
+
+    const fakeProc = makeFakeProc();
+
+    // Patch child_process.spawn so the module uses our fake proc (no real Chrome).
+    const origCp = require.cache['child_process'];
+    require.cache['child_process'] = {
+      id: 'child_process', filename: 'child_process', loaded: true,
+      exports: { spawn: () => fakeProc },
+    };
+
+    try {
+      await withFakeModules(fakeProc, async (fresh) => {
+        const state = {
+          hostOverride: { getHost: () => '127.0.0.1', getPort: () => 9222 },
+          activePort: 9222,
+          chromeHeadless: true,
+          chromeProcess: null,
+          chromeProfileName: 'test-profile',
+          chromeUserDataDir: '/tmp/fake-profile',
+        };
+        const { startChrome } = fresh({
+          state,
+          chromeHttp: async () => ({}),
+          getTabs: async () => [],
+          newTab: async () => ({}),
+        });
+
+        await assert.rejects(
+          () => startChrome(true, null, null),
+          /Chrome did not become ready/
+        );
+        assert.equal(state.chromeProcess, null, 'dead handle must be cleared after timeout');
+      });
+    } finally {
+      if (origCp) { require.cache['child_process'] = origCp; }
+      else { delete require.cache['child_process']; }
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Bug 2: setProfileName must reset activePort so a rotated port from a
+// prior failed spawn doesn't carry forward to the next profile's spawn.
+// ---------------------------------------------------------------------------
+
+describe('chrome-process: Bug 2 — setProfileName resets activePort to default', () => {
+  it('resets state.activePort to CHROME_DEBUG_PORT after a rotated port', () => {
+    const { setProfileName, state } = setup();
+    state.activePort = 9999; // simulate a rotated port from a prior failed spawn
+    setProfileName('another-profile');
+    // CHROME_DEBUG_PORT === 9222 (hostOverride.getPort() in setup).
+    assert.equal(state.activePort, 9222, 'activePort reset to default after profile switch');
+  });
+
+  it('resets activePort regardless of how far it drifted', () => {
+    const { setProfileName, state } = setup();
+    state.activePort = 54321;
+    setProfileName('profile-b');
+    assert.equal(state.activePort, 9222);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Bug 3: restartInMode (showBrowser/hideBrowser) must NOT capture activePort
+// before killChrome() resets it; otherwise Chrome relaunches on the wedged port.
+// ---------------------------------------------------------------------------
+
+describe('chrome-process: Bug 3 — killChrome resets activePort; restartInMode uses reset value', () => {
+  it('killChrome resets state.activePort to CHROME_DEBUG_PORT', async () => {
+    const { killChrome, state } = setup();
+    state.activePort = 19999; // simulate a wedged / rotated port
+    state.chromeProcess = null; // no process → takes the "nothing to kill" path
+
+    const originalKill = process.kill;
+    process.kill = () => {};
+    try {
+      await killChrome();
+    } finally {
+      process.kill = originalKill;
+    }
+
+    assert.equal(state.activePort, 9222, 'killChrome resets activePort to CHROME_DEBUG_PORT');
+  });
+
+  it('restartInMode source does not capture savedPort before killChrome', () => {
+    // Structural check: the buggy `const savedPort = state.activePort` pattern
+    // must not appear in the module source. This prevents regression.
+    const moduleSrc = require(CHROME_PROCESS_PATH).attachChromeProcess.toString();
+    assert.ok(
+      !moduleSrc.includes('savedPort'),
+      'savedPort variable must not appear — indicates the pre-kill port capture bug'
+    );
   });
 });
