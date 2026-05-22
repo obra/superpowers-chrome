@@ -173,6 +173,66 @@ npm install -g superpowers-chrome-mcp
 ### Claude Code Plugin (Via Marketplace)
 Plugin auto-updates from marketplace when user has it installed.
 
+## Agent-driven test scenarios
+
+The unit suite (`npm test`) verifies code correctness. The scenarios under `tests/scenarios/` verify the **agent experience** — that a Claude Code session with the plugin loaded can use it to do realistic browser work end-to-end. These caught at least one real bug (the autoAttach session cache disconnect, fix in commit `20490af`) that the unit tests missed because they manipulate state directly rather than going through the MCP layer.
+
+### Running scenarios via Claude Session Driver
+
+The `claude-session-driver` plugin (`csd`) launches a separate Claude Code worker session, loads the plugin from a local path via `--plugin-dir`, and sends it prompts. You observe what the worker does via its event stream and final responses.
+
+```bash
+# 1. Set the skill path once (or use the absolute path inline)
+SKILL=/Users/jesse/.claude/plugins/cache/superpowers-marketplace/claude-session-driver/3.0.0/skills/driving-claude-code-sessions/scripts
+
+# 2. Launch a worker rooted in the worktree, with this plugin loaded from its current directory
+$SKILL/csd launch bridge-test /path/to/superpowers-chrome -- --plugin-dir /path/to/superpowers-chrome
+
+# 3. Send the worker a scenario to execute. The bare shim path is /tmp/claude-workers/bin/<tmux-name>.
+/tmp/claude-workers/bin/bridge-test send "Read tests/scenarios/01-smoke.md and execute it. Report each step's outcome explicitly."
+
+# 4. Wait for the worker to finish the turn (the event file gets a "stop" line)
+EVENTS=$(jq -r '.events' /tmp/claude-workers/<session-id>.meta.json 2>/dev/null || ls /tmp/claude-workers/*.events.jsonl)
+while ! tail -1 "$EVENTS" | grep -q '"event":"stop"'; do sleep 15; done
+
+# 5. Read the worker's final assistant text from its session log
+SESSION_DIR=/Users/jesse/.claude/projects/$(echo "$PWD" | sed 's|/|-|g')
+tail -300 "$SESSION_DIR"/*.jsonl | python3 -c "
+import json, sys
+texts=[]
+for line in sys.stdin:
+    if not line.strip(): continue
+    try:
+        msg = json.loads(line)
+        if msg.get('type') == 'assistant':
+            for block in msg.get('message',{}).get('content', []):
+                if isinstance(block, dict) and block.get('type') == 'text':
+                    t = block.get('text', '').strip()
+                    if t: texts.append(t)
+    except: pass
+print(texts[-1] if texts else '(no text)')
+"
+
+# 6. Iterate: rebuild the bundle, restart the worker to pick up changes
+npm run build
+/tmp/claude-workers/bin/bridge-test stop
+$SKILL/csd launch bridge-test ... # relaunch
+```
+
+**After fixing code, you must `npm run build` AND restart the worker** — the worker's MCP server process holds the bundled `mcp/dist/index.js` in memory; rebuilds don't hot-reload.
+
+The scenarios are deliberately written so they can be run in any order. Each is self-contained (sets up fixtures, exercises behavior, reports outcome). When adding new scenarios, follow the same shape so future Claude can pick up the corpus without re-deriving the pattern.
+
+### Scenarios as regression corpus
+
+Each scenario file documents what to test, what the pass criteria are, and what failure signals look like. They're checked into `tests/scenarios/` so they grow over time:
+
+- Add a scenario whenever a real-use bug exposes a gap our unit tests miss
+- Add a scenario whenever a new feature has agent-visible behavior worth pinning
+- Name them `NN-short-name.md` (zero-padded to keep them sorted)
+
+The scenarios are NOT executed by `npm test` — they require a Claude Code worker and real Chrome. Run them manually before a release, or after any change to the bridge / dialog system / MCP layer.
+
 ## Common Issues
 
 ### Build Issues
