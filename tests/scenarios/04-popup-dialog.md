@@ -6,16 +6,20 @@ This is the scenario the unit/integration test `test/popup-dialog-integration.te
 
 ## Setup
 
-Create two fixture HTML files in /tmp (one-shot):
+Create two fixture HTML files in `/tmp` and serve them via Python's HTTP
+server rooted at `/tmp`. The popup's `window.open` URL must be relative
+(no leading slash, no `/tmp/` prefix) because the server's URL root is
+`/tmp` on the filesystem — `'popup.html'` resolves to the file you write
+below; `'/tmp/popup.html'` does NOT.
 
-`/tmp/popup-opener.html`:
+Write `/tmp/popup-opener.html` with exactly this content:
 ```html
 <!doctype html>
 <title>Opener</title>
-<button id="open" onclick="window.open('/tmp/popup.html')">Open popup</button>
+<button id="open" onclick="window.open('popup.html')">Open popup</button>
 ```
 
-`/tmp/popup.html`:
+Write `/tmp/popup.html` with exactly this content:
 ```html
 <!doctype html>
 <title>Popup</title>
@@ -26,22 +30,36 @@ Create two fixture HTML files in /tmp (one-shot):
 </script>
 ```
 
-You can serve them via a tiny Python HTTP server:
+Start the HTTP server (kill any prior server on this port first):
 ```bash
-cd /tmp && python3 -m http.server 8765 &
+pkill -f "http.server 8765" 2>/dev/null; sleep 1
+cd /tmp && python3 -m http.server 8765 > /tmp/popup-server.log 2>&1 &
+sleep 1
+curl -s -o /dev/null -w "%{http_code}\n" http://localhost:8765/popup-opener.html
+# Must print 200. If anything else, fix the server before continuing.
 ```
-
-Or use a `file://` URL if window.open works with file:// (it may not — try HTTP first).
 
 ## Steps
 
 1. Navigate the main tab to `http://localhost:8765/popup-opener.html`.
-2. Click `#open` — this calls `window.open()` to spawn the popup.
-3. Wait a couple seconds for the popup to load and its inline script to fire `confirm()`.
-4. List tabs — there should now be at least 2 (opener + popup).
-5. Check whether the popup's `confirm()` dialog was caught. Approach: try to do any page action on the popup tab and see if it's refused with the dialog error.
-6. Handle the dialog on the popup tab using `dialog::accept`.
-7. Confirm the popup's `window.__userChoice` is `true` by evaluating it in the popup tab.
+2. Click `#open` — this calls `window.open()` to spawn the popup. The
+   click action itself may report a CDP timeout because the popup's
+   synchronous `confirm()` wedges Chrome's main thread; that's expected
+   here and is NOT a failure.
+3. Wait ~2 seconds, then `list_tabs`. There must be at least 2 tabs;
+   one of them should be the popup (title "Popup") and one the opener
+   (title "Opener"). Record their indices.
+4. `switch_tab` to the popup tab. Match on `payload: "Popup"` (title
+   substring) so the routing is unambiguous — do NOT rely on the
+   implicit active tab.
+5. Run `eval` with `payload: "document.title"` on the popup tab. The
+   bridge MUST refuse with a dialog error: response text contains
+   "Page is behind a dialog" AND mentions `dialog::accept` /
+   `dialog::dismiss` AND quotes the `Are you sure?` prompt.
+6. `click` with `selector: "dialog::accept"` on the popup tab. Must
+   succeed without error.
+7. `eval` with `payload: "window.__userChoice"` on the popup tab. Must
+   return literal boolean `true`.
 
 ## Pass criteria
 

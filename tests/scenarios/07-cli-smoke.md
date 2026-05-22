@@ -1,35 +1,109 @@
 # Scenario 07 — CLI smoke
 
-**Goal:** Verify the `chrome-ws` CLI works at all. The CLI uses the same lib code as the MCP, so functionality should mirror it; but the CLI entrypoint, arg parsing, and exit codes are a separate surface.
+**Goal:** Verify the `chrome-ws` CLI works at all. The CLI uses the same
+lib code as the MCP, so functionality should mirror it — but the CLI
+entrypoint, arg parsing, and exit codes are a separate surface.
 
 ## Setup
 
-The CLI binary is exposed by the plugin at `skills/browsing/chrome-ws.cjs` (or similar — check `package.json` "bin"). You can invoke it directly via `node skills/browsing/chrome-ws.cjs` or whatever the plugin documents.
+The CLI under test lives in the branch you are exercising. The eval
+harness exposes it as a symlink at a fixed path so this scenario does
+not have to discover it. DO NOT use `chrome-ws` from `$PATH` or anything
+under `~/.claude/plugins/cache/...` — those are older marketplace builds
+and will give misleading results.
 
-Look at `skills/browsing/COMMANDLINE-USAGE.md` for the documented commands.
+The CLI binary for this run is:
+```
+/tmp/bridge-bin/chrome-ws
+```
+
+Before any step, confirm it is the right one:
+```bash
+/tmp/bridge-bin/chrome-ws --version
+```
+Must print `2.2.0`. If anything else prints (including the literal usage
+banner that ends with `Usage: chrome-ws raw ...`), stop and report —
+the harness setup is broken; do not continue.
+
+Throughout this scenario, use that absolute path for every invocation.
+Do not abbreviate it, alias it, or rely on PATH.
+
+## Command syntax reference
+
+`chrome-ws` commands take a tab argument first (numeric index `0`, `1`,
+... or a full `ws://` URL). The exact shapes used below:
+- `start [port]` — launch Chrome
+- `stop` — kill Chrome
+- `tabs` — list tabs as JSON
+- `navigate <tab> <url>` — navigate the tab
+- `extract <tab> <selector>` — get an element's text
+- `fill <tab> <selector> <text>` — fill an input
+- `eval <tab> <js>` — run JS and print the result
 
 ## Steps
 
-1. **Print help**: invoke the CLI with `--help`. Should list subcommands without crashing.
-2. **Print version**: invoke with `--version`. Should output `2.2.0`.
-3. **Start Chrome**: `chrome-ws start` (or whatever the start command is). Should launch Chrome on a port.
-4. **Navigate**: `chrome-ws navigate https://example.com`. Should succeed.
-5. **Extract**: `chrome-ws extract text h1`. Should output `"Example Domain"`.
-6. **Fill**: navigate to a data URL with an input, `chrome-ws fill #i "hello"`. Verify via `chrome-ws eval` that the input value is set.
-7. **Eval**: `chrome-ws eval "2 + 2"`. Should output `4`.
-8. **Stop Chrome**: `chrome-ws stop` (or `kill`). Chrome process should exit.
+For each step, capture exit code and stdout. Treat any non-zero exit
+code as FAIL for that step (note the exit code in the report).
+
+1. **Help**
+   ```bash
+   /tmp/bridge-bin/chrome-ws --help
+   ```
+   Must exit 0. First non-blank line must be `Usage: chrome-ws <command> [args]`.
+
+2. **Version**
+   ```bash
+   /tmp/bridge-bin/chrome-ws --version
+   ```
+   Must exit 0 and print exactly `2.2.0`.
+
+3. **Start Chrome**
+   ```bash
+   /tmp/bridge-bin/chrome-ws start
+   ```
+   Must exit 0. Subsequent commands need Chrome running.
+
+4. **List tabs**
+   ```bash
+   /tmp/bridge-bin/chrome-ws tabs
+   ```
+   Must exit 0 and print JSON. Record the index of the first tab (call
+   it `T`); use `T` for the navigation/extract/eval steps below.
+
+5. **Navigate**
+   ```bash
+   /tmp/bridge-bin/chrome-ws navigate <T> https://example.com
+   ```
+   Must exit 0.
+
+6. **Extract**
+   ```bash
+   /tmp/bridge-bin/chrome-ws extract <T> h1
+   ```
+   Must exit 0. Output must contain `Example Domain`.
+
+7. **Eval**
+   ```bash
+   /tmp/bridge-bin/chrome-ws eval <T> "2 + 2"
+   ```
+   Must exit 0. Output must contain `4`.
+
+8. **Stop Chrome**
+   ```bash
+   /tmp/bridge-bin/chrome-ws stop
+   ```
+   Must exit 0. After this, `chrome-ws tabs` will fail; that's expected
+   and is not part of this step's pass criterion.
 
 ## Pass criteria
 
-- Each command exits with status 0 on success
-- Output is parseable (text or JSON depending on the command's documented shape)
-- No "is not a function" / module errors
-- Bridge bootstraps cleanly via the CLI just like via the MCP
+All 8 steps exit 0 with output matching the per-step expectation above.
 
 ## Failure signals
 
-- CLI crashes on startup → bundling or entry-point issue
-- Bridge not initialized → CLI session setup is different from MCP and skipped ensureBridge
-- Different errors between CLI and MCP for the same operation → divergent code paths
+- Step 2 prints anything other than `2.2.0` → wrong binary; harness symlink is stale
+- Step 1 prints `Usage: chrome-ws raw ...` instead of the multi-command usage → wrong binary (older marketplace 2.1.0)
+- Any "is not a function" / module errors → bundling or entry-point issue
+- Bridge not initialized → CLI session setup diverged from MCP (skipped `ensureBridge`)
 
 Report the matrix of 8 commands × pass / fail / unsupported.
