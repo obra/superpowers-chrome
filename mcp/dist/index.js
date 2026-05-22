@@ -13902,6 +13902,7 @@ if (forceHeadless) {
 } else {
   headlessMode = !hasDisplay();
 }
+var chromeWasRestarted = false;
 var BrowserAction = /* @__PURE__ */ ((BrowserAction2) => {
   BrowserAction2["NAVIGATE"] = "navigate";
   BrowserAction2["BACK"] = "back";
@@ -13961,7 +13962,10 @@ function parsePayload(payload, defaultKey) {
 }
 async function ensureChromeRunning() {
   try {
-    await chromeLib.startChrome(headlessMode, void 0, explicitPort);
+    const spawned = await chromeLib.startChrome(headlessMode, void 0, explicitPort);
+    if (spawned === true) {
+      chromeWasRestarted = true;
+    }
   } catch (startError) {
     throw new Error(`Failed to auto-start Chrome: ${startError instanceof Error ? startError.message : String(startError)}`);
   }
@@ -14023,6 +14027,7 @@ ${capture.domSummary}
 \u{1F4DD} DOM Changes:
 ${capture.diffSummary}`;
 }
+var RESTART_BANNER = "[Chrome auto-restarted; URL reset to about:blank. Re-navigate to continue.]";
 async function executeBrowserAction(params) {
   const tabIndex = activeTab;
   const topSelector = params.selector ?? null;
@@ -14119,7 +14124,7 @@ async function executeBrowserAction(params) {
           throw new Error("selector-based extraction only supports 'text' or 'html' format");
         }
         if (extracted == null) {
-          return `Element not found: ${selector}`;
+          return `Error: Element not found: ${selector}`;
         }
         return extracted;
       } else {
@@ -14194,14 +14199,21 @@ async function executeBrowserAction(params) {
 Result: ${evalResult.result}`);
     }
     case "attr" /* ATTR */: {
-      const p = parsePayload(payload, "selector");
-      const selector = topSelector ?? p.selector;
-      const attr = p.attr;
+      let selector;
+      let attr;
+      if (typeof payload === "string") {
+        selector = topSelector;
+        attr = payload;
+      } else {
+        const p = parsePayload(payload, "selector");
+        selector = topSelector ?? p.selector;
+        attr = p.attr;
+      }
       if (!selector || typeof selector !== "string") {
         throw new Error("attr requires selector (top-level or payload.selector)");
       }
       if (!attr || typeof attr !== "string") {
-        throw new Error("attr requires payload.attr (attribute name)");
+        throw new Error("attr requires payload.attr (attribute name) or payload as bare string");
       }
       const attrValue = await chromeLib.getAttribute(tabIndex, selector, attr);
       return String(attrValue);
@@ -14290,31 +14302,41 @@ Result: ${evalResult.result}`);
       return formatCaptureResponse("Hovered", selector, hoverResult.capture, hoverResult.dialog, hoverResult.artifacts);
     }
     case "drag_drop" /* DRAG_DROP */: {
-      const p = parsePayload(payload, "source");
-      const source = topSelector ?? p.source;
-      if (!source || typeof source !== "string") {
-        throw new Error("drag_drop requires selector (top-level, used as source) or payload.source");
-      }
-      const targetRaw = p.target;
-      if (targetRaw === void 0) {
-        throw new Error("drag_drop requires payload.target (target selector or {x,y})");
-      }
+      let source;
       let dragTarget;
-      if (typeof targetRaw === "object" && targetRaw.x !== void 0 && targetRaw.y !== void 0) {
-        dragTarget = { x: targetRaw.x, y: targetRaw.y };
-      } else if (typeof targetRaw === "string") {
-        try {
-          const parsed = JSON.parse(targetRaw);
-          if (typeof parsed === "object" && parsed.x !== void 0 && parsed.y !== void 0) {
-            dragTarget = { x: parsed.x, y: parsed.y };
-          } else {
+      if (typeof payload === "string") {
+        source = topSelector ?? "";
+        dragTarget = payload;
+      } else if (typeof payload === "object" && payload !== null && payload.x !== void 0 && payload.y !== void 0 && payload.target === void 0 && payload.source === void 0) {
+        const p = payload;
+        source = topSelector ?? "";
+        dragTarget = { x: p.x, y: p.y };
+      } else {
+        const p = parsePayload(payload, "source");
+        source = topSelector ?? p.source;
+        const targetRaw = p.target;
+        if (targetRaw === void 0) {
+          throw new Error("drag_drop requires payload.target (target selector or {x,y})");
+        }
+        if (typeof targetRaw === "object" && targetRaw.x !== void 0 && targetRaw.y !== void 0) {
+          dragTarget = { x: targetRaw.x, y: targetRaw.y };
+        } else if (typeof targetRaw === "string") {
+          try {
+            const parsed = JSON.parse(targetRaw);
+            if (typeof parsed === "object" && parsed.x !== void 0 && parsed.y !== void 0) {
+              dragTarget = { x: parsed.x, y: parsed.y };
+            } else {
+              dragTarget = targetRaw;
+            }
+          } catch {
             dragTarget = targetRaw;
           }
-        } catch {
-          dragTarget = targetRaw;
+        } else {
+          throw new Error("drag_drop payload.target must be a selector string or {x,y} coordinates");
         }
-      } else {
-        throw new Error("drag_drop payload.target must be a selector string or {x,y} coordinates");
+      }
+      if (!source || typeof source !== "string") {
+        throw new Error("drag_drop requires selector (top-level, used as source) or payload.source");
       }
       const dragResult = await chromeLib.captureActionWithDiff(
         tabIndex,
@@ -14659,6 +14681,17 @@ Login flow:
       throw new Error(`Unknown action: ${params.action}`);
   }
 }
+async function executeBrowserActionWithBanner(params) {
+  const prependBanner = chromeWasRestarted;
+  chromeWasRestarted = false;
+  const result = await executeBrowserAction(params);
+  if (prependBanner) {
+    return `${RESTART_BANNER}
+
+${result}`;
+  }
+  return result;
+}
 var activeTab = 0;
 var server = new McpServer({
   name: "chrome-mcp-server",
@@ -14705,7 +14738,7 @@ Use action='help' for full per-action payload shapes.`,
       if (!actionsNotRequiringChrome.includes(params.action)) {
         await ensureChromeRunning();
       }
-      const result = await executeBrowserAction(params);
+      const result = await executeBrowserActionWithBanner(params);
       return {
         content: [{
           type: "text",
