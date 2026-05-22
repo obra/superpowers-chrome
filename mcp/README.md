@@ -43,10 +43,11 @@ node /path/to/using-chrome-directly/mcp/dist/index.js
 The `use_browser` tool accepts these parameters:
 
 - `action` (required): Action to perform (see Actions below)
-- `tab_index` (optional): Tab index to operate on (default: 0)
 - `selector` (optional): CSS or XPath selector (XPath must start with / or //)
-- `payload` (optional): Action-specific data
+- `payload` (optional): Action-specific data (string or object)
 - `timeout` (optional): Timeout in ms for await operations (default: 5000, max: 60000)
+
+The active tab is sticky — every action operates on the current `activeTab`. Use `switch_tab` to change it.
 
 ### Actions
 
@@ -62,9 +63,10 @@ The `use_browser` tool accepts these parameters:
 | `attr` | Get element attribute | `selector` | Attribute name |
 | `await_element` | Wait for element | `selector` | - |
 | `await_text` | Wait for text | - | Text to wait for |
-| `new_tab` | Create new tab | - | - |
-| `close_tab` | Close tab | - | - |
+| `new_tab` | Create new tab | - | URL string (optional) |
+| `close_tab` | Close active tab | - | - |
 | `list_tabs` | List all tabs | - | - |
+| `switch_tab` | Switch active tab | - | Index (number), URL substring, or title substring |
 
 ### Examples
 

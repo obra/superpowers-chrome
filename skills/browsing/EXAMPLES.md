@@ -192,18 +192,19 @@ Get multiple products at once using JavaScript:
 
 ### Email Extraction
 
-List tabs, then extract data from specific tab:
+List tabs, then switch to the correct tab and extract data:
 
 ```
 // Find email tab
 {action: "list_tabs"}
 
-// Use tab 2 for email (from list_tabs output)
-{action: "click", tab_index: 2, selector: "a[title*='Organization receipt']"}
-{action: "await_element", tab_index: 2, selector: ".email-body"}
+// Switch to tab 2 (from list_tabs output), then operate on active tab
+{action: "switch_tab", payload: 2}
+{action: "click", selector: "a[title*='Organization receipt']"}
+{action: "await_element", selector: ".email-body"}
 
 // Extract donation amount
-{action: "extract", tab_index: 2, payload: "text", selector: ".donation-amount"}
+{action: "extract", payload: "text", selector: ".donation-amount"}
 ```
 
 ### Price Comparison
@@ -211,25 +212,28 @@ List tabs, then extract data from specific tab:
 Open multiple stores and compare prices:
 
 ```
-// Navigate first tab
+// Navigate first tab (already active)
 {action: "navigate", payload: "https://store1.com/product"}
 
-// Open additional tabs
+// Open additional tabs and navigate each
 {action: "new_tab"}
-{action: "navigate", tab_index: 1, payload: "https://store2.com/product"}
+{action: "navigate", payload: "https://store2.com/product"}
 
 {action: "new_tab"}
-{action: "navigate", tab_index: 2, payload: "https://store3.com/product"}
+{action: "navigate", payload: "https://store3.com/product"}
 
-// Wait for all to load and extract prices
-{action: "await_element", tab_index: 0, selector: ".price"}
-{action: "extract", tab_index: 0, payload: "text", selector: ".price"}
+// Switch back to each tab and extract prices
+{action: "switch_tab", payload: "store1.com"}
+{action: "await_element", selector: ".price"}
+{action: "extract", payload: "text", selector: ".price"}
 
-{action: "await_element", tab_index: 1, selector: ".price"}
-{action: "extract", tab_index: 1, payload: "text", selector: ".price"}
+{action: "switch_tab", payload: "store2.com"}
+{action: "await_element", selector: ".price"}
+{action: "extract", payload: "text", selector: ".price"}
 
-{action: "await_element", tab_index: 2, selector: ".price"}
-{action: "extract", tab_index: 2, payload: "text", selector: ".price"}
+{action: "switch_tab", payload: "store3.com"}
+{action: "await_element", selector: ".price"}
+{action: "extract", payload: "text", selector: ".price"}
 ```
 
 ### Cross-Reference Between Sites
@@ -242,16 +246,16 @@ Extract data from one site and use in another:
 {action: "await_element", selector: ".phone"}
 {action: "extract", payload: "text", selector: ".phone"}
 
-// Store the result, then open verification site
+// Store the result, then open verification site in a new tab
 {action: "new_tab"}
-{action: "navigate", tab_index: 1, payload: "https://lookup.com"}
-{action: "await_element", tab_index: 1, selector: "input[name=phone]"}
+{action: "navigate", payload: "https://lookup.com"}
+{action: "await_element", selector: "input[name=phone]"}
 
-// Fill with extracted phone number
-{action: "type", tab_index: 1, selector: "input[name=phone]", payload: "<phone-from-previous-extract>"}
-{action: "click", tab_index: 1, selector: "button.search"}
-{action: "await_element", tab_index: 1, selector: ".results"}
-{action: "extract", tab_index: 1, payload: "text", selector: ".verification-status"}
+// Fill with extracted phone number (new tab is already active)
+{action: "type", selector: "input[name=phone]", payload: "<phone-from-previous-extract>"}
+{action: "click", selector: "button.search"}
+{action: "await_element", selector: ".results"}
+{action: "extract", payload: "text", selector: ".verification-status"}
 ```
 
 ---
@@ -520,19 +524,23 @@ Append newline to auto-submit forms:
 
 ## Common Pitfalls
 
-### Don't Cache Tab Indices
+### Don't Rely on Tab Indices
 
-Tab indices change when tabs close - always get fresh list:
+Tab indices change when tabs close — use URL or title substrings for reliable switching:
 
 ```
 // BAD - index might be stale after closing tabs
-// (using tab 2 without checking if it still exists)
-{action: "click", tab_index: 2, selector: "button"}
+{action: "switch_tab", payload: 2}
+{action: "click", selector: "button"}
 
-// GOOD - list tabs first
+// GOOD - switch by URL or title substring (stable across tab changes)
+{action: "switch_tab", payload: "example.com"}
+{action: "click", selector: "button"}
+
+// Or list tabs first to confirm the index
 {action: "list_tabs"}
-// Then use appropriate index from the output
-{action: "click", tab_index: 2, selector: "button"}
+{action: "switch_tab", payload: 2}
+{action: "click", selector: "button"}
 ```
 
 ### Increase Timeout for Slow Pages

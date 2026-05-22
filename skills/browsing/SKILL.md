@@ -40,10 +40,11 @@ Single MCP tool with action-based interface. Chrome auto-starts on first use.
 
 **Parameters:**
 - `action` (required): Operation to perform
-- `tab_index` (optional): Tab to operate on (default: 0)
-- `selector` (optional): CSS selector for element operations
-- `payload` (optional): Action-specific data
+- `selector` (optional): CSS or XPath selector for element operations
+- `payload` (optional): Action-specific data (string or object)
 - `timeout` (optional): Timeout in ms for await operations (default: 5000)
+
+**Active tab**: Every action operates on the current `activeTab`. Use `switch_tab` to change it.
 
 ## Actions Reference
 
@@ -85,9 +86,9 @@ Single MCP tool with action-based interface. Chrome auto-starts on first use.
   - Example: `{action: "select", selector: "select[name=state]", payload: "CA"}`
 
 - **keyboard_press**: Press special keys (Tab, Enter, Escape, Arrow keys, F1-F12)
-  - `payload`: Key name
-  - `modifiers`: Optional {shift, ctrl, alt, meta}
+  - `payload`: Key name (string) or `{"key": "Tab", "modifiers": {"shift": true, "ctrl": false, "alt": false, "meta": false}}`
   - Example: `{action: "keyboard_press", payload: "Tab"}`
+  - Example with modifiers: `{action: "keyboard_press", payload: {"key": "Tab", "modifiers": {"shift": true}}}`
 
 ### Mouse Actions (CDP-Level)
 These use CDP Input.dispatchMouseEvent, bypassing synthetic event restrictions.
@@ -146,9 +147,14 @@ These use CDP Input.dispatchMouseEvent, bypassing synthetic event restrictions.
 - **new_tab**: Create new tab
   - Example: `{action: "new_tab"}`
 
-- **close_tab**: Close tab
-  - `tab_index`: Tab to close
-  - Example: `{action: "close_tab", tab_index: 2}`
+- **close_tab**: Close the active tab
+  - Example: `{action: "close_tab"}`
+
+- **switch_tab**: Switch the active tab (sticky — stays until changed)
+  - `payload`: Tab index (number), URL substring, or title substring
+  - Example: `{action: "switch_tab", payload: 1}` (by index)
+  - Example: `{action: "switch_tab", payload: "example.com"}` (by URL substring)
+  - Example: `{action: "switch_tab", payload: "GitHub"}` (by title substring)
 
 ### Browser Mode Control
 - **show_browser**: Make browser window visible (headed mode)
@@ -243,9 +249,10 @@ Uses `keyboard_press` to submit the form.
 ### Multi-Tab Workflow
 ```
 {action: "list_tabs"}
-{action: "click", tab_index: 2, selector: "a.email"}
-{action: "await_element", tab_index: 2, selector: ".content"}
-{action: "extract", tab_index: 2, payload: "text", selector: ".amount"}
+{action: "switch_tab", payload: 2}
+{action: "click", selector: "a.email"}
+{action: "await_element", selector: ".content"}
+{action: "extract", payload: "text", selector: ".amount"}
 ```
 
 ### Dynamic Content
@@ -359,9 +366,10 @@ Extract page content to verify selectors before building workflow.
 - Increase timeout: `{timeout: 30000}` for slow pages
 - Wait for specific element instead of text
 
-**Tab index out of range:**
-- Use `list_tabs` to get current indices
-- Tab indices change when tabs close
+**Wrong tab active:**
+- Use `list_tabs` to see all open tabs
+- Use `switch_tab` with a URL or title substring to reliably switch tabs
+- Tab indices shift when tabs close — prefer URL/title-based switching
 
 **eval returns `[object Object]`:**
 - Use `JSON.stringify()` for complex objects: `{action: "eval", payload: "JSON.stringify({name: 'test'})"}`
