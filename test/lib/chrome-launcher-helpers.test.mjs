@@ -53,6 +53,23 @@ describe('chrome-launcher-helpers', () => {
     }
   });
 
+  it('buildChromeArgs includes first-run suppression and automation flags', () => {
+    const args = buildChromeArgs({
+      chosenPort: 9333,
+      chromeUserDataDir: '/tmp/profile',
+      chromeHeadless: false
+    });
+    assert.ok(args.includes('--no-first-run'));
+    assert.ok(args.includes('--no-default-browser-check'));
+    assert.ok(args.includes('--disable-search-engine-choice-screen'));
+    assert.ok(args.includes('--password-store=basic'));
+    assert.ok(args.includes('--use-mock-keychain'));
+    const disableFeatures = args.find(a => a.startsWith('--disable-features='));
+    assert.ok(disableFeatures, '--disable-features flag must exist');
+    assert.ok(disableFeatures.includes('Translate'), 'must disable Translate');
+    assert.ok(disableFeatures.includes('OptimizationHints'), 'must disable OptimizationHints');
+  });
+
   it('getXdgCacheHome returns a non-empty path', () => {
     const path = getXdgCacheHome();
     assert.equal(typeof path, 'string');
