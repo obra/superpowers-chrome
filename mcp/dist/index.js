@@ -14076,6 +14076,11 @@ async function executeBrowserAction(params) {
         "type",
         () => chromeLib.humanType(tabIndex, params.selector || null, params.payload)
       );
+      if (!typeResult.capture) {
+        const target = params.selector ? `into ${params.selector}` : "into current focus";
+        return `Typed: ${target}
+${JSON.stringify(typeResult.actionResult ?? {})}`;
+      }
       return formatCaptureResponse(
         "Typed",
         params.selector ? `into ${params.selector}` : "into current focus",

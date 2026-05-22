@@ -339,6 +339,12 @@ async function executeBrowserAction(params: UseBrowserInput): Promise<string> {
         'type',
         () => chromeLib.humanType(tabIndex, params.selector || null, params.payload)
       );
+      // When a dialog is open, captureActionWithDiff skips capture and returns
+      // only { actionResult }. The inner dialog router returns a staging result.
+      if (!typeResult.capture) {
+        const target = params.selector ? `into ${params.selector}` : 'into current focus';
+        return `Typed: ${target}\n${JSON.stringify(typeResult.actionResult ?? {})}`;
+      }
       return formatCaptureResponse(
         'Typed',
         params.selector ? `into ${params.selector}` : 'into current focus',
