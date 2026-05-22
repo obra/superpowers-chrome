@@ -54,6 +54,25 @@ describe('extraction', () => {
     assert.match(call.params.expression, /getAttribute\("href"\)$/);
   });
 
+  it('extractText returns null when selector matches no element', async () => {
+    // Optional chaining in the expression returns undefined from Runtime.evaluate
+    // when the selector misses; the MCP layer must detect null/undefined and
+    // return "Element not found: <selector>" rather than an empty content block.
+    const { extractText } = setup({
+      'Runtime.evaluate': () => ({ result: { value: undefined } })
+    });
+    const result = await extractText(0, '#missing');
+    assert.equal(result, undefined);
+  });
+
+  it('getHtml returns null when selector matches no element', async () => {
+    const { getHtml } = setup({
+      'Runtime.evaluate': () => ({ result: { value: undefined } })
+    });
+    const result = await getHtml(0, '#missing');
+    assert.equal(result, undefined);
+  });
+
   it('extractText throws if exceptionDetails is set', async () => {
     const { extractText } = setup({
       'Runtime.evaluate': () => ({

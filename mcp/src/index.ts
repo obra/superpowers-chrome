@@ -359,13 +359,18 @@ async function executeBrowserAction(params: UseBrowserInput): Promise<string> {
 
       if (params.selector) {
         // Extract specific element
+        let extracted: string | null | undefined;
         if (format === 'text') {
-          return await chromeLib.extractText(tabIndex, params.selector);
+          extracted = await chromeLib.extractText(tabIndex, params.selector);
         } else if (format === 'html') {
-          return await chromeLib.getHtml(tabIndex, params.selector);
+          extracted = await chromeLib.getHtml(tabIndex, params.selector);
         } else {
           throw new Error("selector-based extraction only supports 'text' or 'html' format");
         }
+        if (extracted == null) {
+          return `Element not found: ${params.selector}`;
+        }
+        return extracted;
       } else {
         // Extract whole page
         if (format === 'text') {
