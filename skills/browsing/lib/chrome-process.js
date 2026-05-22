@@ -44,7 +44,7 @@ function attachChromeProcess({ state, chromeHttp, getTabs, newTab }) {
         if (await isPortAlive(CHROME_DEBUG_HOST, meta.port, meta.pid)) {
           state.activePort = meta.port;
           console.error(`Reconnected to existing Chrome (port: ${meta.port}, PID: ${meta.pid}, profile: ${state.chromeProfileName})`);
-          return;
+          return false; // reconnected — no new Chrome spawned
         }
         // Stale meta.json — Chrome died without cleanup
         clearProfileMeta(state.chromeProfileName);
@@ -60,7 +60,7 @@ function attachChromeProcess({ state, chromeHttp, getTabs, newTab }) {
         // Persist meta.json so subsequent runs hit Step 1 directly.
         writeProfileMeta(state.chromeProfileName, { port: orphanInfo.port, pid: orphanInfo.pid });
         console.error(`Adopted orphan Chrome (port: ${orphanInfo.port}, PID: ${orphanInfo.pid}, profile: ${state.chromeProfileName})`);
-        return;
+        return false; // adopted — no new Chrome spawned
       }
     }
 
@@ -162,6 +162,7 @@ function attachChromeProcess({ state, chromeHttp, getTabs, newTab }) {
 
     const mode = state.chromeHeadless ? 'headless' : 'headed';
     console.error(`Chrome started in ${mode} mode (PID: ${proc.pid}, port: ${chosenPort}, profile: ${state.chromeProfileName})`);
+    return true; // new Chrome was spawned
   }
 
   async function closeBridge() {
@@ -287,14 +288,20 @@ function attachChromeProcess({ state, chromeHttp, getTabs, newTab }) {
   }
 
   async function getBrowserMode() {
+    const running = state.chromeProcess !== null;
+    // Always report the configured profile/profileDir/port so the caller knows
+    // what would happen on next start, regardless of whether Chrome is running.
+    // When stopped, chromeUserDataDir may be null (not yet derived); derive it
+    // lazily from the profile name so the response is always informative.
+    const profileDir = state.chromeUserDataDir ?? getChromeProfileDir(state.chromeProfileName);
     return {
       headless: state.chromeHeadless,
       mode: state.chromeHeadless ? 'headless' : 'headed',
-      running: state.chromeProcess !== null,
-      pid: state.chromeProcess ? state.chromeProcess.pid : null,
+      running,
+      pid: running ? state.chromeProcess.pid : null,
       port: state.activePort,
       profile: state.chromeProfileName,
-      profileDir: state.chromeUserDataDir
+      profileDir,
     };
   }
 

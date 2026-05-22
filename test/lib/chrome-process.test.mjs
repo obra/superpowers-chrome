@@ -437,3 +437,41 @@ describe('chrome-process: Bug 3 — killChrome resets activePort; restartInMode 
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// Fix 5: browser_mode symmetry — profileDir always populated even when stopped
+// ---------------------------------------------------------------------------
+
+describe('chrome-process: getBrowserMode profileDir symmetry', () => {
+  it('reports profileDir from chromeUserDataDir when Chrome is running', async () => {
+    const { getBrowserMode, state } = setup();
+    state.chromeProcess = { pid: 1111 };
+    state.chromeUserDataDir = '/tmp/my-profile';
+    const mode = await getBrowserMode();
+    assert.equal(mode.profileDir, '/tmp/my-profile');
+    assert.equal(mode.running, true);
+    assert.equal(mode.pid, 1111);
+  });
+
+  it('derives profileDir from profile name when chromeUserDataDir is null (stopped)', async () => {
+    const { getBrowserMode, state } = setup();
+    state.chromeProcess = null;
+    state.chromeUserDataDir = null;
+    state.chromeProfileName = 'superpowers-chrome';
+    const mode = await getBrowserMode();
+    // Should be a non-null string derived from the profile name, not null
+    assert.ok(typeof mode.profileDir === 'string', 'profileDir should be a string even when stopped');
+    assert.ok(mode.profileDir.length > 0, 'profileDir should be non-empty');
+    assert.equal(mode.running, false);
+    assert.equal(mode.pid, null);
+  });
+
+  it('reports both profile and profileDir fields when stopped', async () => {
+    const { getBrowserMode, state } = setup();
+    state.chromeProcess = null;
+    state.chromeUserDataDir = null;
+    const mode = await getBrowserMode();
+    assert.ok('profile' in mode, 'profile field present when stopped');
+    assert.ok('profileDir' in mode, 'profileDir field present when stopped');
+  });
+});

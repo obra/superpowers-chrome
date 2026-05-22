@@ -60,6 +60,10 @@ if (forceHeadless) {
   headlessMode = !hasDisplay();
 }
 
+// Set to true when Chrome auto-restarted due to an external kill.
+// Consumed (and cleared) by executeBrowserAction on the first action after restart.
+let chromeWasRestarted = false;
+
 // Action enum for use_browser tool
 enum BrowserAction {
   NAVIGATE = "navigate",
@@ -159,12 +163,19 @@ function parsePayload(payload: string | Record<string, any> | undefined, default
  * Always calls startChrome() so that after an external Chrome kill
  * the next action brings it back up automatically. startChrome() handles
  * meta.json discovery and reconnection (fast-path) so this is idempotent.
+ *
+ * Sets chromeWasRestarted=true when a brand-new Chrome process was spawned
+ * (rather than reconnecting to an already-running one). executeBrowserAction
+ * prepends the restart banner to the first response after a restart.
  */
 async function ensureChromeRunning(): Promise<void> {
   try {
-    // startChrome checks meta.json for existing Chrome, reconnects if alive,
-    // otherwise finds an available port and launches a new instance.
-    await chromeLib.startChrome(headlessMode, undefined, explicitPort);
+    // startChrome returns true when a new Chrome was spawned, false when it
+    // reconnected to an existing instance (or adopted an orphan).
+    const spawned = await chromeLib.startChrome(headlessMode, undefined, explicitPort);
+    if (spawned === true) {
+      chromeWasRestarted = true;
+    }
   } catch (startError) {
     throw new Error(`Failed to auto-start Chrome: ${startError instanceof Error ? startError.message : String(startError)}`);
   }
@@ -260,6 +271,8 @@ ${capture.domSummary}
 📝 DOM Changes:
 ${capture.diffSummary}`;
 }
+
+const RESTART_BANNER = '[Chrome auto-restarted; URL reset to about:blank. Re-navigate to continue.]';
 
 /**
  * Execute browser action using chrome-ws library
@@ -378,7 +391,7 @@ async function executeBrowserAction(params: UseBrowserInput): Promise<string> {
           throw new Error("selector-based extraction only supports 'text' or 'html' format");
         }
         if (extracted == null) {
-          return `Element not found: ${selector}`;
+          return `Error: Element not found: ${selector}`;
         }
         return extracted;
       } else {
@@ -459,14 +472,25 @@ async function executeBrowserAction(params: UseBrowserInput): Promise<string> {
     }
 
     case BrowserAction.ATTR: {
-      const p = parsePayload(payload, 'selector');
-      const selector = topSelector ?? p.selector;
-      const attr = p.attr;
+      // Liberal accept: payload may be a bare string (attribute name) or
+      // an object {attr: "name"} (and optionally {selector, attr}).
+      // Selector always comes from top-level param when payload is a bare string.
+      let selector: string | null;
+      let attr: string;
+      if (typeof payload === 'string') {
+        // Bare string form: payload = attribute name, selector = top-level param
+        selector = topSelector;
+        attr = payload;
+      } else {
+        const p = parsePayload(payload, 'selector');
+        selector = topSelector ?? p.selector;
+        attr = p.attr;
+      }
       if (!selector || typeof selector !== 'string') {
         throw new Error("attr requires selector (top-level or payload.selector)");
       }
       if (!attr || typeof attr !== 'string') {
-        throw new Error("attr requires payload.attr (attribute name)");
+        throw new Error("attr requires payload.attr (attribute name) or payload as bare string");
       }
       const attrValue = await chromeLib.getAttribute(tabIndex, selector, attr);
       return String(attrValue);
@@ -567,34 +591,59 @@ async function executeBrowserAction(params: UseBrowserInput): Promise<string> {
     }
 
     case BrowserAction.DRAG_DROP: {
-      const p = parsePayload(payload, 'source');
-      const source = topSelector ?? p.source;
-      if (!source || typeof source !== 'string') {
-        throw new Error("drag_drop requires selector (top-level, used as source) or payload.source");
-      }
-      const targetRaw = p.target;
-      if (targetRaw === undefined) {
-        throw new Error("drag_drop requires payload.target (target selector or {x,y})");
-      }
-
-      // Parse target: coordinates object or selector string
+      // Liberal accept for payload:
+      //   1. "selector"             → bare string = target selector; source = top-level selector
+      //   2. {x: N, y: N}           → coords-only object = target coords; source = top-level selector
+      //   3. {source: "...", target: ...} → full form
+      //   4. {target: ...}          → target only; source = top-level selector (legacy form)
+      let source: string;
       let dragTarget: string | { x: number; y: number };
-      if (typeof targetRaw === 'object' && targetRaw.x !== undefined && targetRaw.y !== undefined) {
-        dragTarget = { x: targetRaw.x, y: targetRaw.y };
-      } else if (typeof targetRaw === 'string') {
-        // Try to parse as JSON coordinates
-        try {
-          const parsed = JSON.parse(targetRaw);
-          if (typeof parsed === 'object' && parsed.x !== undefined && parsed.y !== undefined) {
-            dragTarget = { x: parsed.x, y: parsed.y };
-          } else {
+
+      if (typeof payload === 'string') {
+        // Form 1: bare string = target selector
+        source = topSelector ?? '';
+        dragTarget = payload;
+      } else if (
+        typeof payload === 'object' && payload !== null &&
+        (payload as Record<string, any>).x !== undefined &&
+        (payload as Record<string, any>).y !== undefined &&
+        (payload as Record<string, any>).target === undefined &&
+        (payload as Record<string, any>).source === undefined
+      ) {
+        // Form 2: bare coords object = target coords
+        const p = payload as Record<string, any>;
+        source = topSelector ?? '';
+        dragTarget = { x: p.x as number, y: p.y as number };
+      } else {
+        // Forms 3 & 4: object with source/target fields
+        const p = parsePayload(payload, 'source');
+        source = topSelector ?? p.source;
+        const targetRaw = p.target;
+        if (targetRaw === undefined) {
+          throw new Error("drag_drop requires payload.target (target selector or {x,y})");
+        }
+        // Parse target: coordinates object or selector string
+        if (typeof targetRaw === 'object' && targetRaw.x !== undefined && targetRaw.y !== undefined) {
+          dragTarget = { x: targetRaw.x, y: targetRaw.y };
+        } else if (typeof targetRaw === 'string') {
+          // Try to parse as JSON coordinates
+          try {
+            const parsed = JSON.parse(targetRaw);
+            if (typeof parsed === 'object' && parsed.x !== undefined && parsed.y !== undefined) {
+              dragTarget = { x: parsed.x, y: parsed.y };
+            } else {
+              dragTarget = targetRaw;
+            }
+          } catch {
             dragTarget = targetRaw;
           }
-        } catch {
-          dragTarget = targetRaw;
+        } else {
+          throw new Error("drag_drop payload.target must be a selector string or {x,y} coordinates");
         }
-      } else {
-        throw new Error("drag_drop payload.target must be a selector string or {x,y} coordinates");
+      }
+
+      if (!source || typeof source !== 'string') {
+        throw new Error("drag_drop requires selector (top-level, used as source) or payload.source");
       }
 
       const dragResult = await chromeLib.captureActionWithDiff(
@@ -985,6 +1034,23 @@ Login flow:
   }
 }
 
+/**
+ * Wrapper that executes a browser action and prepends the auto-restart banner
+ * to the response if Chrome was restarted before this action.
+ */
+async function executeBrowserActionWithBanner(params: UseBrowserInput): Promise<string> {
+  // Consume the restart flag before dispatching so any error thrown from the
+  // action still clears the flag (we've already noted the restart).
+  const prependBanner = chromeWasRestarted;
+  chromeWasRestarted = false;
+
+  const result = await executeBrowserAction(params);
+  if (prependBanner) {
+    return `${RESTART_BANNER}\n\n${result}`;
+  }
+  return result;
+}
+
 // Sticky tab state: updated by switch_tab, new_tab, close_tab
 let activeTab = 0;
 
@@ -1037,8 +1103,8 @@ Use action='help' for full per-action payload shapes.`,
         await ensureChromeRunning();
       }
 
-      // Execute browser action
-      const result = await executeBrowserAction(params);
+      // Execute browser action (banner prepended if Chrome was auto-restarted)
+      const result = await executeBrowserActionWithBanner(params);
 
       return {
         content: [{

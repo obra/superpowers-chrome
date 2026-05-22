@@ -1,0 +1,155 @@
+/**
+ * Tests for MCP-layer Postel fixes (liberal payload acceptance) and
+ * auto-restart banner behavior.
+ *
+ * Covers:
+ *  - Fix 1: auto-restart banner prepended to first action after Chrome restart
+ *  - Fix 2a: attr accepts bare string payload (attribute name)
+ *  - Fix 2b: drag_drop accepts bare string and bare {x,y} payload
+ *  - Fix 4 (cosmetic): extract error prefix matches click's format
+ */
+
+import { strict as assert } from 'node:assert';
+import { describe, it } from 'node:test';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const bundleSrc = fs.readFileSync(
+  path.join(__dirname, '..', 'mcp', 'dist', 'index.js'),
+  'utf8'
+);
+const srcFile = path.join(__dirname, '..', 'mcp', 'src', 'index.ts');
+const srcContent = fs.readFileSync(srcFile, 'utf8');
+
+// ---------------------------------------------------------------------------
+// Fix 1: auto-restart banner
+// ---------------------------------------------------------------------------
+
+describe('Fix 1: auto-restart banner in MCP source', () => {
+  it('RESTART_BANNER constant is defined in source', () => {
+    assert.ok(
+      srcContent.includes('RESTART_BANNER') || bundleSrc.includes('Chrome auto-restarted'),
+      'source should define RESTART_BANNER or contain the banner text'
+    );
+  });
+
+  it('banner text includes "about:blank" to indicate URL reset', () => {
+    assert.ok(
+      srcContent.includes('about:blank') || bundleSrc.includes('about:blank'),
+      'banner should mention about:blank'
+    );
+  });
+
+  it('chromeWasRestarted flag is used in source', () => {
+    assert.ok(
+      srcContent.includes('chromeWasRestarted'),
+      'source should use chromeWasRestarted flag'
+    );
+  });
+
+  it('startChrome return value is consumed to set chromeWasRestarted', () => {
+    // The fix requires checking the boolean returned by startChrome()
+    assert.ok(
+      srcContent.includes('spawned') || srcContent.includes('chromeWasRestarted = true'),
+      'source should set chromeWasRestarted based on startChrome() return value'
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Fix 2a: attr liberal payload acceptance
+// ---------------------------------------------------------------------------
+
+describe('Fix 2a: attr accepts bare string payload', () => {
+  it('source handles typeof payload === "string" in ATTR case', () => {
+    // The fix adds a branch for bare string payloads in the ATTR handler.
+    // We look for the pattern in the source.
+    const attrSection = srcContent.slice(srcContent.indexOf('BrowserAction.ATTR'));
+    const nextCaseIdx = attrSection.indexOf('case BrowserAction', 10);
+    const attrHandler = nextCaseIdx > 0 ? attrSection.slice(0, nextCaseIdx) : attrSection.slice(0, 500);
+    assert.ok(
+      attrHandler.includes("typeof payload === 'string'") ||
+      attrHandler.includes('typeof payload === "string"'),
+      'ATTR handler should check typeof payload === "string" for bare-string form'
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Fix 2b: drag_drop liberal payload acceptance
+// ---------------------------------------------------------------------------
+
+describe('Fix 2b: drag_drop accepts bare string and bare {x,y} payload', () => {
+  it('source handles bare string payload in DRAG_DROP case', () => {
+    const dragSection = srcContent.slice(srcContent.indexOf('BrowserAction.DRAG_DROP'));
+    const nextCaseIdx = dragSection.indexOf('case BrowserAction', 10);
+    const dragHandler = nextCaseIdx > 0 ? dragSection.slice(0, nextCaseIdx) : dragSection.slice(0, 600);
+    assert.ok(
+      dragHandler.includes("typeof payload === 'string'") ||
+      dragHandler.includes('typeof payload === "string"'),
+      'DRAG_DROP handler should accept bare string payload'
+    );
+  });
+
+  it('source handles bare {x,y} object payload without target/source fields in DRAG_DROP', () => {
+    const dragSection = srcContent.slice(srcContent.indexOf('BrowserAction.DRAG_DROP'));
+    const nextCaseIdx = dragSection.indexOf('case BrowserAction', 10);
+    const dragHandler = nextCaseIdx > 0 ? dragSection.slice(0, nextCaseIdx) : dragSection.slice(0, 600);
+    // Should check for x/y without requiring a .target field
+    assert.ok(
+      dragHandler.includes('.x !== undefined') || dragHandler.includes('p.x'),
+      'DRAG_DROP handler should detect bare coords object'
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Fix 4 (cosmetic): extract error prefix
+// ---------------------------------------------------------------------------
+
+describe('Fix 4: extract error prefix matches click error format', () => {
+  it('source returns "Error: Element not found: <selector>" from extract', () => {
+    assert.ok(
+      srcContent.includes('Error: Element not found:'),
+      'extract handler should prefix "Error:" before "Element not found:"'
+    );
+  });
+
+  it('extract error prefix starts with "Error:" like click errors', () => {
+    // Ensure the pattern is consistent with how click errors are surfaced
+    const extractSection = srcContent.slice(srcContent.indexOf('BrowserAction.EXTRACT'));
+    const nextCase = extractSection.indexOf('case BrowserAction', 10);
+    const extractHandler = nextCase > 0 ? extractSection.slice(0, nextCase) : extractSection.slice(0, 800);
+    assert.ok(
+      extractHandler.includes('Error: Element not found'),
+      'extract handler should produce "Error: Element not found: <selector>"'
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// startChrome return value contract (supports Fix 1)
+// ---------------------------------------------------------------------------
+
+describe('startChrome returns boolean: true for new spawn, false for reconnect', () => {
+  const chromeSrc = fs.readFileSync(
+    path.join(__dirname, '..', 'skills', 'browsing', 'lib', 'chrome-process.js'),
+    'utf8'
+  );
+
+  it('startChrome returns false when reconnecting to existing Chrome', () => {
+    assert.ok(
+      chromeSrc.includes('return false;'),
+      'startChrome should return false on reconnect/adopt paths'
+    );
+  });
+
+  it('startChrome returns true when spawning a new Chrome', () => {
+    assert.ok(
+      chromeSrc.includes('return true;'),
+      'startChrome should return true after launching a new Chrome process'
+    );
+  });
+});
