@@ -142,6 +142,16 @@ const UseBrowserParams = {
     ),
   timeout: z.number().int().min(0).max(60000).optional()
     .describe("Timeout in ms for await_element / await_text actions."),
+  // Postel-accept legacy parameter. Many agents emit `tab_index` from prior
+  // schema versions; rather than silently drop it, treat it as an implicit
+  // switch_tab — set activeTab to this index for this and subsequent calls.
+  // Prefer the `switch_tab` action explicitly; this is here so agents don't
+  // get cryptic timeouts when they fall back to the older shape.
+  tab_index: z.number().int().min(0).optional()
+    .describe(
+      "Legacy: behaves like switch_tab. Sets the active tab to this index " +
+      "before running the action. Prefer the switch_tab action."
+    ),
 };
 
 type UseBrowserInput = z.infer<ReturnType<typeof z.object<typeof UseBrowserParams>>>;
@@ -1090,6 +1100,13 @@ Use action='help' for full per-action payload shapes.`,
     try {
       // Parse and validate input with Zod
       const params = z.object(UseBrowserParams).parse(args) as UseBrowserInput;
+
+      // Postel: if a legacy `tab_index` is supplied, treat it as an implicit
+      // switch_tab. Stickiness matches the explicit switch_tab semantics: the
+      // change persists for subsequent calls until another switch occurs.
+      if (typeof params.tab_index === 'number') {
+        activeTab = params.tab_index;
+      }
 
       // Ensure Chrome is running (except for actions that don't need it)
       const actionsNotRequiringChrome = [

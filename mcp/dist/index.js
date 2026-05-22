@@ -13953,7 +13953,15 @@ var UseBrowserParams = {
   payload: external_exports.union([external_exports.string(), external_exports.record(external_exports.any())]).optional().describe(
     "Extra data for the action. String for simple cases (navigate=URL, type=text, eval=JS, keyboard_press=key, set_profile=name, new_tab=URL). Object for structured cases (set_viewport={width,height,mobile?}, keyboard_press={key,modifiers:{shift?,ctrl?,alt?,meta?}}, extract={format:'text'|'html'|'markdown'}, screenshot={path?,fullpage?}, scroll={deltaX?,deltaY?} or direction string, drag_drop={x,y} or selector string for target, mouse_move={x,y,steps?,fromX?,fromY?}, file_upload={files:[...]}, get_console_messages={since:epochMs}, await_text=text string or {text,timeout?}, switch_tab=tab index/url-substring/title-substring). See action='help' for per-action payload shapes."
   ),
-  timeout: external_exports.number().int().min(0).max(6e4).optional().describe("Timeout in ms for await_element / await_text actions.")
+  timeout: external_exports.number().int().min(0).max(6e4).optional().describe("Timeout in ms for await_element / await_text actions."),
+  // Postel-accept legacy parameter. Many agents emit `tab_index` from prior
+  // schema versions; rather than silently drop it, treat it as an implicit
+  // switch_tab — set activeTab to this index for this and subsequent calls.
+  // Prefer the `switch_tab` action explicitly; this is here so agents don't
+  // get cryptic timeouts when they fall back to the older shape.
+  tab_index: external_exports.number().int().min(0).optional().describe(
+    "Legacy: behaves like switch_tab. Sets the active tab to this index before running the action. Prefer the switch_tab action."
+  )
 };
 function parsePayload(payload, defaultKey) {
   if (payload === void 0 || payload === null) return {};
@@ -14725,6 +14733,9 @@ Use action='help' for full per-action payload shapes.`,
   async (args) => {
     try {
       const params = external_exports.object(UseBrowserParams).parse(args);
+      if (typeof params.tab_index === "number") {
+        activeTab = params.tab_index;
+      }
       const actionsNotRequiringChrome = [
         "set_profile" /* SET_PROFILE */,
         // Must have Chrome stopped

@@ -130,6 +130,48 @@ describe('Fix 4: extract error prefix matches click error format', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Fix 5: Postel-accept legacy tab_index parameter (implicit switch_tab)
+// ---------------------------------------------------------------------------
+
+describe('Fix 5: tab_index is Postel-accepted as implicit switch_tab', () => {
+  it('UseBrowserParams declares an optional tab_index field', () => {
+    // Find the schema block and verify tab_index is declared with .optional()
+    const schemaStart = srcContent.indexOf('const UseBrowserParams');
+    const schemaEnd = srcContent.indexOf('};', schemaStart);
+    const schemaBlock = srcContent.slice(schemaStart, schemaEnd);
+    assert.ok(
+      /tab_index:\s*z\.number\([\s\S]*?\.optional\(\)/.test(schemaBlock),
+      'UseBrowserParams should declare tab_index as z.number().int().min(0).optional()'
+    );
+  });
+
+  it('handler translates tab_index into activeTab assignment', () => {
+    // After Zod parse, the handler must mutate activeTab when tab_index is present.
+    const handlerStart = srcContent.indexOf('z.object(UseBrowserParams).parse(args)');
+    assert.ok(handlerStart > 0, 'should find the Zod parse call in the handler');
+    const slice = srcContent.slice(handlerStart, handlerStart + 600);
+    assert.ok(
+      /params\.tab_index/.test(slice) && /activeTab\s*=\s*params\.tab_index/.test(slice),
+      'handler should read params.tab_index and assign it to activeTab'
+    );
+  });
+
+  it('schema description steers agents to switch_tab', () => {
+    const schemaStart = srcContent.indexOf('const UseBrowserParams');
+    const schemaEnd = srcContent.indexOf('};', schemaStart);
+    const schemaBlock = srcContent.slice(schemaStart, schemaEnd);
+    // Find the tab_index entry's describe(...) call
+    const tabIndexIdx = schemaBlock.indexOf('tab_index:');
+    assert.ok(tabIndexIdx > 0, 'tab_index entry should exist');
+    const describeBlock = schemaBlock.slice(tabIndexIdx, tabIndexIdx + 400);
+    assert.ok(
+      /switch_tab/.test(describeBlock),
+      'tab_index description should mention switch_tab as the preferred action'
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
 // startChrome return value contract (supports Fix 1)
 // ---------------------------------------------------------------------------
 

@@ -21,11 +21,13 @@ describe('use_browser schema shape', () => {
       'bundle should reference timeout parameter');
   });
 
-  it('schema does NOT have tab_index parameter', () => {
-    // tab_index should only appear in comments or old strings, not as a Zod field name
-    // We check the tool registration section specifically
-    assert.ok(!bundleSrc.includes('tab_index:'),
-      'bundle should not define tab_index as a schema field');
+  it('schema Postel-accepts tab_index as a legacy alias for switch_tab', () => {
+    // tab_index used to be the per-call routing parameter; the reshape replaced
+    // it with sticky activeTab + switch_tab. Agents still emit tab_index from
+    // prior schema versions, so the bundle accepts it and translates it into
+    // an implicit switch_tab rather than silently dropping it.
+    assert.ok(bundleSrc.includes('tab_index'),
+      'bundle should keep tab_index as a Postel-accepted legacy parameter');
   });
 });
 
@@ -35,9 +37,11 @@ describe('switch_tab action in bundle', () => {
       'bundle should handle switch_tab action');
   });
 
-  it('bundle source uses activeTab variable instead of params.tab_index', () => {
-    assert.ok(!bundleSrc.includes('params.tab_index'),
-      'bundle should not reference params.tab_index in handler');
+  it('bundle translates legacy params.tab_index into an activeTab assignment', () => {
+    // Postel handling: when tab_index is provided, the handler assigns it to
+    // activeTab so the rest of the action runs against the requested tab.
+    assert.ok(bundleSrc.includes('params.tab_index'),
+      'bundle should read params.tab_index for the Postel translation path');
   });
 });
 
