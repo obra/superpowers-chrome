@@ -124,6 +124,12 @@ function createPageSessionResolver({ bridge }) {
     cache.delete(tabId);
     try { await ps.detach(); } catch { /* best-effort */ }
   };
+  // Prime the cache with an already-attached pageSession (from autoAttach).
+  // Subsequent resolve(tab) calls for this targetId return the primed session
+  // instead of issuing a second Target.attachToTarget. No-op if already cached.
+  resolve.prime = (targetId, ps) => {
+    if (!cache.has(targetId)) cache.set(targetId, ps);
+  };
   // Synchronous cache peek — returns the cached pageSession for a targetId, or
   // null if not yet resolved. Used by wrapWithDialogGate to check dialog state
   // without triggering I/O.

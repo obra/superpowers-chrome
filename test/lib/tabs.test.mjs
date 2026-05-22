@@ -98,6 +98,42 @@ describe('createPageSessionResolver', () => {
   });
 });
 
+describe('createPageSessionResolver: prime() for autoAttach', () => {
+  it('prime(targetId, ps) registers an externally-attached pageSession; subsequent resolve returns it without calling bridge.attachPageSession', async () => {
+    let attachCallCount = 0;
+    const bridge = {
+      attachPageSession: async (targetId) => {
+        attachCallCount++;
+        return { targetId, sessionId: 'attach-' + targetId, detach: async () => {} };
+      },
+    };
+    const externalPs = { targetId: 'T1', sessionId: 'auto-S1', detach: async () => {} };
+    const resolver = createPageSessionResolver({ bridge });
+
+    // Prime with the autoAttach session
+    resolver.prime('T1', externalPs);
+
+    // resolve should return the primed session, no attach call
+    const ps = await resolver({ id: 'T1' });
+    assert.equal(ps, externalPs);
+    assert.equal(attachCallCount, 0);
+  });
+
+  it('prime() is a no-op if the targetId is already cached', async () => {
+    const bridge = {
+      attachPageSession: async (targetId) => ({ targetId, sessionId: 'first-' + targetId, detach: async () => {} }),
+    };
+    const resolver = createPageSessionResolver({ bridge });
+
+    const first = await resolver({ id: 'T1' });
+    const externalPs = { targetId: 'T1', sessionId: 'late-prime', detach: async () => {} };
+    resolver.prime('T1', externalPs);
+
+    const second = await resolver({ id: 'T1' });
+    assert.equal(second, first); // first wins, prime didn't overwrite
+  });
+});
+
 describe('closeTab releases page-session before /json/close', () => {
   it('calls resolver.release(tabId) before chromeHttp(/json/close/...)', async () => {
     const events = [];

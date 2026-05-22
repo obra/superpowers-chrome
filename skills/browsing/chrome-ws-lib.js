@@ -152,6 +152,13 @@ function createSession({ host, port, _testFakes } = {}) {
           } catch (e) {
             console.error('onPageSession dialog attach failed:', e);
           }
+          // Prime the pageSession resolver cache so subsequent getPageSession(popup)
+          // calls return THIS session rather than issuing a duplicate Target.attachToTarget.
+          // The dialog is registered under THIS session's sessionId; agent commands
+          // must route through the same session to handle the dialog.
+          if (state.pageSessionResolver && ps.targetId) {
+            state.pageSessionResolver.prime(ps.targetId, ps);
+          }
         },
       });
       state.browserBridge = bridge;
