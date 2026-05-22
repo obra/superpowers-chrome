@@ -173,6 +173,17 @@ function attachKeyboardInput({ state, getPageSession, click, dialogs }) {
    */
   async function humanType(tabIndexOrWsUrl, selector, text, options = {}) {
     const ps = await getPageSession(tabIndexOrWsUrl);
+
+    if (selector && selector.startsWith('dialog::') && dialogs) {
+      const dialogState = dialogs.getOpen(ps.sessionId);
+      const routed = await tryHandleDialogSelectorForSession({ selector, op: 'type', payload: text, state: dialogState, pageSession: ps });
+      if (routed.handled) {
+        if (routed.error) throw new Error(routed.error);
+        if (routed.clearDialog) dialogs.clear(ps.sessionId);
+        return routed.result;
+      }
+    }
+
     const delay = options.delay !== undefined ? options.delay : 80;
     const jitter = options.jitter !== undefined ? options.jitter : 80;
 

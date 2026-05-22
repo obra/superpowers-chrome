@@ -5,6 +5,7 @@ import { makePageSessionFake } from './_helpers.mjs';
 
 const require = createRequire(import.meta.url);
 const { attachKeyboardInput } = require('../../skills/browsing/lib/keyboard-input.js');
+const { attachDialogs } = require('../../skills/browsing/lib/dialogs.js');
 
 describe('keyboard-input', () => {
   function setup({ headless = true, handlers = {}, click = async () => ({ clicked: true }) } = {}) {
@@ -110,5 +111,20 @@ describe('keyboard-input fill routes dialog::* selectors', () => {
     await fill(0, 'dialog::prompt', 'answer');
     assert.equal(dialogState.staged.promptText, 'answer');
     assert.ok(!ps.calls.some(c => c.method === 'Runtime.evaluate'));
+  });
+});
+
+describe('keyboard-input humanType routes dialog::* selectors', () => {
+  it('humanType with dialog::username selector stages basic-auth username via the dialog router', async () => {
+    const ps = makePageSessionFake({}, { sessionId: 'S1', targetId: 'T1' });
+    const getPageSession = async () => ps;
+    const state = { dialogs: new Map([['S1', { kind: 'basic-auth', payload: {}, staged: {} }]]) };
+    const dialogs = attachDialogs({ state });
+
+    const { humanType } = attachKeyboardInput({ state, getPageSession, click: async () => {}, dialogs });
+
+    await humanType(0, 'dialog::username', 'alice');
+
+    assert.equal(state.dialogs.get('S1').staged.username, 'alice');
   });
 });
