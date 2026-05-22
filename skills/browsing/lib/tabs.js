@@ -134,6 +134,10 @@ function createPageSessionResolver({ bridge }) {
   // null if not yet resolved. Used by wrapWithDialogGate to check dialog state
   // without triggering I/O.
   resolve.peek = (tabId) => cache.get(tabId) || null;
+  // Bulk-clear the cache without calling detach. Use when the underlying WebSocket
+  // is already dead (e.g. Chrome was killed externally) so detach calls would fail.
+  // Callers that want graceful detach should call resolve.release() per-tab first.
+  resolve.releaseAll = () => { cache.clear(); };
   return resolve;
 }
 

@@ -178,6 +178,7 @@ function attachChromeProcess({ state, chromeHttp, getTabs, newTab }) {
       clearProfileMeta(state.chromeProfileName);
       state.chromeProcess = null;
       state.activePort = CHROME_DEBUG_PORT;
+      state.resetBridge?.();
       return;
     }
 
@@ -203,6 +204,7 @@ function attachChromeProcess({ state, chromeHttp, getTabs, newTab }) {
     clearProfileMeta(state.chromeProfileName);
     state.chromeProcess = null;
     state.activePort = CHROME_DEBUG_PORT;
+    state.resetBridge?.();
   }
 
   // Switch headless/headed by killing and restarting Chrome on the same port,

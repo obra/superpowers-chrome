@@ -97,6 +97,83 @@ describe('chrome-ws-lib: bridge init', () => {
   });
 });
 
+describe('chrome-ws-lib: bridge state reset on Chrome restart', () => {
+  it('state.resetBridge() is exposed and clears browserBridge, pageSessionResolver, and re-arms the lazy attach', async () => {
+    const session = createSession({
+      host: '127.0.0.1', port: 9222,
+      _testFakes: {
+        chromeHttp: makeFakeChromeHttp(),
+        WebSocketClient: makeFakeWebSocketClient(),
+      },
+    });
+    // Boot the bridge
+    await session.state.ensureBridge();
+    assert.ok(session.state.browserBridge, 'bridge was set');
+    assert.ok(session.state.pageSessionResolver, 'resolver was set');
+
+    const sessionBefore = session.state.browserSession;
+
+    // Reset
+    session.state.resetBridge();
+
+    assert.equal(session.state.browserBridge, null, 'browserBridge cleared');
+    assert.equal(session.state.pageSessionResolver, null, 'pageSessionResolver cleared');
+    // browserSession is replaced with a fresh instance (not nulled) so ensureBridge
+    // can re-use it without needing to re-create it.
+    assert.notEqual(session.state.browserSession, sessionBefore, 'browserSession replaced with fresh instance');
+  });
+
+  it('ensureBridge creates a fresh bridge after resetBridge', async () => {
+    // The second connect needs a fresh chromeHttp mock that returns a valid version URL
+    const session = createSession({
+      host: '127.0.0.1', port: 9222,
+      _testFakes: {
+        chromeHttp: makeFakeChromeHttp(),
+        WebSocketClient: makeFakeWebSocketClient(),
+      },
+    });
+    const bridge1 = await session.state.ensureBridge();
+
+    session.state.resetBridge();
+
+    // After reset, ensureBridge should re-create the bridge
+    const bridge2 = await session.state.ensureBridge();
+    assert.ok(bridge2, 'new bridge was created');
+    assert.notEqual(bridge1, bridge2, 'fresh bridge instance after reset');
+  });
+
+  it('ensureBridge auto-resets stale bridge when browserSession.isConnected() is false', async () => {
+    // Track how many WebSocketClient instances are constructed
+    let wsInstances = 0;
+    const TrackingWsClient = function WebSocketClient(...args) {
+      wsInstances++;
+      const inner = makeFakeWebSocketClient()(...args);
+      return inner;
+    };
+
+    const session = createSession({
+      host: '127.0.0.1', port: 9222,
+      _testFakes: {
+        chromeHttp: makeFakeChromeHttp(),
+        WebSocketClient: TrackingWsClient,
+      },
+    });
+
+    const bridge1 = await session.state.ensureBridge();
+    const wsCount1 = wsInstances;
+
+    // Simulate Chrome dying: disconnect the browserSession
+    session.state.browserSession.close();
+    assert.equal(session.state.browserSession.isConnected(), false, 'session is disconnected');
+
+    // ensureBridge should detect the stale state and re-attach
+    const bridge2 = await session.state.ensureBridge();
+    assert.ok(bridge2, 'new bridge after stale detection');
+    assert.notEqual(bridge1, bridge2, 'fresh bridge instance was created');
+    assert.ok(wsInstances > wsCount1, 'a new WebSocket connection was made');
+  });
+});
+
 describe('chrome-ws-lib: autoAttach wires onPageSession to install dialog shim', () => {
   it('injects Target.attachedToTarget → dialogs.attachToPageSession sends Page.enable etc.', async () => {
     // We need the WS fake to respond to both root-session and page-session commands

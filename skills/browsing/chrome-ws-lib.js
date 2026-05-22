@@ -130,16 +130,38 @@ function createSession({ host, port, _testFakes } = {}) {
   // attachBrowserBridge issues Target.setDiscoverTargets which connects the root
   // WS, so we defer it behind state.ensureBridge() (lazy).
   const effectiveChromeHttp = (_testFakes && _testFakes.chromeHttp) ? _testFakes.chromeHttp : chromeHttp;
-  state.browserSession = createBrowserSession({
+  const browserSessionFactory = () => createBrowserSession({
     host: state.hostOverride.getHost(),
     port: state.hostOverride.getPort(),
     rewriteWsUrl: state.rewriteWsUrl,
     chromeHttp: effectiveChromeHttp,
     WebSocketClient: _testFakes && _testFakes.WebSocketClient,
   });
+  state.browserSession = browserSessionFactory();
 
   let bridgePromise = null;
+
+  // Reset all bridge-layer state so the next ensureBridge() call re-attaches from
+  // scratch. Called by killChrome (explicit kill) and ensureBridge (stale detection).
+  // Does NOT call detach on cached pageSessions — the underlying WebSocket is
+  // already dead at call time, so detach would fail. Use resolver.release() per-tab
+  // before calling resetBridge if graceful cleanup is possible.
+  state.resetBridge = () => {
+    if (state.pageSessionResolver) {
+      state.pageSessionResolver.releaseAll();
+    }
+    state.pageSessionResolver = null;
+    state.browserBridge = null;
+    state.browserSession = browserSessionFactory();
+    bridgePromise = null;
+  };
+
   state.ensureBridge = () => {
+    // Detect stale bridge: if the cached browserSession is no longer connected,
+    // reset everything so we re-attach to the restarted Chrome process.
+    if (state.browserBridge && state.browserSession && !state.browserSession.isConnected()) {
+      state.resetBridge();
+    }
     if (state.browserBridge) return Promise.resolve(state.browserBridge);
     if (bridgePromise) return bridgePromise;
     bridgePromise = (async () => {

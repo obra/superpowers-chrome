@@ -165,6 +165,74 @@ describe('chrome-process: shutdown closes bridge before SIGTERM', () => {
   });
 });
 
+describe('chrome-process: killChrome calls state.resetBridge()', () => {
+  it('invokes state.resetBridge() after closing the bridge and sending SIGTERM', async () => {
+    const events = [];
+    const state = {
+      hostOverride: {
+        getHost: () => '127.0.0.1',
+        getPort: () => 9222,
+      },
+      activePort: 9222,
+      chromeHeadless: true,
+      chromeProcess: { pid: 1234 },
+      chromeProfileName: 'superpowers-chrome',
+      chromeUserDataDir: null,
+      browserSession: {
+        close: async () => { events.push('bridge-close'); },
+      },
+      resetBridge: () => { events.push('reset-bridge'); },
+    };
+
+    const originalKill = process.kill;
+    process.kill = (_pid, sig) => { events.push('kill:' + sig); };
+    try {
+      const { killChrome } = attachChromeProcess({
+        state,
+        chromeHttp: async () => ({}),
+        getTabs: async () => [],
+        newTab: async () => ({}),
+      });
+      await killChrome();
+    } finally {
+      process.kill = originalKill;
+    }
+
+    assert.ok(events.includes('reset-bridge'), 'resetBridge was called');
+    // resetBridge must happen after the kill, not before
+    assert.ok(
+      events.indexOf('kill:SIGTERM') < events.indexOf('reset-bridge'),
+      `kill:SIGTERM (${events.indexOf('kill:SIGTERM')}) must precede reset-bridge (${events.indexOf('reset-bridge')})`
+    );
+  });
+
+  it('calls state.resetBridge() even when there is no process to kill', async () => {
+    const events = [];
+    const state = {
+      hostOverride: {
+        getHost: () => '127.0.0.1',
+        getPort: () => 9222,
+      },
+      activePort: 9222,
+      chromeHeadless: true,
+      chromeProcess: null, // nothing to kill
+      chromeProfileName: 'superpowers-chrome',
+      chromeUserDataDir: null,
+      resetBridge: () => { events.push('reset-bridge'); },
+    };
+
+    const { killChrome } = attachChromeProcess({
+      state,
+      chromeHttp: async () => ({}),
+      getTabs: async () => [],
+      newTab: async () => ({}),
+    });
+    await killChrome();
+
+    assert.ok(events.includes('reset-bridge'), 'resetBridge called even with no process');
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Bug-fix regression tests
 // ---------------------------------------------------------------------------

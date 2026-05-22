@@ -134,6 +134,48 @@ describe('createPageSessionResolver: prime() for autoAttach', () => {
   });
 });
 
+describe('createPageSessionResolver: releaseAll()', () => {
+  it('releaseAll() clears the cache so subsequent resolve calls re-attach', async () => {
+    let attachCount = 0;
+    const bridge = {
+      attachPageSession: async (targetId) => {
+        attachCount++;
+        return { targetId, sessionId: 'S-' + targetId, detach: async () => {} };
+      },
+    };
+    const resolver = createPageSessionResolver({ bridge });
+
+    // Prime cache with two tabs
+    await resolver({ id: 'T1' });
+    await resolver({ id: 'T2' });
+    assert.equal(attachCount, 2);
+
+    // releaseAll should clear cache without calling detach
+    resolver.releaseAll();
+
+    // After releaseAll, re-resolving should cause a new attach
+    await resolver({ id: 'T1' });
+    assert.equal(attachCount, 3, 'attach was called again after releaseAll');
+  });
+
+  it('releaseAll() does not call detach on cached sessions', async () => {
+    let detachCount = 0;
+    const bridge = {
+      attachPageSession: async (targetId) => ({
+        targetId,
+        sessionId: 'S-' + targetId,
+        detach: async () => { detachCount++; },
+      }),
+    };
+    const resolver = createPageSessionResolver({ bridge });
+    await resolver({ id: 'T1' });
+
+    resolver.releaseAll();
+
+    assert.equal(detachCount, 0, 'releaseAll does not call detach (WS is dead)');
+  });
+});
+
 describe('closeTab releases page-session before /json/close', () => {
   it('calls resolver.release(tabId) before chromeHttp(/json/close/...)', async () => {
     const events = [];
