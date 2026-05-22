@@ -12,18 +12,29 @@ data:text/html,<title>Dialog test</title><button id="ask" onclick="window.__answ
 
 ## Steps
 
-1. Navigate to the data URL.
-2. Click `#ask`. This will fire `confirm()`. Chrome will block — the page can't continue until the dialog is handled.
-3. Attempt to do something page-targeted (like `extractText('#result')`). It should be **refused** with a clear error mentioning "dialog" and "dialog::accept" / "dialog::dismiss". Note exactly what error you get.
-4. Handle the dialog: click `dialog::accept` (NOT `#ask` again — `dialog::*` is the special selector for handling dialogs).
-5. After dialog handled, the page should resume. Wait a moment.
-6. Extract `#result`'s text — should be `"answer=true"`.
+1. `{"action": "navigate", "payload": "<data URL from Setup>"}`.
+2. `{"action": "click", "selector": "#ask"}` — fires `confirm()`. The
+   click may report a CDP timeout because the dialog blocks the main
+   thread; that is expected here and is NOT a failure.
+3. `{"action": "extract", "selector": "#result", "payload": "text"}`.
+   The response MUST refuse with a dialog error: the response text
+   must contain all of these substrings:
+   - `Page is behind a dialog`
+   - `dialog::accept`
+   - `dialog::dismiss`
+   - the literal prompt text `Proceed?`
+4. `{"action": "click", "selector": "dialog::accept"}`. Must return
+   without error. (Do NOT click `#ask` again — `dialog::*` is the
+   special selector for handling dialogs.)
+5. Wait 500ms for the page's polling interval to update `#result`.
+6. `{"action": "extract", "selector": "#result", "payload": "text"}`.
+   PASS if the result contains the exact substring `answer=true`.
 
 ## Pass criteria
 
-- Step 3's refusal mentions the dialog and the `dialog::` selector grammar
+- Step 3's response contains all four required substrings listed above
 - Step 4's `dialog::accept` returns a success result, not an error
-- Step 6 returns `"answer=true"`
+- Step 6 result contains `answer=true`
 
 ## Failure signals
 

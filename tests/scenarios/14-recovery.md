@@ -1,42 +1,64 @@
 # Scenario 14 — Recovery and lifecycle
 
-**Goal:** Verify the bridge handles Chrome process death, session restart, and connection drops without unrecoverable failures.
+**Goal:** Verify the bridge handles Chrome process death and explicit
+restart without unrecoverable failures. The relevant MCP actions are
+`browser_mode` (read state, including pid), `kill_chrome` (graceful
+shutdown), and `restart_chrome` (kill + restart). There is no
+`start_chrome` action — Chrome is auto-started by `ensureChromeRunning`
+on the next page-target action after a kill.
 
 ## Steps
 
-### Part A: Chrome killed externally
-1. Start Chrome via `start_chrome` (or get the existing session running).
-2. Navigate to `https://example.com`.
-3. Get the Chrome PID via `get_chrome_pid` (or check via `ps`).
-4. Manually kill Chrome: `kill -9 <PID>` from the shell.
-5. Try to do a page action (e.g., extract h1). Should fail with a clear "Chrome not running" / "WS closed" / similar error, NOT a hang and NOT a confusing CDP timeout.
-6. Restart Chrome via `start_chrome` (or whatever the restart flow is).
-7. Navigate to `https://example.com` again. Should work — the session should re-establish the bridge cleanly.
+### Part A: External Chrome kill
 
-### Part B: Session restart cycle
-1. From a known-good state: navigate, extract, screenshot — all work.
-2. `kill_chrome` (graceful shutdown).
-3. Try to use the session — should error with "not running" or similar.
-4. `start_chrome` again.
-5. Verify the session works: navigate + extract + screenshot all pass.
+1. `{"action": "navigate", "payload": "https://example.com"}` to ensure
+   Chrome is running and bridged.
+2. `{"action": "extract", "selector": "h1", "payload": "text"}` → must
+   contain `Example Domain`.
+3. `{"action": "browser_mode"}`. Parse the response JSON and record
+   `pid` as `P`. PASS if `pid` is a positive integer.
+4. From Bash: `kill -9 <P>; sleep 1`. The Chrome process should die.
+   PASS if `kill` exits 0.
+5. `{"action": "navigate", "payload": "https://example.com"}`. The
+   bridge MUST auto-restart Chrome and the navigate MUST succeed. The
+   response is allowed (and expected) to include the auto-restart
+   banner — verify the response contains the substring
+   `Chrome auto-restarted` OR the navigate succeeds and a follow-up
+   extract works.
+6. `{"action": "extract", "selector": "h1", "payload": "text"}`. PASS
+   if result contains `Example Domain`.
 
-### Part C: Bridge reconnect after WS drop (advanced — may or may not work)
-1. Get a known-good session.
-2. Externally close the bridge WS without killing Chrome itself (this is hard to do from the agent — you may need to skip this if there's no good way).
-3. If you can drop the WS: try a page action. The bridge's connectPromise-retry logic (added in B2) should attempt a fresh connect on the next call. Verify it either reconnects successfully or fails with a clear error.
-4. If you can't drop the WS cleanly, mark this part as N/A.
+### Part B: Explicit kill + restart cycle
+
+7. `{"action": "navigate", "payload": "data:text/html,<h1>before-cycle</h1>"}`.
+8. `{"action": "extract", "selector": "h1", "payload": "text"}` → must
+   contain `before-cycle`.
+9. `{"action": "kill_chrome"}`. PASS if it returns without error.
+10. `{"action": "restart_chrome"}`. PASS if it returns without error.
+11. `{"action": "navigate", "payload": "data:text/html,<h1>after-cycle</h1>"}`.
+12. `{"action": "extract", "selector": "h1", "payload": "text"}` → must
+    contain `after-cycle`.
+
+### Part C: WS-drop reconnect (not testable from agent)
+
+The bridge has a connectPromise-retry path (commit B2) for the case
+where the root WebSocket dies but Chrome itself stays up. There is no
+agent-reachable way to drop the WS without also killing Chrome.
+
+13. Mark Part C as **N/A — not reachable from agent surface**. No
+    further action.
 
 ## Pass criteria
 
-- External Chrome kill produces a clear error, not a hang
-- After kill, session is reusable after explicit restart
-- Multiple start_chrome/kill_chrome cycles work
-- Bridge close ordering doesn't deadlock (the G3 closeBridge + 500ms timeout)
+- Steps 1–12 each satisfy their per-step criterion above
+- Step 13 explicitly marked N/A (this is a pass)
 
 ## Failure signals
 
-- Hang on any failure path → CDP request never timed out / never errored
-- After Chrome restart, bridge is in a bad state → ensureBridge isn't idempotent / cached the old browserSession
-- Multiple cycles cause memory or handle leaks (e.g., listing tabs grows over time)
-
-Report each part. If a step isn't testable from the agent (e.g., Part C), mark it N/A and explain.
+- Step 5 hangs or returns an error that does not lead to recovery →
+  auto-restart path is broken
+- Step 9 / 10 throws → kill_chrome / restart_chrome dispatch is wrong
+- Step 11 / 12 fails after the cycle → ensureBridge isn't idempotent
+  across restarts
+- Memory or handle leak over multiple cycles (e.g., process count
+  grows) — note as a concern even if the steps pass

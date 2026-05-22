@@ -4,15 +4,19 @@
 
 ## Steps
 
-1. Use the browsing skill to navigate to `https://example.com`.
-2. Extract the page title text (the `<h1>`).
-3. Take a screenshot. Confirm it was saved.
+1. Use the `use_browser` MCP tool to navigate to `https://example.com`.
+   `{"action": "navigate", "payload": "https://example.com"}`.
+2. Extract the `<h1>` text:
+   `{"action": "extract", "selector": "h1", "payload": "text"}`.
+3. Take a screenshot saved to `/tmp/eval-smoke-screenshot.png`:
+   `{"action": "screenshot", "payload": "/tmp/eval-smoke-screenshot.png"}`.
 
 ## Pass criteria
 
 - Step 1 returns without error
-- Step 2 returns `"Example Domain"` (or similar — that's what example.com's h1 says)
-- Step 3 returns a path to a PNG file that exists and is non-empty
+- Step 2 result contains the exact string `Example Domain`
+- Step 3 returns successfully; `/tmp/eval-smoke-screenshot.png` exists and
+  is larger than 1000 bytes
 
 ## Failure signals to flag
 

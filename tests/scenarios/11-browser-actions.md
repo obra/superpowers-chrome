@@ -1,42 +1,65 @@
 # Scenario 11 — Browser-target actions
 
-**Goal:** Exercise `show_browser`, `hide_browser`, `browser_mode`, `set_profile`, `get_profile`, `back`, `setViewport`, `getViewport`. Scenario 02's worker noted that `back`, `setViewport`, `getViewport` aren't reachable via `use_browser` — explicitly verify whether that's MCP gap or skill prose gap.
+**Goal:** Exercise `browser_mode`, `set_profile`, `get_profile`,
+`set_viewport`, `get_viewport`, `back`, `forward`. These are all
+reachable via the `use_browser` MCP tool — this scenario locks in
+that the dispatch is wired and the underlying state changes.
+
+`show_browser` and `hide_browser` are intentionally NOT exercised in
+this scenario because they restart Chrome with a different headless
+mode and would mid-run-invalidate other state. Test them by hand if
+needed.
 
 ## Steps
 
-### Profile management
-1. `get_profile` — returns current profile name (likely the default).
-2. `set_profile("test-bridge-profile")` — sets a profile name.
-3. `get_profile` again — should return the new name.
+For each step issue the listed `use_browser` call and check the
+per-step criterion.
 
-### Browser mode / show / hide
-4. `browser_mode` (or `get_browser_mode`) — returns current headless/headed state.
-5. If headless: `show_browser` — should switch to headed mode. (May restart Chrome.)
-6. `browser_mode` again — should reflect the change.
-7. `hide_browser` — switch back. (May restart Chrome.)
+### Profile
 
-### Viewport (verify the worker's gap observation)
-8. Try `set_viewport({width:800, height:600})` — does the use_browser tool accept this action name? If yes, verify it works. If no, note the action name doesn't exist.
-9. Try `get_viewport` — same question.
-10. If `set_viewport`/`get_viewport` aren't reachable via use_browser but ARE implemented in the lib, document the gap.
+1. `{"action": "get_profile"}`. Record the returned profile name as
+   `P0` (whatever it is). PASS if a profile name comes back.
+2. `{"action": "set_profile", "payload": "test-bridge-profile"}`.
+   PASS if it returns without error.
+3. `{"action": "get_profile"}`. PASS if the response contains
+   `test-bridge-profile`.
+4. `{"action": "set_profile", "payload": "<P0 from step 1>"}` to
+   restore. PASS if it returns without error.
 
-### Back navigation
-11. Navigate to two URLs in sequence:
-    - `data:text/html,<h1>first</h1>`
-    - `data:text/html,<h1>second</h1>`
-12. `back` — go back one history entry (tab is implicit via activeTab).
-13. After back, extract h1 → should be `first`.
-14. `forward` — go forward one entry. Extract h1 → should be `second`.
+### Browser mode
+
+5. `{"action": "browser_mode"}`. Response is JSON with fields
+   including `mode` (`headless` or `headed`), `running`, `pid`,
+   `port`, `profile`, `profileDir`. PASS if the response parses as
+   JSON containing all six keys.
+
+### Viewport
+
+6. `{"action": "set_viewport", "payload": {"width": 800, "height": 600}}`.
+   PASS if it returns without error.
+7. `{"action": "get_viewport"}`. PASS if the response reports
+   `width: 800` and `height: 600`.
+8. `{"action": "clear_viewport"}`. PASS if it returns without error.
+
+### Back / forward
+
+9. `{"action": "navigate", "payload": "data:text/html,<h1>first</h1>"}`.
+10. `{"action": "navigate", "payload": "data:text/html,<h1>second</h1>"}`.
+11. `{"action": "back"}`. Sleep 200ms.
+12. `{"action": "extract", "selector": "h1", "payload": "text"}`.
+    PASS if result contains `first`.
+13. `{"action": "forward"}`. Sleep 200ms.
+14. `{"action": "extract", "selector": "h1", "payload": "text"}`.
+    PASS if result contains `second`.
 
 ## Pass criteria
 
-- Profile get/set round-trips
-- show/hide_browser changes the mode
-- Each "is it reachable" question gets a definitive yes/no
+- Steps 1–14 each satisfy their per-step criterion above
 
 ## Failure signals
 
-- Any of these throws → check the BROWSER_TARGET_ACTIONS set in dialogs.js for the action name
-- Profile/mode actions exist but don't actually change state → migration broke the underlying call
-
-Report the matrix. For unreachable actions, explicitly flag them as gaps to address before release.
+- set_profile / get_profile don't round-trip → profile state is not
+  persisted between calls
+- browser_mode response missing keys → getBrowserMode contract changed
+- get_viewport doesn't reflect set_viewport → viewport plumbing broken
+- back/forward extract returns the wrong h1 → history navigation broken

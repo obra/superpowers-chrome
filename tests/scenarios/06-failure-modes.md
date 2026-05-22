@@ -4,17 +4,45 @@
 
 ## Steps
 
-1. **Navigate to a non-existent URL**: `http://localhost:0/never`. Expect a timeout or connection-refused error, not a hang. Note what error you get.
+For each step, capture the response and report PASS/FAIL against the
+per-step criterion.
 
-2. **Click a selector that doesn't exist**: navigate to `data:text/html,<h1>x</h1>` then try `click('#does-not-exist')`. Per commit `a9e7075` this must NOT silently succeed — should throw with a clear "element not found" message.
+1. **Navigate to an unreachable URL**:
+   `{"action": "navigate", "payload": "http://localhost:0/never", "timeout": 15000}`.
+   The call MUST throw (the MCP returns an error response). The error
+   message must contain `Navigate failed` and a Chromium net-error
+   token (one of `ERR_UNSAFE_PORT`, `ERR_CONNECTION_REFUSED`,
+   `ERR_INVALID_URL`, `ERR_NAME_NOT_RESOLVED`). PASS on any of those.
 
-3. **Evaluate code that throws**: try `evaluate('throw new Error("intentional")')`. Should throw, not silently return undefined (this was the BUG-1 fix per commit `fb0dca8` / `4ffd74d`).
+2. **Click a selector that doesn't exist**: first
+   `{"action": "navigate", "payload": "data:text/html,<h1>x</h1>"}`,
+   then `{"action": "click", "selector": "#does-not-exist", "timeout": 5000}`.
+   The click MUST throw an error whose message contains
+   `Element not found` (or equivalent: `not found`, `does not exist`).
+   Silent success is a failure for this step.
 
-4. **Evaluate code that returns a Promise rejection**: `evaluate('Promise.reject(new Error("rejected"))')`. Should also throw.
+3. **Eval that throws**:
+   `{"action": "eval", "payload": "throw new Error('intentional')"}`.
+   MUST throw; error response must contain the string `intentional`.
 
-5. **Permission prompt mid-load**: navigate to a data URL that requests notification permission synchronously: `data:text/html,<script>Notification.requestPermission()</script>`. The agent should observe a permission dialog (kind: 'permission'). Try dismissing it with `dialog::dismiss`.
+4. **Eval that returns a Promise rejection**:
+   `{"action": "eval", "payload": "Promise.reject(new Error('rejected'))"}`.
+   MUST throw; error response must contain the string `rejected`.
 
-6. **Multiple sequential operations**: after scenarios 1-5, can you still navigate to `https://example.com` and extract the h1? If yes, the session survived all the pathological inputs.
+5. **Permission prompt**:
+   `{"action": "navigate", "payload": "data:text/html,<script>Notification.requestPermission()</script>", "timeout": 15000}`.
+   Modern Chrome may suppress permission prompts on `data:` URLs. The
+   step PASSES on either of:
+   (a) the navigate response surfaces a permission dialog and a
+       follow-up `{"action": "click", "selector": "dialog::dismiss"}`
+       returns without error, OR
+   (b) the navigate response reports success with no dialog (Chrome
+       suppressed it). Record which branch occurred.
+
+6. **Session still alive**:
+   `{"action": "navigate", "payload": "https://example.com"}` then
+   `{"action": "extract", "selector": "h1", "payload": "text"}`.
+   MUST succeed and contain `Example Domain`.
 
 ## Pass criteria
 
