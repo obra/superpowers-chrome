@@ -13918,6 +13918,7 @@ var BrowserAction = /* @__PURE__ */ ((BrowserAction2) => {
   BrowserAction2["NEW_TAB"] = "new_tab";
   BrowserAction2["CLOSE_TAB"] = "close_tab";
   BrowserAction2["LIST_TABS"] = "list_tabs";
+  BrowserAction2["SWITCH_TAB"] = "switch_tab";
   BrowserAction2["SHOW_BROWSER"] = "show_browser";
   BrowserAction2["HIDE_BROWSER"] = "hide_browser";
   BrowserAction2["BROWSER_MODE"] = "browser_mode";
@@ -13944,11 +13945,14 @@ var BrowserAction = /* @__PURE__ */ ((BrowserAction2) => {
   return BrowserAction2;
 })(BrowserAction || {});
 var UseBrowserParams = {
-  action: external_exports.nativeEnum(BrowserAction).describe("Action to perform"),
-  tab_index: external_exports.number().int().min(0).default(0).describe("Which tab. Indices shift when tabs close."),
+  action: external_exports.nativeEnum(BrowserAction).describe("Action to perform. action='help' lists all actions with payload shapes."),
+  selector: external_exports.string().nullable().optional().describe(
+    "CSS or XPath selector \u2014 what to act on. Null/omitted for actions that don't target an element (navigate, eval, list_tabs, etc.). XPath must start with / or //. dialog::accept and dialog::dismiss are special selectors for handling open dialogs."
+  ),
   payload: external_exports.union([external_exports.string(), external_exports.record(external_exports.any())]).optional().describe(
-    "Action-specific data. String for simple actions: navigate=URL, click=selector, hover=selector, double_click=selector, right_click=selector, await_element=selector, eval=JS, set_profile=name, new_tab=URL, keyboard_press=key. Object for structured actions: type={selector?(optional),text}, extract={selector?,format?(text|html|markdown)}, screenshot={path?,fullpage?}, select={selector,value,index?}, attr={selector,attr}, await_text={text,timeout?}, drag_drop={source,target} (target=selector or {x,y}), mouse_move={x,y,steps?,fromX?,fromY?}, scroll={deltaX?,deltaY?,selector?} or direction string (up/down/left/right), file_upload={selector,files}, keyboard_press={key,modifiers?{alt?,ctrl?,meta?,shift?}}, set_viewport={width,height,deviceScaleFactor?,mobile?}, get_console_messages={since?} (epoch ms). Use action='help' for per-action payload shapes."
-  )
+    "Extra data for the action. String for simple cases (navigate=URL, type=text, eval=JS, keyboard_press=key, set_profile=name, new_tab=URL). Object for structured cases (set_viewport={width,height,mobile?}, keyboard_press={key,modifiers:{shift?,ctrl?,alt?,meta?}}, extract={format:'text'|'html'|'markdown'}, screenshot={path?,fullpage?}, scroll={deltaX?,deltaY?} or direction string, drag_drop={x,y} or selector string for target, mouse_move={x,y,steps?,fromX?,fromY?}, file_upload={files:[...]}, get_console_messages={since:epochMs}, await_text=text string or {text,timeout?}, switch_tab=tab index/url-substring/title-substring). See action='help' for per-action payload shapes."
+  ),
+  timeout: external_exports.number().int().min(0).max(6e4).optional().describe("Timeout in ms for await_element / await_text actions.")
 };
 function parsePayload(payload, defaultKey) {
   if (payload === void 0 || payload === null) return {};
@@ -14020,8 +14024,10 @@ ${capture.domSummary}
 ${capture.diffSummary}`;
 }
 async function executeBrowserAction(params) {
-  const tabIndex = params.tab_index;
+  const tabIndex = activeTab;
+  const topSelector = params.selector ?? null;
   const payload = params.payload;
+  const topTimeout = params.timeout;
   switch (params.action) {
     case "navigate" /* NAVIGATE */: {
       const p = parsePayload(payload, "url");
@@ -14070,10 +14076,9 @@ async function executeBrowserAction(params) {
       await chromeLib.forward(tabIndex);
       return `Went forward (history.forward())`;
     case "click" /* CLICK */: {
-      const p = parsePayload(payload, "selector");
-      const selector = p.selector;
-      if (!selector || typeof selector !== "string") {
-        throw new Error("click requires payload with selector");
+      const selector = topSelector ?? (typeof payload === "string" ? payload : null);
+      if (!selector) {
+        throw new Error("click requires selector (top-level) or payload string");
       }
       const clickResult = await chromeLib.clickWithCapture(tabIndex, selector);
       return formatActionResponse(clickResult, `Clicked: ${selector}`);
@@ -14081,7 +14086,7 @@ async function executeBrowserAction(params) {
     case "type" /* TYPE */: {
       const p = parsePayload(payload, "text");
       const text = p.text;
-      const selector = p.selector || null;
+      const selector = topSelector ?? p.selector ?? null;
       if (!text || typeof text !== "string") {
         throw new Error("type requires payload with text (string or {selector?,text})");
       }
@@ -14102,7 +14107,7 @@ async function executeBrowserAction(params) {
     }
     case "extract" /* EXTRACT */: {
       const p = parsePayload(payload, "selector");
-      const selector = typeof p.selector === "string" ? p.selector : void 0;
+      const selector = topSelector ?? (typeof p.selector === "string" ? p.selector : void 0);
       const format = typeof p.format === "string" ? p.format : "text";
       if (selector) {
         let extracted;
@@ -14149,15 +14154,15 @@ async function executeBrowserAction(params) {
         throw new Error("screenshot requires payload with filename (string or {path,fullpage?})");
       }
       const fullpage = p.fullpage ?? false;
-      const selectorForScreenshot = typeof p.selector === "string" ? p.selector : void 0;
+      const selectorForScreenshot = topSelector ?? (typeof p.selector === "string" ? p.selector : void 0);
       const savedPath = await chromeLib.screenshot(tabIndex, filepath, selectorForScreenshot, fullpage);
       return `Screenshot saved to ${savedPath}`;
     }
     case "select" /* SELECT */: {
       const p = parsePayload(payload, "value");
-      const selector = p.selector;
+      const selector = topSelector ?? p.selector;
       if (!selector || typeof selector !== "string") {
-        throw new Error("select requires payload.selector");
+        throw new Error("select requires selector (top-level or payload.selector)");
       }
       const rawValue = p.value;
       if (rawValue === void 0) {
@@ -14190,10 +14195,10 @@ Result: ${evalResult.result}`);
     }
     case "attr" /* ATTR */: {
       const p = parsePayload(payload, "selector");
-      const selector = p.selector;
+      const selector = topSelector ?? p.selector;
       const attr = p.attr;
       if (!selector || typeof selector !== "string") {
-        throw new Error("attr requires payload.selector");
+        throw new Error("attr requires selector (top-level or payload.selector)");
       }
       if (!attr || typeof attr !== "string") {
         throw new Error("attr requires payload.attr (attribute name)");
@@ -14203,11 +14208,11 @@ Result: ${evalResult.result}`);
     }
     case "await_element" /* AWAIT_ELEMENT */: {
       const p = parsePayload(payload, "selector");
-      const selector = p.selector;
+      const selector = topSelector ?? (typeof p.selector === "string" ? p.selector : null);
       if (!selector || typeof selector !== "string") {
-        throw new Error("await_element requires payload with selector");
+        throw new Error("await_element requires selector (top-level or payload)");
       }
-      const timeout = typeof p.timeout === "number" ? p.timeout : 5e3;
+      const timeout = topTimeout ?? (typeof p.timeout === "number" ? p.timeout : 5e3);
       await chromeLib.waitForElement(tabIndex, selector, timeout);
       return `Element found: ${selector}`;
     }
@@ -14217,7 +14222,7 @@ Result: ${evalResult.result}`);
       if (!text || typeof text !== "string") {
         throw new Error("await_text requires payload with text to wait for");
       }
-      const timeout = typeof p.timeout === "number" ? p.timeout : 5e3;
+      const timeout = topTimeout ?? (typeof p.timeout === "number" ? p.timeout : 5e3);
       await chromeLib.waitForText(tabIndex, text, timeout);
       return `Text found: ${text}`;
     }
@@ -14225,12 +14230,14 @@ Result: ${evalResult.result}`);
       const p = parsePayload(payload, "url");
       const newTabUrl = typeof p.url === "string" && p.url.trim() ? p.url.trim() : void 0;
       const newTabResult = await chromeLib.newTab(newTabUrl);
+      activeTab = 0;
       const openedAt = newTabUrl ? ` at ${newTabUrl}` : "";
-      return `New tab created: ${newTabResult.id}${openedAt}`;
+      return `New tab created: ${newTabResult.id}${openedAt}. Active tab is now 0.`;
     }
     case "close_tab" /* CLOSE_TAB */:
       await chromeLib.closeTab(tabIndex);
-      return `Closed tab ${tabIndex}`;
+      if (activeTab > 0) activeTab = 0;
+      return `Closed tab ${tabIndex}. Active tab is now ${activeTab}.`;
     case "list_tabs" /* LIST_TABS */: {
       const tabs = await chromeLib.getTabs();
       return JSON.stringify(tabs.map((tab, idx) => ({
@@ -14271,10 +14278,9 @@ Result: ${evalResult.result}`);
       }, null, 2);
     }
     case "hover" /* HOVER */: {
-      const p = parsePayload(payload, "selector");
-      const selector = p.selector;
+      const selector = topSelector ?? (typeof payload === "string" ? payload : null);
       if (!selector || typeof selector !== "string") {
-        throw new Error("hover requires payload with selector");
+        throw new Error("hover requires selector (top-level) or payload string");
       }
       const hoverResult = await chromeLib.captureActionWithDiff(
         tabIndex,
@@ -14285,9 +14291,9 @@ Result: ${evalResult.result}`);
     }
     case "drag_drop" /* DRAG_DROP */: {
       const p = parsePayload(payload, "source");
-      const source = p.source;
+      const source = topSelector ?? p.source;
       if (!source || typeof source !== "string") {
-        throw new Error("drag_drop requires payload.source (source element selector)");
+        throw new Error("drag_drop requires selector (top-level, used as source) or payload.source");
       }
       const targetRaw = p.target;
       if (targetRaw === void 0) {
@@ -14332,9 +14338,10 @@ Result: ${evalResult.result}`);
     }
     case "scroll" /* SCROLL */: {
       const scrollOpts = {};
+      if (topSelector) scrollOpts.selector = topSelector;
       if (typeof payload === "object" && payload !== null) {
         const p = payload;
-        if (typeof p.selector === "string") scrollOpts.selector = p.selector;
+        if (!topSelector && typeof p.selector === "string") scrollOpts.selector = p.selector;
         if (typeof p.deltaX === "number") scrollOpts.deltaX = p.deltaX;
         if (typeof p.deltaY === "number") scrollOpts.deltaY = p.deltaY;
         if (!("deltaX" in p) && !("deltaY" in p)) {
@@ -14368,10 +14375,9 @@ Result: ${evalResult.result}`);
       return `Scrolled ${dir} (deltaX: ${scrollResult.deltaX}, deltaY: ${scrollResult.deltaY})${scrollOpts.selector ? ` at ${scrollOpts.selector}` : ""}`;
     }
     case "double_click" /* DOUBLE_CLICK */: {
-      const p = parsePayload(payload, "selector");
-      const selector = p.selector;
+      const selector = topSelector ?? (typeof payload === "string" ? payload : null);
       if (!selector || typeof selector !== "string") {
-        throw new Error("double_click requires payload with selector");
+        throw new Error("double_click requires selector (top-level) or payload string");
       }
       const dblClickResult = await chromeLib.captureActionWithDiff(
         tabIndex,
@@ -14381,10 +14387,9 @@ Result: ${evalResult.result}`);
       return formatCaptureResponse("Double-clicked", selector, dblClickResult.capture, dblClickResult.dialog, dblClickResult.artifacts);
     }
     case "right_click" /* RIGHT_CLICK */: {
-      const p = parsePayload(payload, "selector");
-      const selector = p.selector;
+      const selector = topSelector ?? (typeof payload === "string" ? payload : null);
       if (!selector || typeof selector !== "string") {
-        throw new Error("right_click requires payload with selector");
+        throw new Error("right_click requires selector (top-level) or payload string");
       }
       const rightClickResult = await chromeLib.captureActionWithDiff(
         tabIndex,
@@ -14395,9 +14400,9 @@ Result: ${evalResult.result}`);
     }
     case "file_upload" /* FILE_UPLOAD */: {
       const p = parsePayload(payload, "files");
-      const selector = p.selector;
+      const selector = topSelector ?? p.selector;
       if (!selector || typeof selector !== "string") {
-        throw new Error("file_upload requires payload.selector for the file input element");
+        throw new Error("file_upload requires selector (top-level or payload.selector) for the file input element");
       }
       const filesRaw = p.files;
       if (!filesRaw) {
@@ -14492,6 +14497,41 @@ Result: ${evalResult.result}`);
       await chromeLib.startChrome(headlessMode, void 0, explicitPort);
       return `Chrome restarted in ${headlessMode ? "headless" : "headed"} mode.`;
     }
+    case "switch_tab" /* SWITCH_TAB */: {
+      const tabs = await chromeLib.getTabs();
+      const tabList = tabs.map((tab, idx) => ({
+        index: idx,
+        id: tab.id,
+        title: tab.title ?? "",
+        url: tab.url ?? "",
+        type: tab.type
+      }));
+      const p = parsePayload(payload, "tab");
+      const target = p.tab ?? payload;
+      let matchedIndex = -1;
+      if (typeof target === "number") {
+        matchedIndex = target;
+      } else if (typeof target === "string") {
+        const asNum = parseInt(target, 10);
+        if (!isNaN(asNum) && String(asNum) === target.trim()) {
+          matchedIndex = asNum;
+        } else {
+          const lowerTarget = target.toLowerCase();
+          const found = tabList.find(
+            (t) => t.url.toLowerCase().includes(lowerTarget) || t.title.toLowerCase().includes(lowerTarget)
+          );
+          if (found !== void 0) matchedIndex = found.index;
+        }
+      }
+      if (matchedIndex < 0 || matchedIndex >= tabList.length) {
+        throw new Error(
+          `switch_tab: no tab found matching ${JSON.stringify(target)}. Available tabs: ${tabList.map((t) => `[${t.index}] ${t.title} (${t.url})`).join(", ")}`
+        );
+      }
+      activeTab = matchedIndex;
+      const newActive = tabList[matchedIndex];
+      return `Switched to tab ${matchedIndex}: ${newActive.title} (${newActive.url})`;
+    }
     case "help" /* HELP */:
       return `# Chrome Browser Control
 
@@ -14510,55 +14550,60 @@ clear_cookies \u2192 Clear all browser cookies
 set_profile, get_profile \u2192 Manage Chrome profiles
 kill_chrome, restart_chrome \u2192 Chrome lifecycle control (recovery)
 
-## Schema: 3 parameters
-{"action": "...", "tab_index": 0, "payload": "..." or {...}}
+## Schema: 4 parameters
+{"action": "...", "selector": "CSS or XPath (null/omit if no element target)", "payload": "..." or {...}, "timeout": ms}
 
-payload is a string for simple actions (navigate, click, hover, eval, keyboard_press, etc.)
-payload is an object for structured actions (type, select, attr, drag_drop, etc.)
+selector is a CSS or XPath string for actions that target an element (null/omit otherwise).
+payload is a string for simple actions (navigate, eval, keyboard_press, etc.)
+payload is an object for structured actions (set_viewport, drag_drop, etc.)
+timeout is milliseconds for await_element / await_text (default 5000).
 
 ## Navigation & Interaction (Auto-Capture with DOM Diff)
 navigate: {"action": "navigate", "payload": "URL"}
-click: {"action": "click", "payload": "CSS_or_XPath_selector"}
+click: {"action": "click", "selector": "CSS_or_XPath_selector"}
 type: {"action": "type", "payload": "text"} \u2192 types into current focus
-type: {"action": "type", "payload": {"selector": "#input", "text": "hello"}} \u2192 types into element
+type: {"action": "type", "selector": "#input", "payload": "hello"} \u2192 types into element
 keyboard_press: {"action": "keyboard_press", "payload": "Tab"} \u2192 special key
 keyboard_press: {"action": "keyboard_press", "payload": {"key": "Tab", "modifiers": {"shift": true}}}
-select: {"action": "select", "payload": {"selector": "select", "value": "option-value"}}
-select: {"action": "select", "payload": {"selector": "select[multiple]", "value": ["opt1","opt2"]}}
+select: {"action": "select", "selector": "select", "payload": {"value": "option-value"}}
+select: {"action": "select", "selector": "select[multiple]", "payload": {"value": ["opt1","opt2"]}}
 eval: {"action": "eval", "payload": "JavaScript_code"}
 
 ## Mouse Actions (CDP-Level)
-hover: {"action": "hover", "payload": "selector"} \u2192 CSS :hover, tooltips, menus
-drag_drop: {"action": "drag_drop", "payload": {"source": "#el", "target": "#target"}}
-drag_drop: {"action": "drag_drop", "payload": {"source": "#el", "target": {"x": 300, "y": 200}}}
+hover: {"action": "hover", "selector": "selector"} \u2192 CSS :hover, tooltips, menus
+drag_drop: {"action": "drag_drop", "selector": "#el", "payload": {"target": "#target"}}
+drag_drop: {"action": "drag_drop", "selector": "#el", "payload": {"target": {"x": 300, "y": 200}}}
 mouse_move: {"action": "mouse_move", "payload": {"x": 100, "y": 200}}
 mouse_move: {"action": "mouse_move", "payload": {"x": 100, "y": 200, "steps": 10}}
 scroll: {"action": "scroll", "payload": "down"} \u2192 also: up, left, right
-scroll: {"action": "scroll", "payload": {"deltaX": 0, "deltaY": 500, "selector": ".container"}}
-double_click: {"action": "double_click", "payload": "selector"}
-right_click: {"action": "right_click", "payload": "selector"}
+scroll: {"action": "scroll", "selector": ".container", "payload": {"deltaX": 0, "deltaY": 500}}
+double_click: {"action": "double_click", "selector": "selector"}
+right_click: {"action": "right_click", "selector": "selector"}
 
 ## File Upload
-file_upload: {"action": "file_upload", "payload": {"selector": "#file-input", "files": "/path/file.pdf"}}
-file_upload: {"action": "file_upload", "payload": {"selector": "#upload", "files": ["/a.pdf", "/b.jpg"]}}
+file_upload: {"action": "file_upload", "selector": "#file-input", "payload": {"files": "/path/file.pdf"}}
+file_upload: {"action": "file_upload", "selector": "#upload", "payload": {"files": ["/a.pdf", "/b.jpg"]}}
 
 ## Content & Export
-extract: {"action": "extract", "payload": {"selector": ".price", "format": "text"}}
+extract: {"action": "extract", "selector": ".price", "payload": {"format": "text"}}
 extract: {"action": "extract", "payload": {"format": "markdown"}} \u2192 whole page
-attr: {"action": "attr", "payload": {"selector": "a", "attr": "href"}}
+attr: {"action": "attr", "selector": "a", "payload": {"attr": "href"}}
 screenshot: {"action": "screenshot", "payload": "filename.png"}
 screenshot: {"action": "screenshot", "payload": {"path": "file.png", "fullpage": true}}
 
 ## Waiting
-await_element: {"action": "await_element", "payload": "CSS_or_XPath"}
-await_element: {"action": "await_element", "payload": {"selector": "#el", "timeout": 10000}}
+await_element: {"action": "await_element", "selector": "CSS_or_XPath"}
+await_element: {"action": "await_element", "selector": "#el", "timeout": 10000}
 await_text: {"action": "await_text", "payload": "text to wait for"}
-await_text: {"action": "await_text", "payload": {"text": "Success", "timeout": 10000}}
+await_text: {"action": "await_text", "payload": "Success", "timeout": 10000}
 
 ## Tab Management
 list_tabs: {"action": "list_tabs"}
 new_tab: {"action": "new_tab"} or {"action": "new_tab", "payload": "https://example.com"}
-close_tab: {"action": "close_tab", "tab_index": 1}
+close_tab: {"action": "close_tab"} \u2192 closes the active tab
+switch_tab: {"action": "switch_tab", "payload": 1} \u2192 switch to tab by index
+switch_tab: {"action": "switch_tab", "payload": "github.com"} \u2192 switch by URL substring
+switch_tab: {"action": "switch_tab", "payload": "My Page Title"} \u2192 switch by title substring
 
 ## Browser Mode Control
 show_browser: {"action": "show_browser"} \u2192 Make browser window visible
@@ -14606,14 +14651,15 @@ XPath: "//button[@type='submit']", "//input[@name='email']"
 ## Essential Patterns
 Login flow:
 {"action": "navigate", "payload": "https://site.com/login"}
-{"action": "await_element", "payload": "#email"}
-{"action": "type", "payload": {"selector": "#email", "text": "user@test.com"}}
-{"action": "type", "payload": {"selector": "#password", "text": "pass123"}}
+{"action": "await_element", "selector": "#email"}
+{"action": "type", "selector": "#email", "payload": "user@test.com"}
+{"action": "type", "selector": "#password", "payload": "pass123"}
 {"action": "keyboard_press", "payload": "Enter"}`;
     default:
       throw new Error(`Unknown action: ${params.action}`);
   }
 }
+var activeTab = 0;
 var server = new McpServer({
   name: "chrome-mcp-server",
   version: SERVER_VERSION
@@ -14630,9 +14676,11 @@ Every DOM action (navigate, click, type, select, eval) auto-captures to the sess
 
 Prefer reading these files to using 'extract' or 'screenshot' whenever possible.
 
-Schema: 3 parameters \u2014 action, tab_index (default 0), payload (string or object).
-Simple actions: payload is a string (navigate=URL, click=selector, eval=JS, keyboard_press=key).
-Structured actions: payload is an object (type={selector?,text}, select={selector,value}, etc.).
+Schema: 4 parameters \u2014 action, selector (CSS/XPath or null), payload (string or object), timeout (ms).
+selector targets a DOM element (null/omit for navigation, eval, tab management, etc.).
+payload is a string for simple actions (navigate=URL, type=text, eval=JS, keyboard_press=key).
+payload is an object for structured actions (set_viewport={width,height}, drag_drop={target}, etc.).
+Tabs are tracked as sticky state; use switch_tab to change the active tab.
 Use action='help' for full per-action payload shapes.`,
   UseBrowserParams,
   {

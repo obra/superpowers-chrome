@@ -10,17 +10,17 @@
    - Tab 1: `data:text/html,<h1>beta</h1><input id="i">`
    - Tab 2: `data:text/html,<h1>gamma</h1><input id="i">`
 2. `list_tabs` — should show 3 (plus any default Chrome tab)
-3. Interleave fills:
-   - `fill(tab_0, '#i', 'A')`
-   - `fill(tab_1, '#i', 'B')`
-   - `fill(tab_0, '#i', 'A-updated')`  (back to tab 0)
-   - `fill(tab_2, '#i', 'C')`
-4. Verify each tab's input value via eval:
-   - Tab 0 should be `"A-updated"`
-   - Tab 1 should be `"B"`
-   - Tab 2 should be `"C"`
-5. Close tab 1 via `close_tab`. List tabs — should show 2.
-6. Verify tab 0 and tab 2 still respond correctly (extract h1 from each).
+3. Interleave fills using `switch_tab` to change the active tab, then `type` with a selector:
+   - `switch_tab(payload='alpha')` then `type(selector='#i', payload='A')`
+   - `switch_tab(payload='beta')` then `type(selector='#i', payload='B')`
+   - `switch_tab(payload='alpha')` then `type(selector='#i', payload='A-updated')` (back to alpha tab)
+   - `switch_tab(payload='gamma')` then `type(selector='#i', payload='C')`
+4. Verify each tab's input value via eval (use `switch_tab` to navigate to each):
+   - alpha tab should be `"A-updated"`
+   - beta tab should be `"B"`
+   - gamma tab should be `"C"`
+5. Close the active tab via `close_tab`. List tabs — should show 2.
+6. Verify the remaining tabs still respond correctly (switch_tab then extract h1 from each).
 
 ### Part B: Service worker
 1. Open a new tab with a service-worker-registering page. Use this fixture (data URLs can't register SWs, so use a fixture server, OR use one of these known SW-registering sites):

@@ -16,17 +16,17 @@
 7. `hide_browser` — switch back. (May restart Chrome.)
 
 ### Viewport (verify the worker's gap observation)
-8. Try `set_viewport(0, {width:800, height:600})` — does the use_browser tool accept this action name? If yes, verify it works. If no, note the action name doesn't exist.
-9. Try `get_viewport(0)` — same question.
+8. Try `set_viewport({width:800, height:600})` — does the use_browser tool accept this action name? If yes, verify it works. If no, note the action name doesn't exist.
+9. Try `get_viewport` — same question.
 10. If `set_viewport`/`get_viewport` aren't reachable via use_browser but ARE implemented in the lib, document the gap.
 
 ### Back navigation
 11. Navigate to two URLs in sequence:
     - `data:text/html,<h1>first</h1>`
     - `data:text/html,<h1>second</h1>`
-12. `back(0)` — go back one history entry (added in commit adding back/forward to MCP).
+12. `back` — go back one history entry (tab is implicit via activeTab).
 13. After back, extract h1 → should be `first`.
-14. `forward(0)` — go forward one entry. Extract h1 → should be `second`.
+14. `forward` — go forward one entry. Extract h1 → should be `second`.
 
 ## Pass criteria
 

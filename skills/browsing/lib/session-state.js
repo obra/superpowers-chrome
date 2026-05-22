@@ -43,6 +43,9 @@ function createState({ host, port } = {}) {
     // Bridge primitives: the session's BrowserBridge instance and active BrowserSession.
     browserBridge: null,
     browserSession: null,
+
+    // Sticky tab state: updated by switch_tab, new_tab, close_tab.
+    activeTab: 0,
   };
 }
 
