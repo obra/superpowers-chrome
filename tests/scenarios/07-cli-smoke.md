@@ -67,8 +67,14 @@ code as FAIL for that step (note the exit code in the report).
    ```bash
    /tmp/bridge-bin/chrome-ws tabs
    ```
-   Must exit 0 and print JSON. Record the index of the first tab (call
-   it `T`); use `T` for the navigation/extract/eval steps below.
+   Must exit 0. Output is TSV (one line per page tab, columns
+   `id<TAB>url<TAB>title`) — not JSON. Pass criterion: at least one
+   line, and that line contains both a target id and a URL.
+   Record the index of the first tab (call it `T`); use `T` for the
+   navigation/extract/eval steps below.
+
+   If you also want the JSON-shaped view of Chrome state, that is the
+   `chrome-ws info` command (separate from `tabs`).
 
 5. **Navigate**
    ```bash
@@ -103,6 +109,7 @@ All 8 steps exit 0 with output matching the per-step expectation above.
 
 - Step 2 prints anything other than `2.2.0` → wrong binary; harness symlink is stale
 - Step 1 prints `Usage: chrome-ws raw ...` instead of the multi-command usage → wrong binary (older marketplace 2.1.0)
+- Step 8 prints `Unknown command: stop` → bridge CLI is missing the stop dispatch (regression of the fix that introduced it)
 - Any "is not a function" / module errors → bundling or entry-point issue
 - Bridge not initialized → CLI session setup diverged from MCP (skipped `ensureBridge`)
 

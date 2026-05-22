@@ -356,6 +356,20 @@ if (command === 'start') {
   return;
 }
 
+// Command: stop - kill the Chrome process this session manages
+if (command === 'stop') {
+  (async () => {
+    try {
+      await session.killChrome();
+      console.log('Chrome stopped');
+    } catch (e) {
+      console.error('Failed to stop Chrome:', e.message);
+      process.exit(1);
+    }
+  })();
+  return;
+}
+
 // Command: pid - print Chrome PID (for X11 window management, etc.)
 if (command === 'pid') {
   const pid = session.getChromePid();
@@ -899,7 +913,16 @@ if (command === 'har') {
   return;
 }
 
-if (command !== 'raw' || !wsUrlOrIndex || args.length === 0) {
+// Past all the named-command dispatches without a return → either it's the
+// raw escape hatch or it's a typo. Separate those cases so users get an
+// actionable error instead of a confusing "Usage: chrome-ws raw ..." banner.
+if (command !== 'raw') {
+  console.error(`Unknown command: ${command}`);
+  console.error(`Run 'chrome-ws --help' for the list of commands.`);
+  process.exit(1);
+}
+
+if (!wsUrlOrIndex || args.length === 0) {
   console.error('Usage: chrome-ws raw <tab-index-or-ws-url> <json-rpc-payload>');
   process.exit(1);
 }
