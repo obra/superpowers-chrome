@@ -122,6 +122,35 @@ describe('*WithCapture middleware', () => {
   });
 });
 
+describe('captureActionWithDiff with open dialog', () => {
+  it('skips BEFORE-capture and runs inner action when a dialog is open', async () => {
+    const dialogState = { kind: 'basic-auth', payload: { requestId: 'r1', origin: 'http://x', scheme: 'Basic', realm: '' }, staged: {} };
+    const dialogs = { getOpen: (sid) => sid === 'S1' ? dialogState : null };
+
+    let beforeCaptureCalled = false;
+    let innerActionCalled = false;
+
+    const ps = { sessionId: 'S1', send: async () => { beforeCaptureCalled = true; return { result: { value: null } }; }, calls: [] };
+    const { captureActionWithDiff } = attachCapture({
+      state: { sessionDir: '/tmp/cad-test-' + Date.now(), captureCounter: 0 },
+      getPageSession: async () => ps,
+      getHtml: async () => { beforeCaptureCalled = true; return '<html></html>'; },
+      screenshot: async () => { beforeCaptureCalled = true; },
+      actions: {},
+      dialogs,
+    });
+
+    const result = await captureActionWithDiff(0, 'type', async () => {
+      innerActionCalled = true;
+      return 'inner-result';
+    });
+
+    assert.equal(beforeCaptureCalled, false, 'BEFORE-capture should be skipped when dialog is open');
+    assert.equal(innerActionCalled, true, 'inner action should still run');
+    assert.equal(result.actionResult, 'inner-result');
+  });
+});
+
 describe('capturePageArtifacts with open dialog', () => {
   it('returns synthetic markdown when a dialog is open', async () => {
     const dialogState = { kind: 'alert', payload: { message: 'hi', url: 'http://x', defaultPrompt: '', hasBrowserHandler: false }, staged: {} };

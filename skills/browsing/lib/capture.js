@@ -214,9 +214,18 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
   // restores focus around the BEFORE screenshot — taking a screenshot can
   // shift focus, which then breaks any focus-dependent action that follows.
   async function captureActionWithDiff(tabIndexOrWsUrl, actionType, actionFn, settleTime = 3000) {
+    const ps = await getPageSession(tabIndexOrWsUrl);
+
+    // If a dialog is open, skip BEFORE-capture entirely. The page's execution
+    // context is suspended (e.g. waiting for basic-auth credentials), so any
+    // Runtime.evaluate call would hang until timeout. The inner action handles
+    // dialog routing via withDialogAwarenessForSession.
+    if (dialogs && dialogs.getOpen(ps.sessionId)) {
+      return { actionResult: await actionFn() };
+    }
+
     const prefix = createCapturePrefix(actionType);
     const dir = initializeSession();
-    const ps = await getPageSession(tabIndexOrWsUrl);
 
     async function saveFocus() {
       const result = await ps.send('Runtime.evaluate', {
