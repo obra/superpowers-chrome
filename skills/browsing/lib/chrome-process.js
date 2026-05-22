@@ -5,6 +5,7 @@ const {
   isPortAlive,
   findAvailablePort,
   findPidOnPort,
+  findOrphanChromeForProfile,
   buildChromeArgs,
   getChromeProfileDir,
 } = require('./chrome-launcher-helpers');
@@ -47,6 +48,19 @@ function attachChromeProcess({ state, chromeHttp, getTabs, newTab }) {
         }
         // Stale meta.json — Chrome died without cleanup
         clearProfileMeta(state.chromeProfileName);
+      }
+
+      // --- Step 1.5: Adopt an orphan Chrome that holds our profile lock ---
+      // If a previous MCP session exited without cleanup, there may be a Chrome
+      // still running with our profile. Detect via process inspection: filter ps for
+      // chrome processes with --user-data-dir=<our profile dir> and --remote-debugging-port=N.
+      const orphanInfo = await Promise.resolve().then(() => findOrphanChromeForProfile(state.chromeProfileName));
+      if (orphanInfo && await isPortAlive(CHROME_DEBUG_HOST, orphanInfo.port, orphanInfo.pid)) {
+        state.activePort = orphanInfo.port;
+        // Persist meta.json so subsequent runs hit Step 1 directly.
+        writeProfileMeta(state.chromeProfileName, { port: orphanInfo.port, pid: orphanInfo.pid });
+        console.error(`Adopted orphan Chrome (port: ${orphanInfo.port}, PID: ${orphanInfo.pid}, profile: ${state.chromeProfileName})`);
+        return;
       }
     }
 

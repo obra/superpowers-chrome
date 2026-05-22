@@ -10,6 +10,7 @@ const {
   getXdgCacheHome,
   getChromeProfileDir,
   findPidOnPort,
+  findOrphanChromeForProfile,
 } = require('../../skills/browsing/lib/chrome-launcher-helpers.js');
 
 describe('chrome-launcher-helpers', () => {
@@ -98,5 +99,10 @@ describe('chrome-launcher-helpers', () => {
     } finally {
       server.close();
     }
+  });
+
+  it('findOrphanChromeForProfile returns null when no match', () => {
+    const r = findOrphanChromeForProfile('definitely-nonexistent-profile-name-xyz');
+    assert.equal(r, null);
   });
 });

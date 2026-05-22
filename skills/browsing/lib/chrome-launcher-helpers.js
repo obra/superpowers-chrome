@@ -172,6 +172,83 @@ function findPidOnPort(port) {
   return null;
 }
 
+// Scan running processes for a Chrome holding our profile's lock.
+// Used to adopt orphan Chrome instances (meta.json missing/stale).
+// Returns { pid, port } for first match, or null.
+//
+// Scans ps output for Chrome processes with:
+//   --user-data-dir=<our profileDir> AND --remote-debugging-port=<N>
+// Skips Chrome Helper processes (renderer, GPU, etc).
+function findOrphanChromeForProfile(profileName) {
+  const { execSync } = require('child_process');
+  try {
+    const profileDir = getChromeProfileDir(profileName);
+    let psOutput;
+
+    if (process.platform === 'darwin' || process.platform === 'linux') {
+      // ps auxw: full command line per process
+      psOutput = execSync('ps auxw', {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore']
+      });
+    } else if (process.platform === 'win32') {
+      // Windows: use wmic to list processes with their full command line
+      psOutput = execSync('wmic process list full', {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore']
+      });
+    } else {
+      return null; // Unsupported platform
+    }
+
+    const lines = psOutput.split('\n');
+    for (const line of lines) {
+      // Skip empty lines and Chrome Helper processes (rendering, GPU, etc)
+      if (!line.trim() || line.includes('Chrome Helper') || line.includes('chrome.exe --type=')) {
+        continue;
+      }
+
+      // Must contain our profile dir
+      if (!line.includes(profileDir)) {
+        continue;
+      }
+
+      // Must contain --remote-debugging-port
+      const portMatch = line.match(/--remote-debugging-port=(\d+)/);
+      if (!portMatch || !portMatch[1]) {
+        continue;
+      }
+
+      const port = parseInt(portMatch[1], 10);
+
+      // Extract PID: position varies by platform, but it's early in the line.
+      // macOS/Linux: "USER PID ..." — PID is second field after spaces
+      // Windows wmic: "ProcessId=..." or first numeric field
+      let pid;
+      if (process.platform === 'darwin' || process.platform === 'linux') {
+        const fields = line.split(/\s+/);
+        if (fields.length >= 2) {
+          pid = parseInt(fields[1], 10);
+        }
+      } else if (process.platform === 'win32') {
+        const pidMatch = line.match(/ProcessId=(\d+)|^(\d+)\s/);
+        if (pidMatch) {
+          pid = parseInt(pidMatch[1] || pidMatch[2], 10);
+        }
+      }
+
+      if (Number.isFinite(pid) && Number.isFinite(port)) {
+        return { pid, port };
+      }
+    }
+
+    return null;
+  } catch (_e) {
+    // ps or wmic failed, no process info available
+    return null;
+  }
+}
+
 function buildChromeArgs({ chosenPort, chromeUserDataDir, chromeHeadless }) {
   const args = [
     `--remote-debugging-port=${chosenPort}`,
@@ -233,5 +310,6 @@ module.exports = {
   isPortFree,
   findAvailablePort,
   findPidOnPort,
+  findOrphanChromeForProfile,
   buildChromeArgs,
 };

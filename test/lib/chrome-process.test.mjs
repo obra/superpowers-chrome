@@ -311,6 +311,7 @@ describe('chrome-process: Bug 1b — startChrome clears chromeProcess on readine
       isPortAlive: async () => false,       // never ready → triggers timeout
       findAvailablePort: async () => 9333,
       findPidOnPort: () => null,
+      findOrphanChromeForProfile: () => null,
       buildChromeArgs: () => ['--fake'],
       getChromeProfileDir: () => '/tmp/fake-profile',
     };
