@@ -216,6 +216,11 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
   async function captureActionWithDiff(tabIndexOrWsUrl, actionType, actionFn, settleTime = 3000) {
     const ps = await getPageSession(tabIndexOrWsUrl);
 
+    // Pin the tab handle to the targetId resolved NOW so that a popup spawned
+    // by the action does not shift "tab 0" before the AFTER-capture runs
+    // (Bug 3 fix: resolve once at action start, use throughout).
+    const pinnedTab = { id: ps.targetId };
+
     // If a dialog is open, skip BEFORE-capture entirely. The page's execution
     // context is suspended (e.g. waiting for basic-auth credentials), so any
     // Runtime.evaluate call would hang until timeout. The inner action handles
@@ -277,17 +282,22 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
       }
       if (selector) {
         const restoreResult = await ps.send('Runtime.evaluate', {
-          expression: `(() => { const el = ${selector}; if (el) el.focus(); })()`
+          // preventScroll: true avoids scrolling the page to bring the
+          // re-focused element into view, which would undo any explicit
+          // scroll() the user just performed (Bug 4 fix).
+          expression: `(() => { const el = ${selector}; if (el) el.focus({ preventScroll: true }); })()`
         });
         throwIfExceptionDetails(restoreResult);
       }
     }
 
     // BEFORE: html + screenshot, with focus saved/restored around the screenshot.
-    const beforeHtml = await getHtml(tabIndexOrWsUrl);
+    // Use pinnedTab throughout so a popup spawned mid-action doesn't redirect
+    // capture to the wrong tab.
+    const beforeHtml = await getHtml(pinnedTab);
     const focusInfo = await saveFocus();
     const beforeScreenshotPath = path.join(dir, `${prefix}-before.png`);
-    await screenshot(tabIndexOrWsUrl, beforeScreenshotPath);
+    await screenshot(pinnedTab, beforeScreenshotPath);
     await restoreFocus(focusInfo);
 
     const actionResult = await actionFn();
@@ -319,10 +329,10 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
     await new Promise(resolve => setTimeout(resolve, settleTime));
 
     const [afterHtml, markdown, pageSize, domSummary] = await Promise.all([
-      getHtml(tabIndexOrWsUrl),
-      generateMarkdown(tabIndexOrWsUrl),
-      getPageSize(tabIndexOrWsUrl),
-      generateDomSummary(tabIndexOrWsUrl)
+      getHtml(pinnedTab),
+      generateMarkdown(pinnedTab),
+      getPageSize(pinnedTab),
+      generateDomSummary(pinnedTab)
     ]);
 
     const diff = generateHtmlDiff(beforeHtml, afterHtml);
@@ -337,7 +347,7 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
     fs.writeFileSync(afterHtmlPath, afterHtml || '');
     fs.writeFileSync(diffPath, diff);
     fs.writeFileSync(markdownPath, markdown || '');
-    await screenshot(tabIndexOrWsUrl, afterScreenshotPath);
+    await screenshot(pinnedTab, afterScreenshotPath);
 
     return {
       actionResult,
@@ -365,8 +375,22 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
   async function clickWithCapture(tabIndexOrWsUrl, selector) {
     const ps = await getPageSession(tabIndexOrWsUrl);
     const run = async () => {
-      await actions.click(tabIndexOrWsUrl, selector);
-      const artifacts = await capturePageArtifacts(tabIndexOrWsUrl, 'click');
+      const clickResult = await actions.click(tabIndexOrWsUrl, selector);
+
+      // dialog::* selectors handle a native dialog (accept/dismiss).  After the
+      // dialog is handled the page may immediately navigate or resume execution,
+      // so issuing Runtime.evaluate for a capture would race against that and
+      // timeout.  Skip post-action capture; the next real page action will
+      // capture the settled state.
+      if (typeof selector === 'string' && selector.startsWith('dialog::')) {
+        return { action: 'click', selector, dialogHandled: true, result: clickResult };
+      }
+
+      // Pin the page session by targetId so a newly-spawned popup does not
+      // change what "tab 0" resolves to between the action and the capture
+      // (Bug 3 fix: resolve once, pass the stable tab handle forward).
+      const pinnedTab = { id: ps.targetId };
+      const artifacts = await capturePageArtifacts(pinnedTab, 'click');
       return {
         action: 'click',
         selector,
@@ -386,9 +410,10 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
 
   async function fillWithCapture(tabIndexOrWsUrl, selector, value) {
     const ps = await getPageSession(tabIndexOrWsUrl);
+    const pinnedTab = { id: ps.targetId };
     const run = async () => {
       await actions.fill(tabIndexOrWsUrl, selector, value);
-      const artifacts = await capturePageArtifacts(tabIndexOrWsUrl, 'type');
+      const artifacts = await capturePageArtifacts(pinnedTab, 'type');
       return {
         action: 'type',
         selector,
@@ -409,9 +434,10 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
 
   async function selectOptionWithCapture(tabIndexOrWsUrl, selector, value) {
     const ps = await getPageSession(tabIndexOrWsUrl);
+    const pinnedTab = { id: ps.targetId };
     const run = async () => {
       await actions.selectOption(tabIndexOrWsUrl, selector, value);
-      const artifacts = await capturePageArtifacts(tabIndexOrWsUrl, 'select');
+      const artifacts = await capturePageArtifacts(pinnedTab, 'select');
       return {
         action: 'select',
         selector,
@@ -432,9 +458,10 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
 
   async function evaluateWithCapture(tabIndexOrWsUrl, expression) {
     const ps = await getPageSession(tabIndexOrWsUrl);
+    const pinnedTab = { id: ps.targetId };
     const run = async () => {
       const result = await actions.evaluate(tabIndexOrWsUrl, expression);
-      const artifacts = await capturePageArtifacts(tabIndexOrWsUrl, 'eval');
+      const artifacts = await capturePageArtifacts(pinnedTab, 'eval');
       return {
         action: 'eval',
         expression,

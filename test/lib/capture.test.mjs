@@ -4,6 +4,7 @@ import { createRequire } from 'node:module';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { after, describe, it } from 'node:test';
+import { makePageSessionFake as makePageSessionFakeWithTargetId } from './_helpers.mjs';
 
 function makePageSessionFake(sessionId = 'fake-session-id') {
   const calls = [];
@@ -169,5 +170,142 @@ describe('capturePageArtifacts with open dialog', () => {
     assert.equal(out.png, undefined, 'no PNG should be produced for dialogs');
     // No CDP DOM-summary call should have happened.
     assert.ok(!ps.calls.some(c => c.method === 'Runtime.evaluate'));
+  });
+});
+
+describe('clickWithCapture with dialog::* selector (Bug 2 regression)', () => {
+  it('dialog::accept does not call capturePageArtifacts and issues no Runtime.evaluate', async () => {
+    // When the user calls click("dialog::accept"), the inner actions.click
+    // handles the dialog via tryHandleDialogSelectorForSession.  After that
+    // the dialog is gone and the page may be navigating.  The old code called
+    // capturePageArtifacts unconditionally, which issued Runtime.evaluate on a
+    // mid-navigation page and caused "Page session timeout: Runtime.evaluate".
+    //
+    // Fix: clickWithCapture detects dialog::* selectors and skips post-action
+    // capture entirely.
+    let capturePageArtifactsCalled = false;
+    const ps = makePageSessionFakeWithTargetId({
+      'Page.handleJavaScriptDialog': () => ({}),
+    }, { sessionId: 'S-dialog-click', targetId: 'T-dialog-click' });
+    const dialogState = { kind: 'confirm', payload: { message: 'ok?', url: '', defaultPrompt: '', hasBrowserHandler: false }, staged: {} };
+    const dialogs = {
+      getOpen: () => dialogState,
+      withDialogAwarenessForSession: async (_action, _ps, _args, fn) => fn(),
+    };
+    const { clickWithCapture } = attachCapture({
+      state: { sessionDir: '/tmp/bug2-' + Date.now() },
+      getPageSession: async () => ps,
+      getHtml: async () => { capturePageArtifactsCalled = true; return '<html></html>'; },
+      screenshot: async () => { capturePageArtifactsCalled = true; },
+      actions: {
+        // Simulate mouse.click(dialog::accept): handles via dialog router, no Runtime.evaluate.
+        click: async (_tab, sel) => {
+          if (sel === 'dialog::accept') {
+            await ps.send('Page.handleJavaScriptDialog', { accept: true });
+            return { ok: true };
+          }
+          throw new Error('unexpected selector: ' + sel);
+        },
+      },
+      dialogs,
+    });
+
+    const result = await clickWithCapture(0, 'dialog::accept');
+    assert.equal(result.dialogHandled, true, 'result should flag dialogHandled');
+    assert.ok(!capturePageArtifactsCalled, 'capturePageArtifacts must NOT be called after dialog::accept');
+    // Only Page.handleJavaScriptDialog should have been sent — no Runtime.evaluate.
+    const evalCalls = ps.calls.filter(c => c.method === 'Runtime.evaluate');
+    assert.equal(evalCalls.length, 0, 'no Runtime.evaluate for dialog::accept click');
+  });
+});
+
+describe('captureActionWithDiff session pinning (Bug 3 regression)', () => {
+  it('AFTER-capture targets the same pageSession as at action start, not re-resolved index 0', async () => {
+    // When a click opens a popup, Chrome may reorder tabs so tab[0] becomes
+    // the popup.  captureActionWithDiff must NOT re-resolve "tab 0" after the
+    // action — it must capture the original tab (the one that was active).
+    //
+    // Fix: pinnedTab = { id: ps.targetId } is computed once before the action
+    // and passed to all AFTER-capture calls.
+    let afterCaptureTabId = null;
+    const originalPs = makePageSessionFakeWithTargetId({
+      'Runtime.evaluate': (params) => {
+        const expr = params && params.expression ? params.expression : '';
+        if (expr.includes('window.innerWidth')) {
+          return { result: { value: { width: 800, height: 600, documentWidth: 800, documentHeight: 2000 } } };
+        }
+        // generateMarkdown returns a string; generateDomSummary returns an object.
+        // Both are long scripts — return compatible stub values.
+        if (expr.length > 200) {
+          return { result: { value: '# stub-page' } };
+        }
+        return { result: { value: null } };
+      },
+    }, { sessionId: 'S-original', targetId: 'T-original' });
+
+    // getPageSession: first call returns originalPs (pre-action, resolving by index).
+    // Subsequent calls (post-action) must receive { id: 'T-original' } (pinned).
+    let callCount = 0;
+    const getPageSession = async (tabSpec) => {
+      callCount++;
+      if (callCount === 1) {
+        // First call: resolve by index (action start) — return original tab
+        return originalPs;
+      }
+      // Post-action calls should use the pinned { id: ps.targetId } handle.
+      afterCaptureTabId = tabSpec && tabSpec.id ? tabSpec.id : null;
+      return originalPs; // still return original for the test to complete
+    };
+
+    const bug3Dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bug3-'));
+    const { captureActionWithDiff } = attachCapture({
+      state: { sessionDir: bug3Dir, captureCounter: 0 },
+      getPageSession,
+      getHtml: async () => '<html></html>',
+      screenshot: async (_tab, file) => { fs.writeFileSync(file, ''); },
+      actions: {},
+    });
+
+    await captureActionWithDiff(0, 'click', async () => 'action-done', 0);
+
+    assert.equal(afterCaptureTabId, 'T-original',
+      'AFTER-capture must use the pinned targetId, not re-resolve by numeric index');
+  });
+});
+
+describe('captureActionWithDiff restoreFocus uses preventScroll (Bug 4 regression)', () => {
+  it('restoreFocus calls el.focus({ preventScroll: true }) so scroll position is preserved', async () => {
+    // When BEFORE-capture saves focus and then restores it after the screenshot,
+    // the old code called el.focus() without preventScroll:true.  On Chrome,
+    // focus() scrolls the element into view, undoing any explicit scroll() the
+    // user performed.  The fix: el.focus({ preventScroll: true }).
+    const evalExpressions = [];
+    const ps = makePageSessionFakeWithTargetId({
+      'Runtime.evaluate': (params) => {
+        evalExpressions.push(params.expression);
+        // saveFocus: return a focused element with an id
+        if (params.expression && params.expression.includes('document.activeElement')) {
+          return { result: { value: { type: 'id', value: 'my-input' } } };
+        }
+        return { result: { value: null } };
+      },
+    }, { sessionId: 'S-scroll', targetId: 'T-scroll' });
+
+    const bug4Dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bug4-'));
+    const { captureActionWithDiff } = attachCapture({
+      state: { sessionDir: bug4Dir, captureCounter: 0 },
+      getPageSession: async () => ps,
+      getHtml: async () => '<html></html>',
+      screenshot: async (_tab, file) => { fs.writeFileSync(file, ''); },
+      actions: {},
+    });
+
+    await captureActionWithDiff(0, 'scroll', async () => 'scroll-done', 0);
+
+    // Find the restoreFocus expression.
+    const restoreExpr = evalExpressions.find(e => e && e.includes('el.focus'));
+    assert.ok(restoreExpr, 'restoreFocus Runtime.evaluate must have been sent');
+    assert.match(restoreExpr, /preventScroll.*true|preventScroll:.*true/,
+      'restoreFocus must call el.focus({ preventScroll: true }) to avoid scroll reset');
   });
 });
