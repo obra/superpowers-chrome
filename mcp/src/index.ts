@@ -67,8 +67,10 @@ if (forceHeadless) {
 // Note: click and type now use CDP events by default (React-compatible)
 enum BrowserAction {
   NAVIGATE = "navigate",
+  BACK = "back",                // history.back() — go back one entry
+  FORWARD = "forward",          // history.forward() — go forward one entry
   CLICK = "click",              // Uses CDP mouse events (works with React)
-  TYPE = "type",                // Uses CDP fill (works with React)
+  TYPE = "type",                // Uses CDP humanType (character-by-character with delays)
   EXTRACT = "extract",
   SCREENSHOT = "screenshot",
   EVAL = "eval",
@@ -102,6 +104,10 @@ enum BrowserAction {
   GET_VIEWPORT = "get_viewport",
   // Cookie management
   CLEAR_COOKIES = "clear_cookies",
+  // Console logging capture (Runtime.consoleAPICalled stream)
+  ENABLE_CONSOLE_LOGGING = "enable_console_logging",
+  GET_CONSOLE_MESSAGES = "get_console_messages",
+  CLEAR_CONSOLE_MESSAGES = "clear_console_messages",
 }
 
 // Zod schema for use_browser tool parameters
@@ -321,6 +327,14 @@ async function executeBrowserAction(params: UseBrowserInput): Promise<string> {
       } else {
         return `Navigated to ${params.payload}`;
       }
+
+    case BrowserAction.BACK:
+      await chromeLib.back(tabIndex);
+      return `Went back (history.back())`;
+
+    case BrowserAction.FORWARD:
+      await chromeLib.forward(tabIndex);
+      return `Went forward (history.forward())`;
 
     case BrowserAction.CLICK:
       if (!params.selector) {
@@ -718,6 +732,24 @@ async function executeBrowserAction(params: UseBrowserInput): Promise<string> {
     case BrowserAction.CLEAR_COOKIES: {
       await chromeLib.clearCookies(tabIndex);
       return `Cookies cleared`;
+    }
+
+    case BrowserAction.ENABLE_CONSOLE_LOGGING: {
+      await chromeLib.enableConsoleLogging(tabIndex);
+      return `Console logging enabled. Use get_console_messages to read; clear_console_messages to reset.`;
+    }
+
+    case BrowserAction.GET_CONSOLE_MESSAGES: {
+      const messages = await chromeLib.getConsoleMessages(tabIndex);
+      if (!messages || messages.length === 0) {
+        return `No console messages captured. (Call enable_console_logging first if you haven't.)`;
+      }
+      return messages.map((m: any) => `[${m.timestamp}] ${m.level}: ${m.text}`).join('\n');
+    }
+
+    case BrowserAction.CLEAR_CONSOLE_MESSAGES: {
+      await chromeLib.clearConsoleMessages(tabIndex);
+      return `Console messages cleared`;
     }
 
     case BrowserAction.HELP:

@@ -60,6 +60,8 @@ const {
  */
 const PAGE_TARGET_SESSION_METHODS = new Set([
   'navigate',
+  'back',
+  'forward',
   'click',
   'fill',
   'selectOption',
@@ -274,7 +276,7 @@ function createSession({ host, port, _testFakes } = {}) {
     dialogs,
   });
 
-  const { navigate, waitForElement, waitForText } =
+  const { navigate, waitForElement, waitForText, back, forward } =
     attachNavigation({ state, getPageSession, capturePageArtifacts, evaluate });
 
   const { setViewport, clearViewport, getViewport } = attachViewport({ getPageSession });
@@ -344,6 +346,8 @@ function createSession({ host, port, _testFakes } = {}) {
     getAttribute,
     waitForElement,
     waitForText,
+    back,
+    forward,
     screenshot,
 
     // Mouse actions (CDP-level, bypasses synthetic event restrictions)

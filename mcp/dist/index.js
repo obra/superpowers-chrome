@@ -13905,6 +13905,8 @@ if (forceHeadless) {
 }
 var BrowserAction = /* @__PURE__ */ ((BrowserAction2) => {
   BrowserAction2["NAVIGATE"] = "navigate";
+  BrowserAction2["BACK"] = "back";
+  BrowserAction2["FORWARD"] = "forward";
   BrowserAction2["CLICK"] = "click";
   BrowserAction2["TYPE"] = "type";
   BrowserAction2["EXTRACT"] = "extract";
@@ -13935,6 +13937,9 @@ var BrowserAction = /* @__PURE__ */ ((BrowserAction2) => {
   BrowserAction2["CLEAR_VIEWPORT"] = "clear_viewport";
   BrowserAction2["GET_VIEWPORT"] = "get_viewport";
   BrowserAction2["CLEAR_COOKIES"] = "clear_cookies";
+  BrowserAction2["ENABLE_CONSOLE_LOGGING"] = "enable_console_logging";
+  BrowserAction2["GET_CONSOLE_MESSAGES"] = "get_console_messages";
+  BrowserAction2["CLEAR_CONSOLE_MESSAGES"] = "clear_console_messages";
   return BrowserAction2;
 })(BrowserAction || {});
 var UseBrowserParams = {
@@ -14061,6 +14066,12 @@ async function executeBrowserAction(params) {
       } else {
         return `Navigated to ${params.payload}`;
       }
+    case "back" /* BACK */:
+      await chromeLib.back(tabIndex);
+      return `Went back (history.back())`;
+    case "forward" /* FORWARD */:
+      await chromeLib.forward(tabIndex);
+      return `Went forward (history.forward())`;
     case "click" /* CLICK */:
       if (!params.selector) {
         throw new Error("click requires selector");
@@ -14404,6 +14415,21 @@ Result: ${evalResult.result}`);
     case "clear_cookies" /* CLEAR_COOKIES */: {
       await chromeLib.clearCookies(tabIndex);
       return `Cookies cleared`;
+    }
+    case "enable_console_logging" /* ENABLE_CONSOLE_LOGGING */: {
+      await chromeLib.enableConsoleLogging(tabIndex);
+      return `Console logging enabled. Use get_console_messages to read; clear_console_messages to reset.`;
+    }
+    case "get_console_messages" /* GET_CONSOLE_MESSAGES */: {
+      const messages = await chromeLib.getConsoleMessages(tabIndex);
+      if (!messages || messages.length === 0) {
+        return `No console messages captured. (Call enable_console_logging first if you haven't.)`;
+      }
+      return messages.map((m) => `[${m.timestamp}] ${m.level}: ${m.text}`).join("\n");
+    }
+    case "clear_console_messages" /* CLEAR_CONSOLE_MESSAGES */: {
+      await chromeLib.clearConsoleMessages(tabIndex);
+      return `Console messages cleared`;
     }
     case "help" /* HELP */:
       return `# Chrome Browser Control

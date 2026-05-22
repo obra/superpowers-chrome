@@ -215,4 +215,20 @@ describe('navigation', () => {
     process.off('unhandledRejection', unhandledHandler);
     assert.equal(unhandledFired, false, 'no unhandled rejection should fire after navigate() throws');
   });
+
+  it('back dispatches Runtime.evaluate with history.back()', async () => {
+    const { back, ps } = setup();
+    await back(0);
+    const calls = ps.calls.filter(c => c.method === 'Runtime.evaluate');
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].params.expression, 'history.back()');
+  });
+
+  it('forward dispatches Runtime.evaluate with history.forward()', async () => {
+    const { forward, ps } = setup();
+    await forward(0);
+    const calls = ps.calls.filter(c => c.method === 'Runtime.evaluate');
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].params.expression, 'history.forward()');
+  });
 });

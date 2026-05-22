@@ -24,9 +24,9 @@
 11. Navigate to two URLs in sequence:
     - `data:text/html,<h1>first</h1>`
     - `data:text/html,<h1>second</h1>`
-12. Try `back(0)` or `navigate_back(0)` — does the use_browser tool support a back action?
-13. If supported, after back, extract h1 → should be `first`.
-14. If not supported, note the gap (and mention the lib presumably supports it via `Page.goBack` or `history.back()`).
+12. `back(0)` — go back one history entry (added in commit adding back/forward to MCP).
+13. After back, extract h1 → should be `first`.
+14. `forward(0)` — go forward one entry. Extract h1 → should be `second`.
 
 ## Pass criteria
 

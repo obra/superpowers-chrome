@@ -195,7 +195,17 @@ function attachNavigation({ state, getPageSession, capturePageArtifacts, evaluat
     await evaluate(tabIndexOrWsUrl, js);
   }
 
-  return { navigate, waitForElement, waitForText };
+  async function back(tabIndexOrWsUrl) {
+    const ps = await getPageSession(tabIndexOrWsUrl);
+    await ps.send('Runtime.evaluate', { expression: 'history.back()' });
+  }
+
+  async function forward(tabIndexOrWsUrl) {
+    const ps = await getPageSession(tabIndexOrWsUrl);
+    await ps.send('Runtime.evaluate', { expression: 'history.forward()' });
+  }
+
+  return { navigate, waitForElement, waitForText, back, forward };
 }
 
 module.exports = { attachNavigation };
