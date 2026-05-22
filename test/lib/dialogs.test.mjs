@@ -199,6 +199,76 @@ describe('dialogs.attachToPageSession', () => {
     assert.equal(state.dialogs.has('S1'), true);
   });
 
+  it('captures Fetch.authRequired as a basic-auth dialog (Chrome fires this, not Fetch.requestPaused with authChallenge)', async () => {
+    let handler = null;
+    const ps = {
+      sessionId: 'S1',
+      send: async () => ({}),
+      onEvent: (fn) => { handler = fn; return () => {}; },
+    };
+    const state = { dialogs: new Map() };
+    const dialogs = attachDialogs({ state });
+    await dialogs.attachToPageSession(ps);
+
+    handler({
+      method: 'Fetch.authRequired',
+      params: {
+        requestId: 'interception-job-1.0',
+        request: { url: 'http://example.com/', method: 'GET', headers: {} },
+        frameId: 'F1',
+        resourceType: 'Document',
+        authChallenge: {
+          source: 'Server',
+          origin: 'http://example.com',
+          scheme: 'basic',
+          realm: 'Protected Area',
+        },
+      },
+    });
+
+    assert.ok(state.dialogs.has('S1'), 'dialog state should be set');
+    const d = state.dialogs.get('S1');
+    assert.equal(d.kind, 'basic-auth');
+    assert.equal(d.payload.requestId, 'interception-job-1.0');
+    assert.equal(d.payload.origin, 'http://example.com');
+    assert.equal(d.payload.scheme, 'basic');
+    assert.equal(d.payload.realm, 'Protected Area');
+  });
+
+  it('Fetch.requestPaused (non-auth) calls Fetch.continueRequest and does NOT set dialog state', async () => {
+    let handler = null;
+    const sent = [];
+    const ps = {
+      sessionId: 'S1',
+      send: async (method, params) => { sent.push({ method, params }); return {}; },
+      onEvent: (fn) => { handler = fn; return () => {}; },
+    };
+    const state = { dialogs: new Map() };
+    const dialogs = attachDialogs({ state });
+    await dialogs.attachToPageSession(ps);
+
+    // Clear setup calls so we only see the event-handler calls below
+    sent.length = 0;
+
+    handler({
+      method: 'Fetch.requestPaused',
+      params: {
+        requestId: 'req-1',
+        request: { url: 'http://example.com/favicon.ico', method: 'GET', headers: {} },
+        frameId: 'F1',
+        resourceType: 'Image',
+      },
+    });
+
+    // Allow the .catch() handler to settle
+    await new Promise(r => setImmediate(r));
+
+    assert.ok(!state.dialogs.has('S1'), 'no dialog state for plain request');
+    const continueCall = sent.find(c => c.method === 'Fetch.continueRequest');
+    assert.ok(continueCall, 'Fetch.continueRequest should be called for non-auth requests');
+    assert.equal(continueCall.params.requestId, 'req-1');
+  });
+
   it('suppresses a second javascriptDialogOpening while one is already open', async () => {
     let handler = null;
     const ps = {

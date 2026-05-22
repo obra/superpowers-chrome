@@ -178,4 +178,41 @@ describe('navigation', () => {
 
   // navigate() full-page navigation and real console capture are also
   // covered by the Tier C real-Chrome smoke test.
+
+  // Regression: when ps.send('Page.navigate') times out (e.g. Chrome hangs
+  // waiting for an unanswered auth challenge), the internal loadPromise timer
+  // was never cleared.  30 s later it fired a rejection with no awaiter —
+  // an unhandled Promise rejection that kills the MCP server process.
+  //
+  // The fix: attach .catch(() => {}) to loadPromise immediately so any orphaned
+  // rejection is always handled, regardless of which timer fires first.
+  it('loadPromise rejection does not become unhandled when Page.navigate times out first', async () => {
+    // We can't easily control which timer fires first in the real 30-second path,
+    // but we can verify the critical invariant: once navigate() rejects (for any
+    // reason), calling navigate() does NOT leave an unhandled rejection behind.
+    //
+    // Strategy: make ps.send('Page.navigate') reject immediately. Then confirm
+    // that no unhandledRejection event fires within a tick.
+    const { navigate } = setup({
+      'Page.navigate': () => { throw new Error('Page.navigate CDP error'); }
+    });
+
+    let unhandledFired = false;
+    const unhandledHandler = () => { unhandledFired = true; };
+    process.on('unhandledRejection', unhandledHandler);
+
+    try {
+      await navigate(0, 'https://example.com');
+      assert.fail('navigate should have thrown');
+    } catch (err) {
+      assert.match(err.message, /Page.navigate CDP error/);
+    }
+
+    // Drain the microtask queue so any pending rejections would have been emitted.
+    await new Promise(r => setImmediate(r));
+    await new Promise(r => setImmediate(r));
+
+    process.off('unhandledRejection', unhandledHandler);
+    assert.equal(unhandledFired, false, 'no unhandled rejection should fire after navigate() throws');
+  });
 });

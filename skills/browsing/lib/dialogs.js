@@ -155,28 +155,32 @@ function attachDialogs({ state }) {
     }
     if (msg.method === 'Fetch.requestPaused') {
       const p = msg.params;
-      if (p.authChallenge) {
-        if (state.dialogs.has(sid)) {
-          console.error(`[dialogs] auth challenge while dialog open on ${sid}; preserving original`);
-          return;
-        }
-        state.dialogs.set(sid, {
-          kind: 'basic-auth',
-          openedAt: Date.now(),
-          payload: {
-            requestId: p.requestId,
-            origin: p.authChallenge.origin,
-            scheme: p.authChallenge.scheme,
-            realm: p.authChallenge.realm || '',
-          },
-          staged: {},
-        });
-      }
       // For non-auth Fetch.requestPaused, continue the request immediately.
-      // (Auth challenges are held as dialogs above; all other interceptions are passthrough.)
-      else if (sendPageCmd) {
+      // Auth challenges arrive as Fetch.authRequired (see handler below), not
+      // as Fetch.requestPaused with authChallenge — that field is never set by
+      // Chrome when handleAuthRequests:true is enabled.
+      if (sendPageCmd) {
         sendPageCmd('Fetch.continueRequest', { requestId: p.requestId }).catch(() => {});
       }
+      return;
+    }
+    if (msg.method === 'Fetch.authRequired') {
+      const p = msg.params;
+      if (state.dialogs.has(sid)) {
+        console.error(`[dialogs] auth challenge while dialog open on ${sid}; preserving original`);
+        return;
+      }
+      state.dialogs.set(sid, {
+        kind: 'basic-auth',
+        openedAt: Date.now(),
+        payload: {
+          requestId: p.requestId,
+          origin: p.authChallenge.origin,
+          scheme: p.authChallenge.scheme,
+          realm: p.authChallenge.realm || '',
+        },
+        staged: {},
+      });
       return;
     }
   }

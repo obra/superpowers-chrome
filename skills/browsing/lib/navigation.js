@@ -94,6 +94,14 @@ function attachNavigation({ state, getPageSession, capturePageArtifacts, evaluat
       });
     });
 
+    // Guard against an orphaned loadPromise rejection: if ps.send('Page.navigate')
+    // times out (or fails) before loadPromise settles, loadPromise's own 30-second
+    // timer will fire later with no awaiter → unhandled rejection → process exit.
+    // Attaching .catch here makes that eventual rejection handled, without
+    // interfering with the `await loadPromise` path below (Promises can have
+    // multiple handlers).
+    loadPromise.catch(() => {});
+
     let navigateResult;
     try {
       navigateResult = await ps.send('Page.navigate', { url });
