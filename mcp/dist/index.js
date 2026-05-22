@@ -14092,13 +14092,18 @@ ${JSON.stringify(typeResult.actionResult ?? {})}`;
         throw new Error("extract payload must be a string format");
       }
       if (params.selector) {
+        let extracted;
         if (format === "text") {
-          return await chromeLib.extractText(tabIndex, params.selector);
+          extracted = await chromeLib.extractText(tabIndex, params.selector);
         } else if (format === "html") {
-          return await chromeLib.getHtml(tabIndex, params.selector);
+          extracted = await chromeLib.getHtml(tabIndex, params.selector);
         } else {
           throw new Error("selector-based extraction only supports 'text' or 'html' format");
         }
+        if (extracted == null) {
+          return `Element not found: ${params.selector}`;
+        }
+        return extracted;
       } else {
         if (format === "text") {
           return await chromeLib.evaluate(tabIndex, "document.body.innerText");
