@@ -36,8 +36,14 @@ function attachConsoleLogging({ state, getPageSession }) {
         }).join(' ');
 
         const messages = state.consoleMessages.get(ps.sessionId) || [];
-        messages.push({ timestamp, level, text });
-        state.consoleMessages.set(ps.sessionId, messages);
+        // Dedup: skip if the last entry has the same level+text at the same
+        // timestamp (prevents double-fire when multiple CDP event listeners
+        // route the same console call through the same handler).
+        const last = messages[messages.length - 1];
+        if (!last || last.timestamp !== timestamp || last.level !== level || last.text !== text) {
+          messages.push({ timestamp, level, text });
+          state.consoleMessages.set(ps.sessionId, messages);
+        }
       }
     });
   }

@@ -226,8 +226,17 @@ function attachChromeProcess({ state, chromeHttp, getTabs, newTab }) {
   // so POST-based state is lost — this is a deliberate trade-off documented in
   // the showBrowser/hideBrowser return strings.
   async function restartInMode({ targetHeadless, alreadyMessage, doneMessage }) {
+    // Only skip the restart if Chrome is actually running in the desired mode.
+    // After an external kill the mode flag may be stale, so cross-check with
+    // an actual liveness probe before returning the "already X" short-circuit.
     if (state.chromeHeadless === targetHeadless) {
-      return alreadyMessage;
+      const chromeAlive = state.activePort
+        ? await isPortAlive(CHROME_DEBUG_HOST, state.activePort)
+        : false;
+      if (chromeAlive) {
+        return alreadyMessage;
+      }
+      // Chrome is dead despite matching mode flag — fall through and restart.
     }
 
     const transition = targetHeadless ? 'headless mode (hiding browser window)' : 'headed mode (browser window will be visible)';

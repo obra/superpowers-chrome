@@ -532,6 +532,7 @@ if (command === 'wait-for') {
     try {
       await session.waitForElement(resolveTabArg(wsUrlOrIndex), selector, timeout);
       console.log(`Element found: ${selector}`);
+      process.exit(0);
     } catch (e) {
       console.error('Wait failed:', e.message);
       process.exit(1);
@@ -572,6 +573,7 @@ if (command === 'fill') {
     try {
       await session.fill(resolveTabArg(wsUrlOrIndex), selector, value);
       console.log(`Filled: ${selector}`);
+      process.exit(0);
     } catch (e) {
       console.error('Fill failed:', e.message);
       process.exit(1);
@@ -601,6 +603,7 @@ if (command === 'select') {
       }
       const result = await session.selectOption(resolveTabArg(wsUrlOrIndex), selector, selectValue);
       console.log(JSON.stringify(result.matched.map(o => o.value)));
+      process.exit(0);
     } catch (e) {
       console.error('Select failed:', e.message);
       process.exit(1);
@@ -620,6 +623,7 @@ if (command === 'eval') {
     try {
       const value = await session.evaluate(resolveTabArg(wsUrlOrIndex), expression);
       console.log(JSON.stringify(value, null, 2));
+      process.exit(0);
     } catch (e) {
       console.error('Eval failed:', e.message);
       process.exit(1);
@@ -729,6 +733,7 @@ if (command === 'wait-text') {
     try {
       await session.waitForText(resolveTabArg(wsUrlOrIndex), text, timeout);
       console.log(`Text found: ${text}`);
+      process.exit(0);
     } catch (e) {
       console.error('Wait failed:', e.message);
       process.exit(1);
@@ -750,6 +755,7 @@ if (command === 'screenshot') {
     try {
       const savedPath = await session.screenshot(resolveTabArg(wsUrlOrIndex), filename, null, fullPage);
       console.log(`Screenshot saved to ${savedPath}`);
+      process.exit(0);
     } catch (e) {
       console.error('Screenshot failed:', e.message);
       process.exit(1);

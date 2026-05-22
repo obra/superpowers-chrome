@@ -292,6 +292,28 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
 
     const actionResult = await actionFn();
 
+    // AFTER-capture short-circuit: if the action opened a dialog, skip the
+    // AFTER-capture to avoid Runtime.evaluate hangs while the page is suspended.
+    // Return the action result plus a synthetic dialog artifact so the caller
+    // sees a clean "dialog now open" response rather than a timeout.
+    if (dialogs) {
+      const openAfter = dialogs.getOpen(ps.sessionId);
+      if (openAfter) {
+        const artifacts = renderSyntheticArtifacts(openAfter);
+        const afterPrefix = createCapturePrefix(actionType);
+        const dir = state.sessionDir;
+        writeIfDir(dir, `${afterPrefix}.md`, artifacts.markdown);
+        writeIfDir(dir, `${afterPrefix}.html`, artifacts.html);
+        writeIfDir(dir, `${afterPrefix}-console.txt`, artifacts.consoleSnapshot);
+        return {
+          actionResult,
+          capture: null,
+          dialog: openAfter,
+          artifacts,
+        };
+      }
+    }
+
     // Settle: lets React re-renders, animations, and post-action XHRs complete
     // before the AFTER snapshot.
     await new Promise(resolve => setTimeout(resolve, settleTime));
