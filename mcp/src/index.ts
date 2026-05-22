@@ -476,9 +476,14 @@ async function executeBrowserAction(params: UseBrowserInput): Promise<string> {
       await chromeLib.waitForText(tabIndex, params.payload, params.timeout);
       return `Text found: ${params.payload}`;
 
-    case BrowserAction.NEW_TAB:
-      const newTab = await chromeLib.newTab();
-      return `New tab created: ${newTab.id}`;
+    case BrowserAction.NEW_TAB: {
+      // If a URL payload is provided, pass it to newTab so Chrome opens
+      // the tab at that URL directly (via /json/new?<url>).
+      const newTabUrl = (params.payload && params.payload.trim()) ? params.payload.trim() : undefined;
+      const newTabResult = await chromeLib.newTab(newTabUrl);
+      const openedAt = newTabUrl ? ` at ${newTabUrl}` : '';
+      return `New tab created: ${newTabResult.id}${openedAt}`;
+    }
 
     case BrowserAction.CLOSE_TAB:
       await chromeLib.closeTab(tabIndex);

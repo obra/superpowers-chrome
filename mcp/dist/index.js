@@ -14197,9 +14197,12 @@ Result: ${evalResult.result}`);
       }
       await chromeLib.waitForText(tabIndex, params.payload, params.timeout);
       return `Text found: ${params.payload}`;
-    case "new_tab" /* NEW_TAB */:
-      const newTab = await chromeLib.newTab();
-      return `New tab created: ${newTab.id}`;
+    case "new_tab" /* NEW_TAB */: {
+      const newTabUrl = params.payload && params.payload.trim() ? params.payload.trim() : void 0;
+      const newTabResult = await chromeLib.newTab(newTabUrl);
+      const openedAt = newTabUrl ? ` at ${newTabUrl}` : "";
+      return `New tab created: ${newTabResult.id}${openedAt}`;
+    }
     case "close_tab" /* CLOSE_TAB */:
       await chromeLib.closeTab(tabIndex);
       return `Closed tab ${tabIndex}`;

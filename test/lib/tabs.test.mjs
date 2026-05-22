@@ -176,6 +176,53 @@ describe('createPageSessionResolver: releaseAll()', () => {
   });
 });
 
+describe('newTab URL support', () => {
+  function fakeHostOverride() {
+    return {
+      getHost: () => '127.0.0.1',
+      getPort: () => 9222,
+      rewriteWsUrl: (url) => url,
+    };
+  }
+
+  it('newTab() with no URL creates a tab at about:blank', async () => {
+    const requests = [];
+    const fakeChromeHttp = async (path, method) => {
+      requests.push({ path, method });
+      return { id: 'T-blank', webSocketDebuggerUrl: 'ws://127.0.0.1:9222/devtools/page/T-blank' };
+    };
+    const state = {
+      hostOverride: fakeHostOverride(),
+      rewriteWsUrl: (url) => url,
+      activePort: 9222,
+    };
+    const { newTab } = attachTabs({ state, _chromeHttp: fakeChromeHttp });
+    await newTab();
+    assert.equal(requests.length, 1);
+    assert.ok(requests[0].path.includes(encodeURIComponent('about:blank')),
+      'should include encoded about:blank in path');
+  });
+
+  it('newTab(url) passes the URL to /json/new', async () => {
+    const requests = [];
+    const fakeChromeHttp = async (path, method) => {
+      requests.push({ path, method });
+      return { id: 'T-url', webSocketDebuggerUrl: 'ws://127.0.0.1:9222/devtools/page/T-url' };
+    };
+    const state = {
+      hostOverride: fakeHostOverride(),
+      rewriteWsUrl: (url) => url,
+      activePort: 9222,
+    };
+    const { newTab } = attachTabs({ state, _chromeHttp: fakeChromeHttp });
+    const url = 'https://example.com/page';
+    await newTab(url);
+    assert.equal(requests.length, 1);
+    assert.ok(requests[0].path.includes(encodeURIComponent(url)),
+      `expected path to contain encoded URL, got: ${requests[0].path}`);
+  });
+});
+
 describe('closeTab releases page-session before /json/close', () => {
   it('calls resolver.release(tabId) before chromeHttp(/json/close/...)', async () => {
     const events = [];

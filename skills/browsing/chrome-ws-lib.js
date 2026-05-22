@@ -246,7 +246,24 @@ function createSession({ host, port, _testFakes } = {}) {
   const { extractText, getHtml, getAttribute } = attachExtraction({ getPageSession });
 
 
-  const { screenshot } = attachScreenshot({ getPageSession });
+  // getSessionDir is a lazy thunk: capture.js populates state.sessionDir via
+  // initializeSession(). We close over `state` so screenshot.js always reads
+  // the freshly-set value. If no capture has happened yet, we delegate to
+  // captureInitializer (set below after attachCapture) to create the dir.
+  // The ref itself must live before attachScreenshot and attachCapture, but the
+  // actual initializeSession function is injected after attachCapture runs.
+  const screenshotDirRef = { initializeSession: null };
+
+  const { screenshot } = attachScreenshot({
+    getPageSession,
+    state,
+    initializeSession: () => {
+      if (screenshotDirRef.initializeSession) return screenshotDirRef.initializeSession();
+      // Fallback if called before attachCapture (shouldn't happen in normal flow).
+      if (state.sessionDir) return state.sessionDir;
+      throw new Error('Session directory not yet initialized. Call an auto-capture action first.');
+    },
+  });
 
   const { startChrome, killChrome, showBrowser, hideBrowser, getBrowserMode, getChromePid, getActivePort, getProfileName, setProfileName } =
     attachChromeProcess({ state, chromeHttp, getTabs, newTab });
@@ -275,6 +292,9 @@ function createSession({ host, port, _testFakes } = {}) {
     actions: { click, fill, selectOption, evaluate },
     dialogs,
   });
+
+  // Wire the forward reference so screenshot.js can call initializeSession.
+  screenshotDirRef.initializeSession = initializeSession;
 
   const { navigate, waitForElement, waitForText, back, forward } =
     attachNavigation({ state, getPageSession, capturePageArtifacts, evaluate });

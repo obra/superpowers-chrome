@@ -27,9 +27,17 @@ const MAX_IMAGE_DIMENSION_PX = 1800;
  * ImageMagick on Linux, no-op on Windows). Failures are silent — better
  * to have a big PNG than no PNG.
  *
- * `attachScreenshot({ getPageSession })` returns the bound action.
+ * Path resolution for user-supplied filenames:
+ *   - Absolute path (starts with `/` or a Windows drive letter) → used as-is.
+ *   - Relative path → resolved against the session directory. If no session
+ *     directory exists yet, `initializeSession()` is called to create one.
+ *   - No filename supplied → auto-generates a timestamped name in session dir.
+ *
+ * `attachScreenshot({ getPageSession, state, initializeSession })` returns
+ * the bound action. `state` and `initializeSession` are optional; when
+ * absent, relative paths are resolved against CWD (legacy behaviour).
  */
-function attachScreenshot({ getPageSession }) {
+function attachScreenshot({ getPageSession, state, initializeSession }) {
   async function downscaleImageIfNeeded(filepath, maxDimension = MAX_IMAGE_DIMENSION_PX) {
     const platform = os.platform();
 
@@ -69,7 +77,40 @@ function attachScreenshot({ getPageSession }) {
     }
   }
 
+  /**
+   * Resolve a user-supplied filename to an absolute path.
+   *
+   * - Absolute path → unchanged.
+   * - Relative path → joined with session dir (creating it if necessary).
+   * - Falsy (null / undefined / '') → auto-generated name in session dir.
+   */
+  function resolveScreenshotPath(filename) {
+    if (!filename) {
+      // Auto-generate a timestamped filename in the session dir.
+      const dir = initializeSession ? initializeSession() : (state && state.sessionDir) || process.cwd();
+      return path.join(dir, `screenshot-${Date.now()}.png`);
+    }
+
+    // Absolute: /foo/bar or C:\foo\bar (Windows).
+    if (path.isAbsolute(filename)) {
+      return filename;
+    }
+
+    // Relative: join with session dir.
+    let dir;
+    if (initializeSession) {
+      dir = initializeSession();
+    } else if (state && state.sessionDir) {
+      dir = state.sessionDir;
+    } else {
+      // No session context — fall back to CWD (legacy behaviour).
+      return path.resolve(filename);
+    }
+    return path.join(dir, filename);
+  }
+
   async function screenshot(tabIndexOrWsUrl, filename, selector = null, fullPage = false) {
+    const resolvedFilename = resolveScreenshotPath(filename);
     const pageSession = await getPageSession(tabIndexOrWsUrl);
 
     let clip;
@@ -117,11 +158,11 @@ function attachScreenshot({ getPageSession }) {
     });
 
     const buffer = Buffer.from(result.data, 'base64');
-    fs.writeFileSync(filename, buffer);
+    fs.writeFileSync(resolvedFilename, buffer);
 
-    await downscaleImageIfNeeded(filename, MAX_IMAGE_DIMENSION_PX);
+    await downscaleImageIfNeeded(resolvedFilename, MAX_IMAGE_DIMENSION_PX);
 
-    return path.resolve(filename);
+    return resolvedFilename;
   }
 
   return { screenshot };
