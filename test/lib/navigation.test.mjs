@@ -216,6 +216,18 @@ describe('navigation', () => {
     assert.equal(unhandledFired, false, 'no unhandled rejection should fire after navigate() throws');
   });
 
+  it('navigate throws when CDP returns errorText (unreachable host)', async () => {
+    const { navigate } = setup({
+      'Page.navigate': () => ({ frameId: 'F1', errorText: 'net::ERR_NAME_NOT_RESOLVED' })
+    });
+
+    // The error is thrown before waiting for loadEventFired, so no need to inject events.
+    await assert.rejects(
+      () => navigate(0, 'http://localhost:0/never'),
+      /Navigate failed: net::ERR_NAME_NOT_RESOLVED/
+    );
+  });
+
   it('back dispatches Runtime.evaluate with history.back()', async () => {
     const { back, ps } = setup();
     await back(0);

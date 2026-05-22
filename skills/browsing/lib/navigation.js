@@ -111,6 +111,16 @@ function attachNavigation({ state, getPageSession, capturePageArtifacts, evaluat
       throw err;
     }
 
+    // CDP Page.navigate returns errorText when the host is unreachable (e.g. DNS
+    // failure, refused connection). The navigation "succeeded" at the protocol
+    // level but the page load failed — treat this as a hard error so the caller
+    // doesn't silently believe the page loaded.
+    if (navigateResult && navigateResult.errorText) {
+      unsubConsole();
+      unsubFrameNav();
+      throw new Error(`Navigate failed: ${navigateResult.errorText} (${url})`);
+    }
+
     try {
       await loadPromise;
     } catch (err) {
