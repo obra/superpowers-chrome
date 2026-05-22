@@ -30,9 +30,20 @@ function attachKeyboardInput({ state, getPageSession, click, dialogs }) {
   async function keyboardPress(tabIndexOrWsUrl, keyName, modifiers = {}) {
     const ps = await getPageSession(tabIndexOrWsUrl);
 
-    const keyDef = KEY_DEFINITIONS[keyName];
+    let keyDef = KEY_DEFINITIONS[keyName];
     if (!keyDef) {
-      throw new Error(`Unknown key: ${keyName}. Supported keys: ${Object.keys(KEY_DEFINITIONS).join(', ')}`);
+      if (keyName.length === 1) {
+        // Single printable character — build a key def from the char map.
+        const charDef = charToKeyDef(keyName);
+        keyDef = {
+          key: charDef.key,
+          code: charDef.code,
+          keyCode: charDef.keyCode,
+          text: charDef.text,
+        };
+      } else {
+        throw new Error(`Unknown key: ${keyName}. Supported keys: ${Object.keys(KEY_DEFINITIONS).join(', ')}`);
+      }
     }
 
     let modifierFlags = 0;

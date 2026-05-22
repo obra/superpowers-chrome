@@ -46,6 +46,41 @@ describe('keyboard-input', () => {
     await assert.rejects(() => keyboardPress(0, 'NotAKey'), /Unknown key/);
   });
 
+  it('keyboardPress accepts a lowercase letter key', async () => {
+    const { keyboardPress, ps } = setup();
+    await keyboardPress(0, 'a');
+    const keys = ps.calls.filter(c => c.method === 'Input.dispatchKeyEvent');
+    assert.equal(keys.length, 2);
+    assert.equal(keys[0].params.key, 'a');
+    assert.equal(keys[0].params.code, 'KeyA');
+  });
+
+  it('keyboardPress accepts an uppercase letter key', async () => {
+    const { keyboardPress, ps } = setup();
+    await keyboardPress(0, 'Z');
+    const keys = ps.calls.filter(c => c.method === 'Input.dispatchKeyEvent');
+    assert.equal(keys.length, 2);
+    assert.equal(keys[0].params.key, 'Z');
+    assert.equal(keys[0].params.code, 'KeyZ');
+  });
+
+  it('keyboardPress accepts a digit key', async () => {
+    const { keyboardPress, ps } = setup();
+    await keyboardPress(0, '5');
+    const keys = ps.calls.filter(c => c.method === 'Input.dispatchKeyEvent');
+    assert.equal(keys.length, 2);
+    assert.equal(keys[0].params.key, '5');
+    assert.equal(keys[0].params.code, 'Digit5');
+  });
+
+  it('keyboardPress accepts a punctuation key', async () => {
+    const { keyboardPress, ps } = setup();
+    await keyboardPress(0, '.');
+    const keys = ps.calls.filter(c => c.method === 'Input.dispatchKeyEvent');
+    assert.equal(keys.length, 2);
+    assert.equal(keys[0].params.key, '.');
+  });
+
   it('fill in headed mode types each char as insertText (not keyDown for plain chars)', async () => {
     // (humanType is per-char keyDown/keyUp; fill is buffered insertText.)
     const { fill, ps } = setup({ headless: false });
