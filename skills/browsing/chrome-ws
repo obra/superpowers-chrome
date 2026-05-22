@@ -8,6 +8,47 @@ const portArg = allArgs.find(a => a.startsWith('--port='));
 const positionalArgs = allArgs.filter(a => !a.startsWith('--port='));
 const [command, wsUrlOrIndex, ...args] = positionalArgs;
 
+// Handle --help and --version before any other processing
+if (command === '--help' || command === '-h' || !command) {
+  console.log(`Usage: chrome-ws <command> [args]
+
+Commands:
+  start [port]                                  Start Chrome with remote debugging
+  stop                                           Kill Chrome
+  pid                                            Print Chrome PID
+  info                                           Print Chrome info (JSON)
+  tabs                                           List open tabs
+  new <url>                                      Open a new tab
+  close <tab>                                    Close a tab
+  navigate <tab> <url>                           Navigate tab to URL
+  extract <tab> <selector>                       Extract element text content
+  attr <tab> <selector> <attribute>             Get element attribute
+  html <tab> [selector]                         Get HTML content
+  click <tab> <selector>                         Click an element
+  fill <tab> <selector> <text>                   Fill an input field
+  select <tab> <selector> <value>               Select a dropdown option
+  eval <tab> <js>                                Evaluate JavaScript
+  wait-for <tab> <selector> [timeout-ms]        Wait for element to appear
+  wait-text <tab> <text> [timeout-ms]           Wait for text to appear
+  screenshot <tab> <filename.png> [--fullpage]  Take a screenshot
+  markdown <tab> <filename.md>                  Save page as markdown
+  har <tab> <filename.har>                      Export HAR (after har-start)
+  raw <ws-url> <json-rpc-payload>               Send raw CDP command
+
+  --help, -h                                     Show this help
+  --version, -v                                  Show version
+  --port=N                                       Override CHROME_WS_PORT env var
+
+Tab arg: numeric index (0, 1, 2...) or full ws:// URL.
+`);
+  process.exit(0);
+}
+if (command === '--version' || command === '-v') {
+  const pkg = require('../../package.json');
+  console.log(pkg.version);
+  process.exit(0);
+}
+
 const hostOverride = require('./host-override').createOverride();
 const { createSession } = require('./chrome-ws-lib');
 const CHROME_DEBUG_HOST = hostOverride.getHost();
@@ -152,6 +193,20 @@ class WebSocketClient {
       this.socket = null;
     }
   }
+}
+
+// Helper to convert string tab specifier to the type expected by session methods.
+// session.fill/evaluate/etc. use getPageSession which accepts a number (index) or
+// a ws:// string — but NOT a numeric string like "0".
+function resolveTabArg(wsUrlOrIndex) {
+  if (wsUrlOrIndex && wsUrlOrIndex.startsWith('ws://')) {
+    return wsUrlOrIndex; // Already a ws URL string
+  }
+  const index = parseInt(wsUrlOrIndex, 10);
+  if (!isNaN(index)) {
+    return index; // Numeric tab index as a number
+  }
+  throw new Error(`Invalid tab specifier: ${wsUrlOrIndex}`);
 }
 
 // Helper to resolve tab index or ws URL to actual ws URL
@@ -476,9 +531,8 @@ if (command === 'wait-for') {
   }
   (async () => {
     try {
-      await session.waitForElement(wsUrlOrIndex, selector, timeout);
+      await session.waitForElement(resolveTabArg(wsUrlOrIndex), selector, timeout);
       console.log(`Element found: ${selector}`);
-      await session.closeAllConnections();
     } catch (e) {
       console.error('Wait failed:', e.message);
       process.exit(1);
@@ -517,9 +571,8 @@ if (command === 'fill') {
   }
   (async () => {
     try {
-      await session.fill(wsUrlOrIndex, selector, value);
+      await session.fill(resolveTabArg(wsUrlOrIndex), selector, value);
       console.log(`Filled: ${selector}`);
-      await session.closeAllConnections();
     } catch (e) {
       console.error('Fill failed:', e.message);
       process.exit(1);
@@ -547,9 +600,8 @@ if (command === 'select') {
           }
         } catch (_e) { /* not JSON, treat as plain string */ }
       }
-      const result = await session.selectOption(wsUrlOrIndex, selector, selectValue);
+      const result = await session.selectOption(resolveTabArg(wsUrlOrIndex), selector, selectValue);
       console.log(JSON.stringify(result.matched.map(o => o.value)));
-      await session.closeAllConnections();
     } catch (e) {
       console.error('Select failed:', e.message);
       process.exit(1);
@@ -567,9 +619,8 @@ if (command === 'eval') {
   }
   (async () => {
     try {
-      const value = await session.evaluate(wsUrlOrIndex, expression);
+      const value = await session.evaluate(resolveTabArg(wsUrlOrIndex), expression);
       console.log(JSON.stringify(value, null, 2));
-      await session.closeAllConnections();
     } catch (e) {
       console.error('Eval failed:', e.message);
       process.exit(1);
@@ -677,9 +728,8 @@ if (command === 'wait-text') {
   }
   (async () => {
     try {
-      await session.waitForText(wsUrlOrIndex, text, timeout);
+      await session.waitForText(resolveTabArg(wsUrlOrIndex), text, timeout);
       console.log(`Text found: ${text}`);
-      await session.closeAllConnections();
     } catch (e) {
       console.error('Wait failed:', e.message);
       process.exit(1);
@@ -699,9 +749,8 @@ if (command === 'screenshot') {
   }
   (async () => {
     try {
-      const savedPath = await session.screenshot(wsUrlOrIndex, filename, null, fullPage);
+      const savedPath = await session.screenshot(resolveTabArg(wsUrlOrIndex), filename, null, fullPage);
       console.log(`Screenshot saved to ${savedPath}`);
-      await session.closeAllConnections();
     } catch (e) {
       console.error('Screenshot failed:', e.message);
       process.exit(1);
