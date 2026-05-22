@@ -52,6 +52,17 @@ function attachKeyboardInput({ state, getPageSession, click, dialogs }) {
     if (modifiers.meta) modifierFlags |= 4;
     if (modifiers.shift) modifierFlags |= 8;
 
+    // When shift is held and the key has a single-character text value,
+    // send the uppercase/shifted form so CDP inserts the correct character.
+    let keyText = keyDef.text;
+    if (modifiers.shift && keyText && keyText.length === 1) {
+      const upper = keyText.toUpperCase();
+      if (upper !== keyText) {
+        // It's a letter — uppercase it.
+        keyText = upper;
+      }
+    }
+
     await ps.send('Input.dispatchKeyEvent', {
       type: 'keyDown',
       key: keyDef.key,
@@ -59,7 +70,7 @@ function attachKeyboardInput({ state, getPageSession, click, dialogs }) {
       windowsVirtualKeyCode: keyDef.keyCode,
       nativeVirtualKeyCode: keyDef.keyCode,
       modifiers: modifierFlags,
-      ...(keyDef.text && { text: keyDef.text })
+      ...(keyText && { text: keyText })
     });
 
     await ps.send('Input.dispatchKeyEvent', {

@@ -81,6 +81,34 @@ describe('keyboard-input', () => {
     assert.equal(keys[0].params.key, '.');
   });
 
+  it('keyboardPress with shift+letter sends uppercase text so CDP inserts the right character', async () => {
+    const { keyboardPress, ps } = setup();
+    await keyboardPress(0, 'a', { shift: true });
+    const keys = ps.calls.filter(c => c.method === 'Input.dispatchKeyEvent');
+    const keyDown = keys.find(k => k.params.type === 'keyDown');
+    assert.ok(keyDown, 'keyDown event should be sent');
+    assert.equal(keyDown.params.text, 'A', 'shift+a should send uppercase text "A"');
+    assert.equal(keyDown.params.modifiers, 8, 'shift modifier flag (8) should be set');
+  });
+
+  it('keyboardPress without shift sends lowercase text for a letter', async () => {
+    const { keyboardPress, ps } = setup();
+    await keyboardPress(0, 'a');
+    const keys = ps.calls.filter(c => c.method === 'Input.dispatchKeyEvent');
+    const keyDown = keys.find(k => k.params.type === 'keyDown');
+    assert.ok(keyDown, 'keyDown event should be sent');
+    assert.equal(keyDown.params.text, 'a', 'plain a should send lowercase text "a"');
+  });
+
+  it('keyboardPress shift+Enter still sends \\r (non-letter text unchanged by shift)', async () => {
+    const { keyboardPress, ps } = setup();
+    await keyboardPress(0, 'Enter', { shift: true });
+    const keys = ps.calls.filter(c => c.method === 'Input.dispatchKeyEvent');
+    const keyDown = keys.find(k => k.params.type === 'keyDown');
+    assert.ok(keyDown, 'keyDown event should be sent');
+    assert.equal(keyDown.params.text, '\r', 'shift+Enter text should remain \\r');
+  });
+
   it('fill in headed mode types each char as insertText (not keyDown for plain chars)', async () => {
     // (humanType is per-char keyDown/keyUp; fill is buffered insertText.)
     const { fill, ps } = setup({ headless: false });
