@@ -31,37 +31,18 @@ function attachNavigation({ state, getPageSession, capturePageArtifacts, evaluat
     const sid = ps.sessionId;
 
     // Reset console buffer for this session (keyed by sessionId, not wsUrl).
-    // E10 (console-logging) reads from the same key.
+    // console-logging.js (enableConsoleLogging / attachConsoleLogging) is the
+    // single writer for state.consoleMessages.  Navigation must NOT also write
+    // here — two writers for the same Runtime.consoleAPICalled event is the
+    // root cause of the double-entry bug (Bug 1 / fix G follow-up).
     state.consoleMessages.set(sid, []);
-    const consoleMessages = state.consoleMessages.get(sid);
 
     await ps.enableDomain('Page');
     if (autoCapture) {
       await ps.enableDomain('Runtime');
     }
 
-    let unsubConsole = () => {};
-    if (autoCapture) {
-      // Subscribe to console messages — capture into the buffer.
-      unsubConsole = ps.onEvent((msg) => {
-        if (msg.method === 'Runtime.consoleAPICalled') {
-          const entry = msg.params;
-          const timestamp = new Date().toISOString();
-          const level = entry.type || 'log';
-          const args = entry.args || [];
-
-          const text = args.map(arg => {
-            if (arg.type === 'string') return arg.value;
-            if (arg.type === 'number') return String(arg.value);
-            if (arg.type === 'boolean') return String(arg.value);
-            if (arg.type === 'object') return arg.description || '[Object]';
-            return String(arg.value || arg.description || arg.type);
-          }).join(' ');
-
-          consoleMessages.push({ timestamp, level, text });
-        }
-      });
-    }
+    const unsubConsole = () => {};
 
     // Chrome broadcasts Page.loadEventFired to all clients that have Page.enable
     // active when ANY other client first enables Page on an already-loaded tab.

@@ -127,11 +127,18 @@ describe('navigation', () => {
     assert.equal(raceResult, 'still-pending', 'should still be pending (not silently resolved)');
   });
 
-  it('console messages captured into state.consoleMessages keyed by sessionId', async () => {
+  it('navigate resets state.consoleMessages buffer for the session (console-logging.js is sole writer)', async () => {
+    // navigation.js resets the buffer to [] but does NOT write console events.
+    // Only attachConsoleLogging (console-logging.js) writes to the buffer.
+    // This is the fix for the double-write bug: two listeners on the same
+    // Runtime.consoleAPICalled event produced duplicate entries in the buffer.
     const { navigate, ps, state } = setup(
       { 'Page.navigate': () => ({ frameId: 'F1' }) },
       { sessionId: 'S-test' }
     );
+
+    // Pre-seed the buffer to verify navigate resets it.
+    state.consoleMessages.set('S-test', [{ timestamp: 'old', level: 'log', text: 'pre-nav' }]);
 
     setImmediate(() => {
       ps.injectEvent({ method: 'Page.frameNavigated', params: { frame: { id: 'F1' } } });
@@ -148,10 +155,12 @@ describe('navigation', () => {
     await navigate(0, 'https://example.com', /* autoCapture= */ true);
 
     const msgs = state.consoleMessages.get('S-test');
-    assert.ok(msgs, 'consoleMessages keyed by sessionId');
-    assert.ok(msgs.length >= 1, 'at least one console message captured');
-    assert.equal(msgs[0].text, 'hello from console');
-    assert.equal(msgs[0].level, 'log');
+    assert.ok(msgs, 'consoleMessages buffer exists keyed by sessionId');
+    // navigate resets the buffer — pre-nav entry must be gone.
+    assert.ok(!msgs.some(m => m.text === 'pre-nav'), 'pre-nav entry was cleared by navigate');
+    // Navigation itself does NOT write console messages — that is console-logging.js's job.
+    // Messages fired during navigate are only captured if enableConsoleLogging was called first.
+    assert.equal(msgs.length, 0, 'navigate does not write to consoleMessages (console-logging.js is sole writer)');
   });
 
   it('console messages NOT captured when autoCapture is false', async () => {
