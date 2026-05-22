@@ -83,7 +83,13 @@ const PAGE_TARGET_SESSION_METHODS = new Set([
   'fillWithCapture',
   'selectOptionWithCapture',
   'evaluateWithCapture',
-  'captureActionWithDiff',
+  // captureActionWithDiff is intentionally excluded: it is a meta-wrapper whose
+  // second arg is an action-type string ('type', 'click', …), not a selector.
+  // The inner actions it wraps (humanType, click, hover, etc.) are individually
+  // listed above and each have their own dialog gating via
+  // withDialogAwarenessForSession in capture.js.  Re-gating the wrapper at this
+  // boundary would cause it to refuse dialog::* selectors before the inner action
+  // ever sees them (scenario 10C basic-auth typing bug).
   'setViewport',
   'clearViewport',
   'getViewport',

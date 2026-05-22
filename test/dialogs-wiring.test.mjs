@@ -122,10 +122,22 @@ describe('session-boundary dialog gate — PAGE_TARGET_SESSION_METHODS', () => {
                         'hover', 'drag', 'mouseMove', 'scroll', 'doubleClick', 'rightClick',
                         'humanType', 'fileUpload', 'keyboardPress', 'setViewport',
                         'clearViewport', 'getViewport', 'clickWithCapture', 'fillWithCapture',
-                        'selectOptionWithCapture', 'evaluateWithCapture', 'captureActionWithDiff',
+                        'selectOptionWithCapture', 'evaluateWithCapture',
                         'selectOption']) {
       assert.ok(PAGE_TARGET_SESSION_METHODS.has(name), `${name} should be in PAGE_TARGET_SESSION_METHODS`);
     }
+  });
+
+  it('captureActionWithDiff is NOT in PAGE_TARGET_SESSION_METHODS', () => {
+    // captureActionWithDiff is a meta-wrapper: its second arg is an action-type
+    // string ('type', 'click', etc.), not a selector.  The dialog gate checks
+    // secondArg.startsWith('dialog::') to detect dialog-selector calls, so gating
+    // captureActionWithDiff at this boundary would cause it to refuse dialog::*
+    // selectors (e.g. dialog::username during basic-auth typing) before the inner
+    // action ever sees them.  The inner actions it wraps are individually in the
+    // set and each have their own gating via withDialogAwarenessForSession.
+    assert.ok(!PAGE_TARGET_SESSION_METHODS.has('captureActionWithDiff'),
+      'captureActionWithDiff must NOT be in PAGE_TARGET_SESSION_METHODS — it is a meta-wrapper whose inner actions are already individually gated');
   });
 
   it('all PAGE_TARGET_SESSION_METHODS are present as functions on the session', () => {
@@ -200,5 +212,29 @@ describe('session-boundary dialog gate — PAGE_TARGET_SESSION_METHODS', () => {
     // A regular selector must NOT be treated as a dialog selector.
     const isNotDialogSelector = typeof '#btn' === 'string' && '#btn'.startsWith('dialog::');
     assert.equal(isNotDialogSelector, false, '#btn should not be treated as a dialog selector');
+  });
+
+  it('captureActionWithDiff with a dialog-open: actionType string "type" is not mistaken for a dialog selector', () => {
+    // Regression test for scenario 10C basic-auth typing bug.
+    //
+    // wrapWithDialogGate reads secondArg (the 2nd positional argument) and checks
+    // whether it starts with 'dialog::'.  For captureActionWithDiff the second arg
+    // is the action type string ('type', 'click', etc.) — NOT a selector.
+    //
+    // If captureActionWithDiff were in PAGE_TARGET_SESSION_METHODS, the gate would
+    // see secondArg='type', decide it is NOT a dialog selector, and throw
+    // DialogRefusedError before the inner action (humanType with 'dialog::username')
+    // ever runs.  The fix removes captureActionWithDiff from the set entirely so
+    // the inner per-action gates handle dialog:: routing themselves.
+    //
+    // This test pins the precondition: 'type' must NOT be mistaken for a dialog
+    // selector, and captureActionWithDiff must NOT be in PAGE_TARGET_SESSION_METHODS.
+    const actionTypeArg = 'type';
+    const isDialogSelector = typeof actionTypeArg === 'string' && actionTypeArg.startsWith('dialog::');
+    assert.equal(isDialogSelector, false,
+      '"type" must not be treated as a dialog selector — it is captureActionWithDiff\'s actionType arg');
+
+    assert.ok(!PAGE_TARGET_SESSION_METHODS.has('captureActionWithDiff'),
+      'captureActionWithDiff excluded from set so its actionType arg never triggers the gate');
   });
 });
