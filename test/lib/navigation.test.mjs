@@ -8,7 +8,10 @@ const { attachNavigation } = require('../../skills/browsing/lib/navigation.js');
 
 describe('navigation', () => {
   function setup(psHandlers = {}, psOpts = {}) {
-    const state = { consoleMessages: new Map() };
+    // `dialogs` is initialised here (not in attachDialogs) because the
+    // navigation tests don't wire up attachDialogs — they exercise the
+    // dialog-detection branch of navigate() by setting state.dialogs directly.
+    const state = { consoleMessages: new Map(), dialogs: new Map() };
     const ps = makePageSessionFake(psHandlers, psOpts);
     const capturePageArtifacts = async () => ({});
     const evaluate = async (_tab, expression) => {
@@ -235,6 +238,80 @@ describe('navigation', () => {
       () => navigate(0, 'http://localhost:0/never'),
       /Navigate failed: net::ERR_NAME_NOT_RESOLVED/
     );
+  });
+
+  // Regression for scenario 10 step C1: a dialog firing during navigation
+  // (basic-auth challenge, permission prompt, etc.) wedges Chrome — Page.navigate
+  // doesn't return and Page.loadEventFired doesn't fire. Without the dialog race,
+  // navigate hangs for the full NAVIGATE_TIMEOUT_MS (30s) and the caller never
+  // learns there's a dialog they need to handle. navigate() now races
+  // loadPromise against a dialog-detection promise and throws DialogRefusedError
+  // as soon as state.dialogs[sid] is populated.
+  it('navigate throws DialogRefusedError when a dialog fires mid-load', async () => {
+    const { navigate, ps, state } = setup(
+      // Page.navigate handler delays past the dialog appearance: the inner
+      // setImmediate populates state.dialogs[sid] before Page.navigate resolves,
+      // simulating the basic-auth flow where the network request is paused by
+      // Chrome until the dialog is answered.
+      {
+        'Page.navigate': () => new Promise((resolve) => {
+          // Never resolve normally — the dialog race must terminate first.
+          // (In real life Page.navigate eventually resolves with errorText
+          // once the bridge cancels the request, but for this regression
+          // we just need to prove the dialog path doesn't wait for it.)
+          setTimeout(() => resolve({ frameId: 'F1' }), 30000);
+        }),
+      },
+      { sessionId: 'S-auth' }
+    );
+
+    // Asynchronously: simulate dialogs.js storing a basic-auth dialog on the
+    // session keyed by sessionId, then fire a CDP event so navigate's
+    // ps.onEvent dialog-detection callback runs.
+    setImmediate(() => {
+      state.dialogs.set('S-auth', {
+        kind: 'basic-auth',
+        openedAt: Date.now(),
+        payload: { requestId: 'r1', origin: 'http://localhost:8766', realm: 'Test' },
+        staged: {},
+      });
+      // Inject any event — the dialog listener checks state.dialogs on every
+      // event, not on a specific event type.
+      ps.injectEvent({ method: 'Fetch.authRequired', params: {} });
+    });
+
+    let caught;
+    try {
+      await navigate(0, 'http://localhost:8766/');
+    } catch (e) {
+      caught = e;
+    }
+    assert.ok(caught, 'navigate must throw when a dialog fires mid-load');
+    assert.equal(caught.name, 'DialogRefusedError');
+    assert.equal(caught.refused, true);
+    assert.equal(caught.dialog && caught.dialog.kind, 'basic-auth');
+    assert.ok(caught.artifacts, 'DialogRefusedError must carry rendered artifacts');
+  });
+
+  it('navigate ignores a pre-existing dialog from before this navigation', async () => {
+    // If state.dialogs already had something stored for this session BEFORE
+    // navigate() ran, the dialog race must not match it — otherwise every
+    // navigate after a pending dialog would refuse instead of actually
+    // running. (Pre-existing dialogs are caught by the higher-level
+    // withDialogAwarenessForSession gate, not by navigate itself.)
+    const { navigate, ps, state } = setup(
+      { 'Page.navigate': () => ({ frameId: 'F1' }) },
+      { sessionId: 'S-pre' }
+    );
+    state.dialogs.set('S-pre', { kind: 'confirm', payload: { message: 'stale' } });
+
+    setImmediate(() => {
+      ps.injectEvent({ method: 'Page.frameNavigated', params: { frame: { id: 'F1' } } });
+      ps.injectEvent({ method: 'Page.loadEventFired', params: { timestamp: 1 } });
+    });
+
+    const frameId = await navigate(0, 'https://example.com');
+    assert.equal(frameId, 'F1', 'pre-existing dialog must not block a successful navigation');
   });
 
   it('back dispatches Runtime.evaluate with history.back()', async () => {

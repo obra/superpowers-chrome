@@ -1,4 +1,6 @@
 const { getElementSelector } = require('./element-selector');
+const { DialogRefusedError } = require('./dialogs');
+const { renderSyntheticArtifacts } = require('./dialogs-render');
 
 // Hard cap on the navigate() wait — covers slow servers and pages that
 // never fire Page.loadEventFired.
@@ -61,14 +63,15 @@ function attachNavigation({ state, getPageSession, capturePageArtifacts, evaluat
     // Listener-ordering invariant: register the Page.loadEventFired listener
     // BEFORE sending Page.navigate so a fast-loading page (data: URL) cannot
     // fire the event before we're ready.
+    let loadTimeout, unsubLoad;
     const loadPromise = new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => {
+      loadTimeout = setTimeout(() => {
         unsubLoad();
         reject(new Error(`navigate timeout: ${url} did not fire Page.loadEventFired within ${NAVIGATE_TIMEOUT_MS}ms`));
       }, NAVIGATE_TIMEOUT_MS);
-      const unsubLoad = ps.onEvent((msg) => {
+      unsubLoad = ps.onEvent((msg) => {
         if (msg.method === 'Page.loadEventFired' && frameNavigated) {
-          clearTimeout(timeout);
+          clearTimeout(loadTimeout);
           unsubLoad();
           resolve(msg);
         }
@@ -83,20 +86,88 @@ function attachNavigation({ state, getPageSession, capturePageArtifacts, evaluat
     // multiple handlers).
     loadPromise.catch(() => {});
 
+    // Dialog detection: a basic-auth challenge, permission prompt, or other
+    // dialog that fires *during* navigation will (a) pause Chrome so
+    // Page.loadEventFired never arrives and often (b) leave the Page.navigate
+    // request itself pending too. Without this race the navigate hangs until
+    // the 30-second timeout fires, and the caller never learns there's a
+    // dialog they need to handle. Resolve the dialogPromise as soon as
+    // dialogs.js sets state.dialogs[sid] in response to a CDP event.
+    const sawDialogBefore = state.dialogs && state.dialogs.has(sid);
+    let unsubDialog, dialogResolver;
+    const dialogPromise = new Promise((resolve) => {
+      dialogResolver = resolve;
+      unsubDialog = ps.onEvent(() => {
+        const open = state.dialogs && state.dialogs.get(sid);
+        if (open && !sawDialogBefore) {
+          unsubDialog();
+          resolve(open);
+        }
+      });
+    });
+
     let navigateResult;
+    let dialogWon = null;
     try {
-      navigateResult = await ps.send('Page.navigate', { url });
+      // Fire the navigate without awaiting — we race its completion against
+      // loadPromise and dialogPromise below. Any rejection propagates via
+      // the .catch attached on the race outcome.
+      const navigatePromise = ps.send('Page.navigate', { url });
+      // Suppress unhandled-rejection if the dialog race wins.
+      navigatePromise.catch(() => {});
+
+      const outcome = await Promise.race([
+        navigatePromise.then((r) => ({ kind: 'send-resolved', r })),
+        navigatePromise.catch((e) => ({ kind: 'send-rejected', e })),
+        loadPromise.then(() => ({ kind: 'load' })),
+        dialogPromise.then((d) => ({ kind: 'dialog', d })),
+      ]);
+
+      if (outcome.kind === 'send-rejected') {
+        clearTimeout(loadTimeout);
+        if (unsubLoad) unsubLoad();
+        if (unsubDialog) unsubDialog();
+        unsubConsole();
+        unsubFrameNav();
+        throw outcome.e;
+      }
+
+      if (outcome.kind === 'dialog') {
+        dialogWon = outcome.d;
+      } else {
+        // 'send-resolved' or 'load' — make sure we have the navigate result.
+        navigateResult = (outcome.kind === 'send-resolved') ? outcome.r : await navigatePromise;
+      }
     } catch (err) {
+      clearTimeout(loadTimeout);
+      if (unsubLoad) unsubLoad();
+      if (unsubDialog) unsubDialog();
       unsubConsole();
       unsubFrameNav();
       throw err;
     }
+
+    if (dialogWon) {
+      clearTimeout(loadTimeout);
+      if (unsubLoad) unsubLoad();
+      if (unsubDialog) unsubDialog();
+      unsubConsole();
+      unsubFrameNav();
+      throw new DialogRefusedError({
+        dialog: dialogWon,
+        artifacts: renderSyntheticArtifacts(dialogWon),
+      });
+    }
+
+    if (unsubDialog) unsubDialog();
 
     // CDP Page.navigate returns errorText when the host is unreachable (e.g. DNS
     // failure, refused connection). The navigation "succeeded" at the protocol
     // level but the page load failed — treat this as a hard error so the caller
     // doesn't silently believe the page loaded.
     if (navigateResult && navigateResult.errorText) {
+      clearTimeout(loadTimeout);
+      if (unsubLoad) unsubLoad();
       unsubConsole();
       unsubFrameNav();
       throw new Error(`Navigate failed: ${navigateResult.errorText} (${url})`);

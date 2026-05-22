@@ -475,3 +475,78 @@ describe('chrome-process: getBrowserMode profileDir symmetry', () => {
     assert.ok('profileDir' in mode, 'profileDir field present when stopped');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Adopted / external Chrome: pid + running come from port probe and meta,
+// not just state.chromeProcess. Regression for scenario 14 step 3 — the
+// bridge was reporting {pid: null, running: false} whenever Chrome was
+// adopted from a prior MCP session even though the CDP worked.
+// ---------------------------------------------------------------------------
+
+describe('chrome-process: getBrowserMode for adopted Chrome', () => {
+  function setupWithLiveChromeStub({ activePort = 9555, port = 9555 } = {}) {
+    // Start a tiny HTTP server that satisfies isPortAlive's
+    // GET /json/version probe (it expects a JSON body with a `Browser` field).
+    return new Promise((resolve) => {
+      const http = require('node:http');
+      const server = http.createServer((req, res) => {
+        if (req.url === '/json/version') {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ Browser: 'Chrome/test', 'WebKit-Version': 'x' }));
+        } else {
+          res.writeHead(404); res.end();
+        }
+      });
+      server.listen(port, '127.0.0.1', () => {
+        const state = {
+          hostOverride: {
+            getHost: () => '127.0.0.1',
+            getPort: () => 9222,
+          },
+          activePort,
+          chromeHeadless: false,
+          chromeProcess: null,
+          chromeProfileName: 'superpowers-chrome',
+          chromeUserDataDir: null,
+        };
+        const chromeHttp = async () => ({});
+        const getTabs = async () => [];
+        const newTab = async () => ({});
+        const api = attachChromeProcess({ state, chromeHttp, getTabs, newTab });
+        resolve({ ...api, state, close: () => new Promise(r => server.close(r)) });
+      });
+    });
+  }
+
+  it('running:true and a pid even though state.chromeProcess is null', async () => {
+    const { getBrowserMode, close } = await setupWithLiveChromeStub({ activePort: 9555, port: 9555 });
+    try {
+      const mode = await getBrowserMode();
+      assert.equal(mode.running, true, 'should report running:true when port responds');
+      assert.equal(typeof mode.pid, 'number', 'pid should be a number (resolved via port scan)');
+      assert.ok(mode.pid > 0, 'pid should be positive');
+      assert.equal(mode.port, 9555);
+    } finally {
+      await close();
+    }
+  });
+
+  it('running:false and pid:null when no Chrome is on activePort', async () => {
+    // Pick an activePort that nothing is listening on.
+    const { getBrowserMode } = setup();
+    // setup() leaves activePort at 9222 but no real Chrome is running here.
+    const mode = await getBrowserMode();
+    assert.equal(mode.running, false, 'no listener → running:false');
+    assert.equal(mode.pid, null, 'no listener → pid:null');
+  });
+
+  it('running:false hides any pid that might have been resolved', async () => {
+    // Even if findPidOnPort returned a value, we should not advertise it
+    // when isPortAlive came back false.
+    const { getBrowserMode, state } = setup();
+    state.activePort = 1; // privileged port, definitely no chrome
+    const mode = await getBrowserMode();
+    assert.equal(mode.running, false);
+    assert.equal(mode.pid, null);
+  });
+});

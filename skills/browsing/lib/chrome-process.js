@@ -288,7 +288,27 @@ function attachChromeProcess({ state, chromeHttp, getTabs, newTab }) {
   }
 
   async function getBrowserMode() {
-    const running = state.chromeProcess !== null;
+    // If we spawned Chrome ourselves, trust the handle and report directly.
+    // killChrome/exit handlers clear chromeProcess, so a non-null handle is
+    // the strongest signal that Chrome is alive.
+    let running, pid;
+    if (state.chromeProcess) {
+      running = true;
+      pid = state.chromeProcess.pid;
+    } else {
+      // Bridge reconnected to a Chrome we didn't spawn — either via
+      // meta.json (prior MCP session left it running) or orphan adoption.
+      // state.chromeProcess is null but state.activePort is set and the
+      // CDP works. Resolve the pid from meta.json or port scan, then
+      // verify Chrome is actually answering on activePort.
+      const meta = readProfileMeta(state.chromeProfileName);
+      pid = (meta && meta.pid) ? meta.pid : (state.activePort ? findPidOnPort(state.activePort) : null);
+      running = state.activePort
+        ? await isPortAlive(CHROME_DEBUG_HOST, state.activePort, pid)
+        : false;
+      if (!running) pid = null;
+    }
+
     // Always report the configured profile/profileDir/port so the caller knows
     // what would happen on next start, regardless of whether Chrome is running.
     // When stopped, chromeUserDataDir may be null (not yet derived); derive it
@@ -298,7 +318,7 @@ function attachChromeProcess({ state, chromeHttp, getTabs, newTab }) {
       headless: state.chromeHeadless,
       mode: state.chromeHeadless ? 'headless' : 'headed',
       running,
-      pid: running ? state.chromeProcess.pid : null,
+      pid,
       port: state.activePort,
       profile: state.chromeProfileName,
       profileDir,
