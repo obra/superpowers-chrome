@@ -431,16 +431,15 @@ if (command === 'new') {
   return;
 }
 
-// Command: close - close tab by ws URL
+// Command: close - close tab by ws URL or numeric index
 if (command === 'close') {
-  // For this command, wsUrlOrIndex variable contains the ws URL parameter
   if (!wsUrlOrIndex) {
-    console.error('Usage: chrome-ws close <ws-url>');
+    console.error('Usage: chrome-ws close <tab>');
     process.exit(1);
   }
-  const tabWsUrl = wsUrlOrIndex;
   (async () => {
     try {
+      const tabWsUrl = await resolveWsUrl(wsUrlOrIndex);
       // Extract tab ID from ws URL
       const match = tabWsUrl.match(/\/devtools\/page\/([A-F0-9-]+)/i);
       if (!match) {
