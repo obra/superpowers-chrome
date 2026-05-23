@@ -386,7 +386,14 @@ async function executeBrowserAction(params: UseBrowserInput): Promise<string> {
     }
 
     case BrowserAction.EXTRACT: {
-      const p = parsePayload(payload, 'selector');
+      // Postel: a bare string payload is the format selector ('text'|'html'|
+      // 'markdown'), not a fallback selector — `selector` is already a
+      // top-level parameter and supplying both selector and payload="html"
+      // is the documented "extract HTML of this element" form. Earlier
+      // versions used parsePayload(payload, 'selector') here, which bound
+      // payload="html" to selector="html" and silently degraded to
+      // format="text" (scenario 02 step 3 regression).
+      const p = parsePayload(payload, 'format');
       const selector = topSelector ?? (typeof p.selector === 'string' ? p.selector : undefined);
       const format = typeof p.format === 'string' ? p.format : 'text';
 

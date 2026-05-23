@@ -172,6 +172,35 @@ describe('Fix 5: tab_index is Postel-accepted as implicit switch_tab', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Fix 6: extract accepts a bare-string payload as the format
+// ---------------------------------------------------------------------------
+
+describe('Fix 6: extract treats bare-string payload as format, not selector', () => {
+  it('EXTRACT handler calls parsePayload with defaultKey="format"', () => {
+    // Earlier code used parsePayload(payload, 'selector') which silently
+    // routed payload="html" into selector="html" and left format="text"
+    // (the default). Regression caught by scenario 02 step 3.
+    // Match against the executable line specifically (no comment lines start
+    // with `const p = parsePayload`).
+    assert.match(
+      srcContent,
+      /const p = parsePayload\(payload,\s*['"]format['"]\)/,
+      'EXTRACT handler should use parsePayload(payload, "format") on the executable line'
+    );
+  });
+
+  it('bundle reflects the parsePayload("format") form', () => {
+    // The bundle goes to users; make sure the source fix actually shipped.
+    // The bundle has no comments, so a plain substring search is enough.
+    assert.ok(
+      bundleSrc.includes('parsePayload(payload, "format")') ||
+      bundleSrc.includes("parsePayload(payload, 'format')"),
+      'bundle should include the parsePayload(payload, "format") call'
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
 // startChrome return value contract (supports Fix 1)
 // ---------------------------------------------------------------------------
 

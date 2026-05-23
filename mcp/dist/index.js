@@ -14119,7 +14119,7 @@ async function executeBrowserAction(params) {
       );
     }
     case "extract" /* EXTRACT */: {
-      const p = parsePayload(payload, "selector");
+      const p = parsePayload(payload, "format");
       const selector = topSelector ?? (typeof p.selector === "string" ? p.selector : void 0);
       const format = typeof p.format === "string" ? p.format : "text";
       if (selector) {
