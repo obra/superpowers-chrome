@@ -6,7 +6,7 @@
  * to a per-test tmpdir so each test starts from a clean lock file state.
  */
 
-import { describe, it, before, after, beforeEach, afterEach } from 'node:test';
+import { describe, it, beforeEach, afterEach } from 'node:test';
 import { strict as assert } from 'node:assert';
 import { createRequire } from 'node:module';
 import * as fs from 'node:fs';

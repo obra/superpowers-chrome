@@ -542,16 +542,11 @@ describe('chrome-process: profile-lock auto-disambiguation', () => {
 
   it('first session keeps the default profile name', withTmpXdg(async () => {
     const fs = require('node:fs');
-    const path = require('node:path');
-    const { state } = setupForLock();
-    // startChrome's lock path is acquired before any port logic. We force the
-    // function to bail out very early by giving it an explicit port that's
-    // already alive on a mocked check — but that's complex. Simpler: assert
-    // by side-effect. Calling ensureProfileLock happens inside startChrome,
-    // so trigger it via a startChrome call we don't expect to finish (mock
-    // chrome detection to fail by setting environment that makes spawn fail).
-    // Even simpler: directly check that acquireWithFallback would pick the
-    // base name when no lock exists.
+    // Direct check that acquireWithFallback picks the base name when no
+    // lock exists. We don't drive startChrome end-to-end here — the launcher
+    // would try to spawn real Chrome — but the integration we care about
+    // (does the bridge select the right profile name?) lives in the lock
+    // module, which is what this asserts.
     const lock = require('../../skills/browsing/lib/profile-lock.js');
     const r = lock.acquireWithFallback('superpowers-chrome');
     assert.equal(r.profileName, 'superpowers-chrome');
@@ -562,7 +557,6 @@ describe('chrome-process: profile-lock auto-disambiguation', () => {
   }));
 
   it('second session falls through to -2 when base is held', withTmpXdg(async () => {
-    const fs = require('node:fs');
     const lock = require('../../skills/browsing/lib/profile-lock.js');
     // First session takes the base.
     const first = lock.acquireWithFallback('superpowers-chrome');

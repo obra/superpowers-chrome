@@ -2,6 +2,17 @@
 
 All notable changes to the superpowers-chrome MCP project.
 
+## [3.0.1] - 2026-05-22 - Lint fix
+
+3.0.0 shipped with five unused-variable lint errors that `npm test`
+gates on. Functional code was unaffected (428/428 tests passed when
+run directly), but the canonical test command failed.
+
+### Fixed
+- `skills/browsing/lib/navigation.js`: removed the unused `dialogResolver` let-binding from the dialog-race promise (the closure used the inner `resolve` directly).
+- `test/lib/chrome-process.test.mjs`: dropped unused `path`, `state`, and `fs` requires from the profile-lock integration tests.
+- `test/lib/profile-lock.test.mjs`: removed unused `before` and `after` imports from `node:test` (only `beforeEach`/`afterEach` are used).
+
 ## [3.0.0] - 2026-05-22 - Schema reshape, dialog mid-navigate, multi-MCP isolation
 
 This release is the union of 2.2.0's flatten-mode CDP bridge with the

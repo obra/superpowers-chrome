@@ -94,9 +94,8 @@ function attachNavigation({ state, getPageSession, capturePageArtifacts, evaluat
     // dialog they need to handle. Resolve the dialogPromise as soon as
     // dialogs.js sets state.dialogs[sid] in response to a CDP event.
     const sawDialogBefore = state.dialogs && state.dialogs.has(sid);
-    let unsubDialog, dialogResolver;
+    let unsubDialog;
     const dialogPromise = new Promise((resolve) => {
-      dialogResolver = resolve;
       unsubDialog = ps.onEvent(() => {
         const open = state.dialogs && state.dialogs.get(sid);
         if (open && !sawDialogBefore) {
