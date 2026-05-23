@@ -2,6 +2,59 @@
 
 All notable changes to the superpowers-chrome MCP project.
 
+## [3.0.0] - 2026-05-22 - Schema reshape, dialog mid-navigate, multi-MCP isolation
+
+This release is the union of 2.2.0's flatten-mode CDP bridge with the
+schema/UX/correctness work that came out of running the 14-scenario
+agent-driven eval corpus against it. Anyone upgrading from 2.1.0 should
+read the **Changed** section — the MCP tool's parameter shape is
+different, though tab_index is Postel-accepted to keep older agent
+prompts working.
+
+### Added
+
+- **Auto-disambiguation of the default Chrome profile across parallel MCPs.** Until now every MCP server on the host defaulted to `superpowers-chrome` on port 9222, so a second MCP silently reconnected to the first's Chrome and the two agents fought over `activeTab` with no error surfaced. The bridge now claims a per-process lock file at `~/.cache/superpowers/browser-profiles/<profile>.mcp.lock`; on conflict with a live PID it falls through to `<base>-2`, `-3`, ... The first MCP keeps the simple default; later ones silently get their own Chrome. Stale locks (dead PIDs) are reclaimed automatically. See `skills/browsing/lib/profile-lock.js`.
+- **`CHROME_WS_PROFILE` env var** for opting out of auto-disambiguation. Set to a profile name (alphanumeric/hyphen/underscore) and the bridge treats the profile as explicit — it acquires the named lock and, on conflict, *shares* the Chrome (the original reconnect-on-restart behavior) instead of picking an alternate. Same opt-out applies when `set_profile` is called at runtime.
+- **`switch_tab` action** + sticky `activeTab` state. Match by integer index, URL substring, or title substring. `new_tab` updates `activeTab` to the newly-opened tab; `close_tab` closes the active tab. Tab routing is no longer baked into every action's parameters — the user picks once, subsequent actions follow.
+- **Chrome lifecycle actions:** `kill_chrome` and `restart_chrome`. The MCP exposes them so agents can recover from a wedged or stale Chrome without restarting the MCP server itself.
+- **Console logging actions:** `enable_console_logging`, `get_console_messages` (with optional `payload.since` epoch-ms filter), `clear_console_messages`. State is keyed by the page session's `sessionId`, not by tab index — log buffers survive `close_tab`/`new_tab`.
+- **Auto-restart banner.** When `ensureChromeRunning` had to spawn a fresh Chrome (because the prior one died or was killed externally), the first action's response prepends `[Chrome auto-restarted; URL reset to about:blank. Re-navigate to continue.]` so the model knows its previous URL/tab state is gone.
+- **`navigate` surfaces mid-load dialogs.** A basic-auth challenge, permission prompt, or other dialog that fires *during* a `Page.navigate` used to wedge the navigate for the full 30 s timeout; the response was a generic CDP timeout with no mention of the staged dialog. `navigate` now races the load wait against dialog detection and throws `DialogRefusedError` as soon as `state.dialogs[sid]` is populated — the response text includes the `dialog::*` grammar so the agent knows what to do next.
+- **`browser_mode` reports the real PID for adopted Chrome.** When the bridge reconnected to a Chrome it didn't spawn (via meta.json or orphan adoption), it used to return `{pid: null, running: false}` even though the CDP was working. It now resolves the PID via meta.json or a port scan and verifies with `isPortAlive` before reporting `running: true`.
+- **CLI `chrome-ws stop`** — the `stop` subcommand was advertised in `--help` but had no dispatch. Implemented now: calls `session.killChrome()` and prints `Chrome stopped` on success.
+- **CLI clearer error on unknown commands.** Used to print the `raw`-specific usage banner for any unknown command (so `chrome-ws stp` would suggest the `raw` syntax). Now prints `Unknown command: <name>` and points at `--help`.
+- **14-scenario agent-driven test corpus** at `tests/scenarios/*.md`. Each is a self-contained prompt a worker can execute end-to-end against the bridge. The corpus is now deterministic across fresh worker sessions — most early flakiness was test-author judgment leaking into the spec (fallback URLs, "use the right tab", "click the right thing"); the rewrite removes that ambiguity. See `tests/scenarios/README.md`.
+
+### Changed
+
+- **`use_browser` MCP schema collapsed to 4 parameters:** `action`, `selector`, `payload`, `timeout`. `selector` is now a top-level CSS/XPath string. `payload` is `string | object | undefined` — strings work for the common case (`navigate=URL`, `type=text`, `eval=JS`, `keyboard_press=key`, `switch_tab=match-string`), objects for the structured cases (`set_viewport={width,height,mobile?}`, `drag_drop={target}`, `extract={format}`, `screenshot={path,fullpage?}`, etc.). `tab_index` is **Postel-accepted** as a legacy alias for an implicit `switch_tab` — older agent prompts continue to work; the schema description steers new callers to `switch_tab`. Pre-3.0 callers that hardcoded `selector` inside `payload` keep working too (the parsers accept the bare-string form per action).
+- **Postel acceptance** for several actions: `attr` accepts a bare string payload (the attribute name); `drag_drop` accepts a bare `{x,y}` payload or a target-selector string; `extract` accepts a bare string payload as the format (`"text"`, `"html"`, `"markdown"`); `keyboard_press` accepts shifted-letter keys. Tests in `test/mcp-postel-fixes.test.mjs`.
+- **`navigate` throws on net errors.** A CDP `Page.navigate` that returns `errorText` (DNS failure, refused connection, unsafe port) used to silently report success. It now throws `Navigate failed: <netError> (<url>)`.
+- **JS dialog accept/dismiss clears state.dialogs eagerly.** The router used to rely solely on Chrome firing `Page.javascriptDialogClosed` for cleanup. That event sometimes arrived late, was routed to a session without `Page.enable`, or simply didn't fire on transient dialog states — `state.dialogs[sid]` then stayed populated and the next action got "Page is behind a dialog" forever. The router now signals `clearDialog: true` for JS-kind accept/dismiss and the caller deletes the entry immediately; Chrome's event becomes a redundant best-effort sweep.
+- **Mouse click skips its Element.click() fallback when a dialog is open.** The catch block used to assume any press/release timeout was a coordinate problem and fall through to `_el.click()` via `Runtime.evaluate`. When the original click had opened a dialog, that fallback queued a second click event behind the dialog — and dismissing the dialog later spawned a *second* confirm. Now the catch checks `dialogs.getOpen(ps.sessionId)` and, if a dialog is up, propagates the original timeout instead. The fallback still runs for genuine coordinate failures (hidden element, zero bbox).
+- **`mouse_move` uses a humanised Bezier path** with variable speed and per-step jitter. Same `lastMousePos` tracking so chained `mouse_move` calls start from the cursor's actual position rather than (0, 0).
+- **`screenshot` resolves relative paths** against the current working directory; bare filenames are saved into the auto-capture session directory as before.
+- **`new_tab` navigates to its payload URL** rather than opening blank-then-navigating, so the new-tab response includes the loaded page's URL and the `activeTab` pointer is correct on return.
+- **Single console-message writer.** `navigation.js` used to write to `state.consoleMessages` *and* `console-logging.js` did too — they raced on `Runtime.consoleAPICalled` timestamps and produced duplicate entries that the dedup-by-last-entry path couldn't catch (1 ms timestamp drift). `navigation.js` no longer touches that buffer; `console-logging.js` is the single writer.
+- **`get_console_messages` filters by `payload.since`** (epoch ms) — entries with timestamps before the cutoff are dropped. Use to fetch only the entries from the latest navigation.
+
+### Fixed
+
+- **Plugin version bump to 3.0.0 across `package.json`, `mcp/package.json`, and `.claude-plugin/plugin.json`** — these had drifted between 2.0.0 / 2.1.0 / 2.2.0 in the bridge worktree, which caused Claude Code's plugin loader to pick non-deterministically between the bridge plugin and any cached marketplace copy of the same name. Stable single-version disambiguation now.
+- **Adopted-orphan Chrome accumulation.** When the bridge connects to a leftover Chrome from a prior MCP session and that Chrome then dies, the bridge used to leave the meta.json untouched and accumulate zombie meta entries. Adoption now writes a fresh meta and the killChrome path clears it.
+- **`chrome-ws close` accepts numeric tab indices.** Previously the CLI's `close` subcommand only matched ws-URLs; passing `0`/`1`/`2` failed. Now resolves a numeric arg to the corresponding tab index, matching every other `chrome-ws` subcommand.
+- **`keyboard_press` accepts any printable key.** The dispatch table used to whitelist a small set of special keys (Tab, Enter, F1-F12, etc.) and reject everything else. Now any single-character key is dispatched as a regular keydown/keyup, with the existing `modifiers: {shift, ctrl, alt, meta}` option preserved.
+- **Dialog::* click skips post-action capture.** The auto-capture wrapper used to issue a `Runtime.evaluate` for the after-action capture *during* the page's resume from the dialog, which raced against the navigation/redirect that often follows accept/dismiss and timed out. Dialog selectors now return early from capture.
+- **`pageSession` pinned at action start.** `clickWithCapture` (and its peers) used to resolve `getPageSession(0)` separately for the action and for the post-action capture. When the action opened a popup, Chrome inserted the popup at index 0 between resolution and capture, so the capture ran against the wrong tab. The action now resolves `pageSession` once and threads the same instance through.
+- **Focus restoration uses `el.focus({preventScroll: true})`.** A capture-wrapper that restored focus after an action used to scroll the page to the focused element, polluting screenshots/diffs with unintended `scroll: 0` events.
+
+### Documentation
+
+- **`docs/cdp/` reference cards** for the CDP semantics this bridge depends on: flatten-mode, per-session id counters, target lifecycle, autoAttach popup timing, navigation listener race, headless variants. Index at `docs/cdp/INDEX.md`.
+- **Implementation plans** under `docs/superpowers/plans/`: `2026-05-21-flatten-mode-bridge.md` (the original bridge plan), `2026-05-22-mcp-schema-reshape.md` (the parameter collapse).
+
+---
+
 ## [2.2.0] - 2026-05-21 - Flatten-mode CDP bridge + popup support
 
 ### Added

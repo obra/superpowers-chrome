@@ -38,6 +38,8 @@ cd ~/.claude/plugins/cache/superpowers-marketplace/superpowers-chrome/*/skills/b
 
 **Port allocation:** Chrome gets a dynamically allocated port (range 9222-12111) to avoid conflicts. Port assignment is persisted per profile in `~/.cache/superpowers/browser-profiles/{name}.meta.json`. Override with `--port=N` flag or `CHROME_WS_PORT` env var. Multiple profiles can run in parallel on different ports.
 
+**Parallel MCPs on one host** (3.0+): the bridge auto-disambiguates the default profile. The first MCP claims `superpowers-chrome:9222`, the next silently falls through to `superpowers-chrome-2:9223`, then `-3:9224`, etc., each driving its own Chrome with its own profile dir. To intentionally **share** a Chrome between processes (e.g., a `chrome-ws` CLI session + a Claude MCP attaching to it), set a fixed profile via `CHROME_WS_PROFILE=name` (env var) or call `{action: "set_profile", payload: "name"}` at runtime — explicit profiles share rather than disambiguate.
+
 **Windows tip:** The tooling defaults to `127.0.0.1` for DevTools traffic. Override via `CHROME_WS_HOST` / `CHROME_WS_PORT` or `--port=N` if you forward Chrome elsewhere.
 
 **Linux/WSL2 tip:** For headed mode (visible browser), the MCP server needs the `DISPLAY` environment variable. If `show_browser` doesn't work, configure `"env": {"DISPLAY": ":0"}` in your MCP server config. See [mcp/README.md](mcp/README.md#linuxwsl2-headed-mode) for details.

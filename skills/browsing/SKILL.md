@@ -173,12 +173,62 @@ These use CDP Input.dispatchMouseEvent, bypassing synthetic event restrictions.
 - **set_profile**: Change Chrome profile (must kill Chrome first)
   - Example: `{action: "set_profile", "payload": "browser-user"}`
   - ⚠️ **WARNING**: Chrome must be stopped first
+  - **Side effect**: marks the profile as explicit, opting out of auto-disambiguation (see below)
 
 - **get_profile**: Get current profile name and directory
   - Example: `{action: "get_profile"}`
   - Returns: `{"profile": "name", "profileDir": "/path"}`
 
-**Default behavior**: Chrome starts in **headless mode** with **"superpowers-chrome" profile** on a **dynamically allocated port** (range 9222-12111). Override with `CHROME_WS_PORT` env var or MCP `--port=N` flag.
+**Default behavior**: Chrome starts in **headless mode** with **"superpowers-chrome" profile** on a **dynamically allocated port** (range 9222-12111). Override the port with `CHROME_WS_PORT`; override the profile with `CHROME_WS_PROFILE`.
+
+**Auto-disambiguation across parallel MCPs**:
+When two MCP servers start on the same host with the default profile, the first claims `superpowers-chrome` (port 9222) and later ones silently fall through to `superpowers-chrome-2` (port 9223), `superpowers-chrome-3`, etc. Each MCP drives its own Chrome with its own profile dir; they don't fight over `activeTab`. The bridge tracks ownership via a lock file at `~/.cache/superpowers/browser-profiles/<profile>.mcp.lock`; stale locks (dead PIDs) are reclaimed automatically.
+
+To opt **out** of disambiguation — e.g., to intentionally share Chrome between a long-lived `chrome-ws` CLI session and your MCP — set the profile name explicitly:
+- Env var: `CHROME_WS_PROFILE=my-profile`
+- Or: `{action: "set_profile", payload: "my-profile"}` at runtime
+
+An explicit profile name still acquires the lock, but on conflict the bridge **shares** rather than disambiguates — the second process reconnects to the first's Chrome (the original reconnect-on-restart behavior).
+
+### Chrome Lifecycle (Recovery)
+- **kill_chrome**: Kill the Chrome process this MCP is driving
+  - Example: `{action: "kill_chrome"}`
+  - Releases the meta.json; next page action auto-restarts Chrome
+
+- **restart_chrome**: kill_chrome + immediate spawn
+  - Example: `{action: "restart_chrome"}`
+
+**Auto-restart banner**: when the bridge has to spawn a fresh Chrome (because the previous one died or was killed externally — e.g., `kill -9 <pid>` from the shell), the first response after the restart prepends:
+```
+[Chrome auto-restarted; URL reset to about:blank. Re-navigate to continue.]
+```
+Treat this as a signal that your prior URL / tab state is gone — re-navigate before assuming anything about the current page.
+
+### Console Logging
+Capture browser console output for the active tab. Buffer is keyed by the page session's `sessionId`, so it survives `close_tab`/`new_tab` ordering quirks. Levels: `log`, `info`, `warn`, `error`.
+
+- **enable_console_logging**: Start capturing
+  - Example: `{action: "enable_console_logging"}`
+
+- **get_console_messages**: Read captured messages
+  - All: `{action: "get_console_messages"}`
+  - Since timestamp (epoch ms): `{action: "get_console_messages", payload: {since: 1716000000000}}`
+  - Returns: array of `{timestamp, level, text}` entries
+
+- **clear_console_messages**: Reset the buffer
+  - Example: `{action: "clear_console_messages"}`
+
+### Dialog Handling
+Native dialogs (JS alert/confirm/prompt, beforeunload, HTTP basic-auth, permission prompts, device choosers) pause the page. While a dialog is open, page-targeted actions (`extract`, `click`, `eval`, etc.) return a refusal whose text contains `Page is behind a dialog` and lists the available `dialog::*` selectors.
+
+When a dialog fires **during** a `navigate` (typical for HTTP basic-auth), `navigate` itself throws with the dialog grammar in the message — you don't have to issue a separate page-targeted call to discover the dialog.
+
+Handle dialogs by clicking/typing a `dialog::*` selector:
+- `{action: "click", selector: "dialog::accept"}` — accept JS alert/confirm/prompt, beforeunload, permission grant
+- `{action: "click", selector: "dialog::dismiss"}` — dismiss / cancel / deny
+- `{action: "type", selector: "dialog::prompt", payload: "text"}` then accept — respond to JS prompt
+- `{action: "type", selector: "dialog::username", payload: "alice"}` + `{action: "type", selector: "dialog::password", payload: "secret"}` + `{action: "click", selector: "dialog::accept"}` — HTTP basic-auth
+- `{action: "click", selector: "dialog::device[id=\"<deviceId>\"]"}` — pick a WebUSB/Bluetooth/Serial/HID device
 
 **Critical caveats when toggling modes**:
 1. **Chrome must restart** - Cannot switch headless/headed mode on running Chrome

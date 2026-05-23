@@ -22,6 +22,7 @@ Chrome starts with `--remote-debugging-port=9222` and separate profile in `/tmp/
 | `CHROME_WS_BROWSER` | (auto-detect) | Path to browser executable. Overrides auto-detection. |
 | `CHROME_WS_HOST` | `127.0.0.1` | Debug host address |
 | `CHROME_WS_PORT` | `9222` | Debug port number |
+| `CHROME_WS_PROFILE` | (auto) | Profile name. Default is `superpowers-chrome`; if another live process holds that profile's lock, the CLI / MCP falls through to `superpowers-chrome-2`, `-3`, etc. Set this to opt out — explicit names always claim the named profile (sharing with whoever else has it). |
 
 **Examples:**
 
@@ -38,16 +39,25 @@ CHROME_WS_BROWSER="/usr/bin/brave-browser" ./chrome-ws start
 
 ## Command Reference
 
-**Setup:**
+**Lifecycle:**
 ```bash
-chrome-ws start                 # Launch Chrome (auto-detects platform)
+chrome-ws start [port]          # Launch Chrome (auto-detects platform)
+chrome-ws stop                  # Kill Chrome
+chrome-ws pid                   # Print Chrome PID
+chrome-ws info                  # Print Chrome info (JSON: pid, port, mode, profile, profileDir, running)
+chrome-ws --help                # Show usage
+chrome-ws --version             # Print version
 ```
+
+`chrome-ws --port=N <command>` overrides `CHROME_WS_PORT` for a single invocation.
+
+Unknown commands now print `Unknown command: <name>` and point at `--help` instead of the raw-specific usage banner.
 
 **Tab Management:**
 ```bash
-chrome-ws tabs                  # List tabs
+chrome-ws tabs                  # List tabs as TSV (id<TAB>url<TAB>title); use `info` for JSON
 chrome-ws new <url>            # Create tab
-chrome-ws close <ws-url>       # Close tab
+chrome-ws close <tab>          # Close tab (accepts numeric index or ws-url)
 ```
 
 **Navigation:**

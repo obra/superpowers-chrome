@@ -1011,9 +1011,11 @@ get_viewport: {"action": "get_viewport"}
 clear_cookies: {"action": "clear_cookies"}
 
 ## Profile Management
-set_profile: {"action": "set_profile", "payload": "profile-name"} → Set Chrome profile (kill Chrome first)
+set_profile: {"action": "set_profile", "payload": "profile-name"} → Set Chrome profile (kill Chrome first); marks the profile as explicit (opts out of auto-disambiguation, see below)
 get_profile: {"action": "get_profile"} → Get current profile name and directory
 Profiles stored in: ~/.cache/superpowers/browser-profiles/{profile-name}/
+
+When two or more MCP servers run on the same host with the default profile, the first claims 'superpowers-chrome' and later ones silently fall through to 'superpowers-chrome-2', '-3', etc. Each MCP drives its own Chrome with its own profile dir — they don't fight over tabs. Use CHROME_WS_PROFILE=name (env var) or set_profile to opt out and intentionally share a Chrome with another process.
 
 ## Console Logging
 enable_console_logging: {"action": "enable_console_logging"}
@@ -1024,6 +1026,17 @@ clear_console_messages: {"action": "clear_console_messages"}
 ## Chrome Lifecycle (Recovery)
 kill_chrome: {"action": "kill_chrome"} → Kill Chrome process
 restart_chrome: {"action": "restart_chrome"} → Kill and restart Chrome
+
+After an external Chrome kill (e.g., \`kill -9 <pid>\` from the shell), the next page action auto-restarts Chrome. The response prepends \`[Chrome auto-restarted; URL reset to about:blank. Re-navigate to continue.]\` so the model knows its previous URL/tab state is gone.
+
+## Dialogs (alert/confirm/prompt, beforeunload, basic-auth, permission, device)
+A native dialog opening pauses the page; subsequent page-targeted actions on that tab return a refusal whose text contains \`Page is behind a dialog\` and lists \`dialog::*\` selectors to handle it. The same shape applies when a dialog fires during navigate (e.g., HTTP basic-auth) — \`navigate\` throws with the dialog grammar in the message.
+
+Handle dialogs by clicking/typing a \`dialog::*\` selector:
+- \`click dialog::accept\` / \`click dialog::dismiss\` → JS alert/confirm/prompt, beforeunload, permission grant/deny
+- \`type dialog::prompt\` → stage text for a JS prompt dialog, then click dialog::accept to submit
+- \`type dialog::username\` + \`type dialog::password\` + \`click dialog::accept\` → respond to an HTTP basic-auth challenge
+- \`click dialog::device[id="<id>"]\` → pick a WebUSB / Bluetooth / Serial / HID device from a chooser
 
 ## Auto-Capture System
 Every DOM action auto-captures to the session dir:

@@ -39,6 +39,16 @@ chmod +x chrome-ws
 - Node.js 16+
 - Chrome with `--remote-debugging-port=9222`
 
+## Environment Variables
+
+| Variable | Purpose |
+|---|---|
+| `CHROME_WS_BROWSER` | Path to browser executable (overrides auto-detection) |
+| `CHROME_WS_HOST` | Debug host address (default `127.0.0.1`) |
+| `CHROME_WS_PORT` | Debug port (default `9222`) |
+| `CHROME_WS_PROFILE` | Profile name. Default `superpowers-chrome` with auto-disambiguation when contended; set explicitly to share a Chrome across processes. |
+| `CHROME_EXTRA_ARGS` | Whitespace-separated extra flags appended to the Chrome command line. |
+
 ## Windows Notes
 
 - The CLI now binds to `127.0.0.1:9222` by default to avoid name-resolution issues on Windows.

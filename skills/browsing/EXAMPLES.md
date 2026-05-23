@@ -9,7 +9,10 @@ Examples using the `use_browser` MCP tool. For command-line bash examples, see [
 3. [Web Scraping](#web-scraping)
 4. [Multi-Tab Workflows](#multi-tab-workflows)
 5. [Dynamic Content](#dynamic-content)
-6. [Advanced Patterns](#advanced-patterns)
+6. [Dialogs](#dialogs) — basic-auth, JS confirm, popup-with-confirm
+7. [Recovery](#recovery) — auto-restart, kill/restart cycle
+8. [Multi-MCP isolation](#multi-mcp-isolation)
+9. [Advanced Patterns](#advanced-patterns)
 
 ---
 
@@ -333,6 +336,140 @@ Wait for button to be clickable:
 
 {action: "click", selector: "button.continue"}
 ```
+
+---
+
+## Dialogs
+
+### HTTP basic-auth (dialog surfaces during navigate)
+
+When the page returns 401 + `WWW-Authenticate`, Chrome stages a basic-auth
+dialog. The bridge intercepts the `Fetch.authRequired` event, holds the
+navigation, and surfaces a dialog refusal — `navigate` throws with the
+dialog grammar in the message. The response text contains `basic-auth`
+and lists the `dialog::username`/`dialog::password`/`dialog::accept`
+selectors.
+
+```
+# Step 1: navigate fails with the dialog payload
+{action: "navigate", payload: "http://localhost:8766/", timeout: 15000}
+# (response includes "basic-auth", "dialog::username", "dialog::password")
+
+# Step 2-4: stage credentials and submit
+{action: "type", selector: "dialog::username", payload: "alice"}
+{action: "type", selector: "dialog::password", payload: "secret"}
+{action: "click", selector: "dialog::accept"}
+
+# Step 5: the original navigation completes; the page is now loaded
+{action: "extract", selector: "h1", payload: "text"}
+# → "hi alice"
+```
+
+### JS confirm/alert dispatched by a click
+
+A button whose `onclick` calls `confirm()` opens a dialog as soon as the
+click event fires. The click itself may report a CDP timeout (Chrome
+pauses the main thread on the dialog); that's expected. The bridge has
+already populated `state.dialogs[sid]` and any subsequent page-targeted
+call gets refused with the dialog grammar.
+
+```
+{action: "navigate", payload: "<page with onclick=confirm('Proceed?')>"}
+{action: "click", selector: "#ask"}
+# Click times out — expected.
+
+{action: "extract", selector: "#result", payload: "text"}
+# Refused: response contains "Page is behind a dialog", "dialog::accept",
+# "dialog::dismiss", and the prompt "Proceed?".
+
+{action: "click", selector: "dialog::accept"}
+# Dialog accepted; state.dialogs cleared eagerly.
+
+{action: "eval", payload: "window.__userChoice"}
+# → true
+```
+
+### Popup with synchronous dialog (Phase F headline case)
+
+A page that opens a popup whose first inline script calls
+`confirm()` works without races. The bridge attaches to the popup
+target via `Target.setAutoAttach({waitForDebuggerOnStart: true})`,
+installs the dialog shim, then resumes execution — so the synchronous
+confirm is observed.
+
+```
+{action: "navigate", payload: "http://localhost:8765/popup-opener.html"}
+{action: "click", selector: "#open"}     # opens window.open('popup.html')
+{action: "list_tabs"}                     # popup is enumerated
+{action: "switch_tab", payload: "Popup"}  # route to the popup tab
+{action: "extract", selector: "*", payload: "text"}
+# Refused with dialog grammar — the popup's confirm was caught.
+
+{action: "click", selector: "dialog::accept"}
+{action: "eval", payload: "window.__userChoice"}
+# → true
+```
+
+## Recovery
+
+### Chrome killed externally
+
+If something kills your Chrome (`kill -9 <pid>`, OOM killer, a user
+closing the headed window), the bridge auto-restarts on the next page
+action. The response is prefixed with a banner so you know the previous
+URL/tab state is gone.
+
+```
+{action: "navigate", payload: "https://example.com"}
+{action: "extract", selector: "h1", payload: "text"}    # → "Example Domain"
+{action: "browser_mode"}                                # records pid=N
+
+# (from your shell or another process: kill -9 N)
+
+{action: "navigate", payload: "https://example.com"}
+# Response starts with:
+#   [Chrome auto-restarted; URL reset to about:blank. Re-navigate to continue.]
+#   Navigated to https://example.com
+#   ...
+```
+
+`browser_mode` also reports the real PID even when the bridge adopted a
+Chrome it didn't spawn (a leftover from a previous MCP session). So
+"get pid, kill -9 it, watch the restart" works regardless of how Chrome
+got there.
+
+### Explicit kill + restart cycle
+
+```
+{action: "kill_chrome"}     # Chrome killed.
+{action: "restart_chrome"}  # Chrome restarted in headless mode.
+{action: "navigate", payload: "data:text/html,<h1>fresh</h1>"}
+```
+
+## Multi-MCP isolation
+
+By default the bridge handles parallel MCP servers on the same host
+automatically: the first claims `superpowers-chrome:9222`, the next
+silently falls through to `superpowers-chrome-2:9223`, then `-3:9224`,
+etc. Each MCP drives its own Chrome with its own profile directory.
+
+To intentionally **share** a Chrome between processes (e.g., a
+long-lived `chrome-ws start` from the shell + a Claude MCP attaching to
+it), pick a fixed profile name on both sides:
+
+```
+# Shell:
+CHROME_WS_PROFILE=shared chrome-ws start
+
+# In the MCP, on first call:
+{action: "set_profile", payload: "shared"}
+{action: "navigate", payload: "https://example.com"}
+# Reconnects to the shell-started Chrome — same tabs, same cookies.
+```
+
+Either set `CHROME_WS_PROFILE=shared` in the MCP's environment, or call
+`set_profile` at runtime. Both mark the profile as explicit, so the
+bridge shares rather than disambiguates.
 
 ---
 
