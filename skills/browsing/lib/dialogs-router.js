@@ -18,14 +18,23 @@ async function tryHandleDialogSelector({ selector, op, payload, state, sendCdpCo
         params.promptText = state.staged.promptText;
       }
       await sendCdpCommand(wsUrl, 'Page.handleJavaScriptDialog', params);
-      return { handled: true, result: { ok: true } };
+      // Clear state.dialogs eagerly. Chrome SHOULD fire
+      // Page.javascriptDialogClosed which the dialogs.js event handler also
+      // uses to clear state — but in practice that event has been observed to
+      // arrive late, get routed to a session without Page.enable, or never
+      // fire on transient dialog states (scenario 03 step 6 saw the dialog
+      // state persist after a clean accept). Clearing here makes the API
+      // contract "accept returned success → state.dialogs has no entry for
+      // this session" true unconditionally; the Chrome event becomes a
+      // redundant best-effort sweep.
+      return { handled: true, clearDialog: true, result: { ok: true } };
     }
   }
 
   if (selector === 'dialog::dismiss' && op === 'click') {
     if (JS_KINDS.has(state.kind)) {
       await sendCdpCommand(wsUrl, 'Page.handleJavaScriptDialog', { accept: false });
-      return { handled: true, result: { ok: true } };
+      return { handled: true, clearDialog: true, result: { ok: true } };
     }
   }
 

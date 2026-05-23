@@ -236,14 +236,94 @@ describe('mouse humanization', () => {
   });
 });
 
+// Regression for scenario 03 step 6: clicking a button whose onclick calls
+// confirm() opens the dialog; the press/release CDP request hangs and times
+// out. The catch fell back to Element.click() via Runtime.evaluate, which
+// queued a SECOND click behind the dialog. After the user accepted the first
+// dialog the queued click fired and onclick spawned another confirm —
+// scenario 03 step 6 saw a second dialog persisting in state.dialogs and
+// refused the subsequent extract. The fix: if a dialog is already open for
+// this session when the press/release fails, propagate the original error
+// instead of running the Element.click() fallback.
+describe('mouse click: dialog-aware fallback', () => {
+  it('does NOT run Element.click() fallback when a dialog is already open', async () => {
+    // Set up a fake page session where mousePressed throws (simulates the
+    // 30-second session timeout that happens when the click opens a dialog).
+    const ps = makePageSessionFake({
+      'Input.dispatchMouseEvent': (params) => {
+        if (params.type === 'mousePressed') throw new Error('Page session timeout: Input.dispatchMouseEvent');
+        return {};
+      },
+      // If the fallback ran, this would be called — we assert it is NOT.
+      'Runtime.evaluate': () => ({ result: { value: { found: true } } }),
+    });
+    // Provide a fake "dialog is open" state.
+    const dialogs = {
+      getOpen: (_sid) => ({ kind: 'confirm', payload: { message: 'Proceed?' } }),
+    };
+    const getPageSession = async () => ps;
+    const { click } = attachMouse({ getPageSession, dialogs, _rng: deterministicRng });
+
+    let caught;
+    try {
+      await click(0, '#button');
+    } catch (e) {
+      caught = e;
+    }
+    assert.ok(caught, 'click must throw the underlying timeout when a dialog blocked it');
+    assert.match(caught.message, /Page session timeout/);
+
+    // Critical: no Runtime.evaluate should have been issued by the catch's
+    // Element.click() fallback. resolveCenter does call Runtime.evaluate to
+    // get the bounding box, so we look specifically for the _el.click()
+    // expression that the fallback uses.
+    const fallbackCalls = ps.calls.filter(c =>
+      c.method === 'Runtime.evaluate' && typeof c.params?.expression === 'string' && c.params.expression.includes('_el.click()')
+    );
+    assert.equal(fallbackCalls.length, 0, 'Element.click() fallback must be skipped when a dialog is open');
+  });
+
+  it('still runs the fallback when no dialog is open (preserves not-found path)', async () => {
+    // Failure shape NOT due to a dialog — resolveCenter throws (zero bbox /
+    // hidden element). The fallback should fire to surface the real
+    // "Element not found" error.
+    const ps = makePageSessionFake({
+      // resolveCenter calls Runtime.evaluate to get the bounding box.
+      // First call: bbox lookup → return zero rect so resolveCenter throws.
+      // Second call: fallback's _el.click() lookup → return found=true.
+      'Runtime.evaluate': (params) => {
+        if (params.expression && params.expression.includes('_el.click()')) {
+          return { result: { value: { found: true } } };
+        }
+        // bbox lookup returns a zero-size rect to force resolveCenter to fail.
+        return { result: { value: { x: 0, y: 0, width: 0, height: 0 } } };
+      },
+      'Input.dispatchMouseEvent': () => ({}),
+    });
+    const dialogs = {
+      getOpen: (_sid) => null, // no dialog
+    };
+    const getPageSession = async () => ps;
+    const { click } = attachMouse({ getPageSession, dialogs, _rng: deterministicRng });
+
+    const result = await click(0, '#button');
+    assert.equal(result.fallback, true, 'fallback should have run when no dialog is open');
+  });
+});
+
 describe('mouse click routes dialog::* selectors', () => {
   it('click dialog::accept invokes the dialog router and skips DOM resolution', async () => {
     const ps = makePageSessionFake({
       'Page.handleJavaScriptDialog': () => ({}),
     });
     const dialogState = { kind: 'alert', payload: { message: 'x', url: '', defaultPrompt: '', hasBrowserHandler: false }, staged: {} };
+    let clearedSid = null;
     const dialogs = {
       getOpen: () => dialogState,
+      // mouse.js calls dialogs.clear(sid) when the router signals clearDialog.
+      // JS dialog::accept/dismiss now signal clearDialog (regression fix for
+      // scenario 03 step 6), so the mock must expose .clear.
+      clear: (sid) => { clearedSid = sid; },
     };
     const getPageSession = async () => ps;
     const { click } = attachMouse({ getPageSession, dialogs });
@@ -253,5 +333,8 @@ describe('mouse click routes dialog::* selectors', () => {
     assert.equal(call.params.accept, true);
     // No DOM-resolution call (Runtime.evaluate) should have happened.
     assert.ok(!ps.calls.some(c => c.method === 'Runtime.evaluate'));
+    // Eager state cleanup: mouse.js should have invoked dialogs.clear() with
+    // the pageSession's sessionId (the makePageSessionFake default).
+    assert.equal(clearedSid, ps.sessionId, 'dialogs.clear should be called with the session id');
   });
 });

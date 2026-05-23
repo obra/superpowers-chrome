@@ -49,6 +49,27 @@ describe('tryHandleDialogSelector', () => {
     const call = cdp.calls.find(c => c.method === 'Page.handleJavaScriptDialog');
     assert.equal(call.params.accept, false);
   });
+
+  // Regression for scenario 03 step 6: JS-kind dialog::accept used to rely
+  // solely on Chrome firing Page.javascriptDialogClosed for state cleanup.
+  // When that event didn't reach the bridge session promptly, the dialog
+  // state stayed in state.dialogs and the very next extract was refused
+  // with "Page is behind a dialog" even though Chrome had moved on. The
+  // router must now signal clearDialog so the caller does the cleanup
+  // immediately; Chrome's event becomes a redundant best-effort sweep.
+  it('dialog::accept on JS dialogs signals clearDialog=true', async () => {
+    const cdp = makeCdpSpy();
+    const r = await tryHandleDialogSelector({ selector: 'dialog::accept', op: 'click', state: jsConfirm(), sendCdpCommand: cdp, wsUrl: 'ws://x' });
+    assert.equal(r.handled, true);
+    assert.equal(r.clearDialog, true, 'JS dialog accept must signal eager state cleanup');
+  });
+
+  it('dialog::dismiss on JS dialogs signals clearDialog=true', async () => {
+    const cdp = makeCdpSpy();
+    const r = await tryHandleDialogSelector({ selector: 'dialog::dismiss', op: 'click', state: jsConfirm(), sendCdpCommand: cdp, wsUrl: 'ws://x' });
+    assert.equal(r.handled, true);
+    assert.equal(r.clearDialog, true, 'JS dialog dismiss must signal eager state cleanup');
+  });
 });
 
 describe('router staging', () => {

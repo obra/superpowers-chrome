@@ -197,6 +197,15 @@ function attachMouse({ getPageSession, dialogs, _rng }) {
 
       return { clicked: true, x, y };
     } catch (_e) {
+      // Skip the fallback when a dialog is already open for this session:
+      // the press/release timed out because the click opened a dialog and the
+      // page is paused. Running Element.click() now queues a SECOND click
+      // event behind the dialog, so dismissing later spawns another confirm
+      // (scenario 03 step 6 regression). Propagate the original timeout so
+      // the caller learns the click landed on a dialog.
+      if (dialogs && dialogs.getOpen && dialogs.getOpen(ps.sessionId)) {
+        throw _e;
+      }
       // Fallback for cases where CDP coordinate resolution failed but the
       // element actually exists (e.g., hidden / zero bounding rect). Resolve
       // the element first, click via JS only if it's really there, and
