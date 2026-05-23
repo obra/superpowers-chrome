@@ -20,6 +20,16 @@ const { createOverride } = require('../host-override');
  */
 function createState({ host, port } = {}) {
   const hostOverride = createOverride({ host, port });
+
+  // CHROME_WS_PROFILE is the way to opt into a stable named profile from
+  // outside this process — typically used to share a Chrome instance across
+  // MCP restarts or between cooperating tools. When it's set, we treat the
+  // profile as explicit and skip auto-disambiguation in chrome-process.js.
+  const envProfile = process.env.CHROME_WS_PROFILE;
+  const profileFromEnv = envProfile && /^[a-zA-Z0-9_-]+$/.test(envProfile)
+    ? envProfile
+    : null;
+
   return {
     hostOverride,
     rewriteWsUrl: hostOverride.rewriteWsUrl,
@@ -38,7 +48,11 @@ function createState({ host, port } = {}) {
     chromeProcess: null,
     chromeHeadless: true,
     chromeUserDataDir: null,
-    chromeProfileName: 'superpowers-chrome',
+    chromeProfileName: profileFromEnv || 'superpowers-chrome',
+    // True when the profile name came from env/set_profile rather than the
+    // default. chrome-process.js uses this to decide whether to auto-pick an
+    // unused alternate name on startup.
+    _profileExplicit: profileFromEnv !== null,
 
     // Bridge primitives: the session's BrowserBridge instance and active BrowserSession.
     browserBridge: null,

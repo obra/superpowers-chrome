@@ -9,6 +9,7 @@ const {
   buildChromeArgs,
   getChromeProfileDir,
 } = require('./chrome-launcher-helpers');
+const profileLock = require('./profile-lock');
 const { spawn } = require('child_process');
 const { existsSync, mkdirSync } = require('fs');
 const os = require('os');
@@ -28,13 +29,67 @@ function attachChromeProcess({ state, chromeHttp, getTabs, newTab }) {
   const CHROME_DEBUG_HOST = state.hostOverride.getHost();
   const CHROME_DEBUG_PORT = state.hostOverride.getPort();
 
+  // Per-MCP-instance lock on the profile name. Acquired lazily on the first
+  // startChrome that uses the default-derived profile. Released by the exit
+  // handler below.
+  function ensureProfileLock() {
+    if (state._profileLockPath) return; // already locked
+
+    // Don't auto-disambiguate when the caller (or env) was explicit about the
+    // profile. An explicit profile signals intentional sharing — the user
+    // wants subsequent MCPs to reconnect to that exact Chrome.
+    if (state._profileExplicit) {
+      const lockPath = profileLock.acquire(state.chromeProfileName);
+      if (lockPath) state._profileLockPath = lockPath;
+      // If we can't get it (another live MCP holds the same explicit name),
+      // we still proceed — the existing reconnect/adopt flow takes over and
+      // the user gets what they asked for: a shared Chrome.
+      return;
+    }
+
+    const { profileName, lockPath, slot } =
+      profileLock.acquireWithFallback(state.chromeProfileName);
+    if (slot > 1) {
+      console.error(
+        `Another MCP holds profile '${state.chromeProfileName}'; ` +
+        `using '${profileName}' instead. Set CHROME_WS_PROFILE to opt out of auto-disambiguation.`
+      );
+      state.chromeProfileName = profileName;
+      // Force the launcher to rederive userDataDir from the new name on next
+      // spawn — the cached one points at the old (locked) profile dir.
+      state.chromeUserDataDir = null;
+    }
+    state._profileLockPath = lockPath;
+  }
+
+  // Release the lock when this MCP process exits. Registered once per attach.
+  // Both 'exit' (clean) and the SIG* paths are covered. fs.unlinkSync in the
+  // 'exit' handler is intentional — async work can't run there.
+  if (!state._profileLockExitHandlerRegistered) {
+    state._profileLockExitHandlerRegistered = true;
+    const releaseOnce = () => {
+      if (state._profileLockPath) {
+        profileLock.release(state._profileLockPath);
+        state._profileLockPath = null;
+      }
+    };
+    process.on('exit', releaseOnce);
+    process.on('SIGINT', () => { releaseOnce(); process.exit(130); });
+    process.on('SIGTERM', () => { releaseOnce(); process.exit(143); });
+  }
+
   async function startChrome(headless = null, profileName = null, port = null) {
     if (headless !== null) {
       state.chromeHeadless = headless;
     }
     if (profileName !== null) {
       state.chromeProfileName = profileName;
+      state._profileExplicit = true;
     }
+
+    // First-call lock acquisition. Auto-disambiguates when the default profile
+    // is contended; respects explicit profile choice.
+    ensureProfileLock();
 
     // --- Step 1: Reuse an already-running Chrome on this profile ---
     // Enables reconnection after MCP restart while Chrome is still alive.
@@ -344,6 +399,16 @@ function attachChromeProcess({ state, chromeHttp, getTabs, newTab }) {
     if (state.chromeProcess) {
       throw new Error('Cannot change profile while Chrome is running. Kill Chrome first.');
     }
+    // An explicit set_profile is the user opting OUT of auto-disambiguation:
+    // they want to share Chrome with another process that uses this exact
+    // name. Release whatever default-slot lock we already hold (if any), set
+    // the flag so ensureProfileLock() takes the explicit path next time, and
+    // forget the previous lock path.
+    if (state._profileLockPath) {
+      profileLock.release(state._profileLockPath);
+      state._profileLockPath = null;
+    }
+    state._profileExplicit = true;
     state.chromeProfileName = profileName;
     state.chromeUserDataDir = null; // Reset so next startChrome() uses new profile
     state.activePort = CHROME_DEBUG_PORT; // Reset so a prior rotated port doesn't carry forward
