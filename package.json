@@ -20,6 +20,7 @@
   },
   "files": [
     "mcp/dist/",
+    "mcp/package.json",
     "skills/browsing/chrome-ws-lib.js",
     "skills/browsing/host-override.js",
     "skills/browsing/lib/",
