@@ -114,17 +114,33 @@ async function isPortAlive(host, port, expectedPid = null) {
 function isPortFreeOn(host, port) {
   return new Promise((resolve) => {
     const server = net.createServer();
-    server.once('error', () => resolve(false));
-    server.once('listening', () => { server.close(() => resolve(true)); });
+    // Resolve with the OS error code so the caller can tell "port in use"
+    // (EADDRINUSE) apart from "this loopback/address family isn't available
+    // here at all" (EADDRNOTAVAIL / EAFNOSUPPORT) — very different signals.
+    server.once('error', (err) => resolve({ free: false, code: err.code }));
+    server.once('listening', () => { server.close(() => resolve({ free: true })); });
     server.listen(port, host);
   });
 }
 
+// Pure decision over the IPv4 and IPv6 loopback probe results. A port is free
+// only if IPv4 loopback is free. The IPv6 probe is a race-guard for hosts where
+// Chrome may bind ::1 only (some macOS configs) — but an UNAVAILABLE IPv6
+// loopback (e.g. a container with net.ipv6.conf.lo.disable_ipv6=1, where every
+// ::1 bind returns EADDRNOTAVAIL) is NOT a port conflict and must not veto the
+// port. Only a genuine in-use signal on ::1 vetoes. Exported for testing.
+function portFreeFromProbes(v4, v6) {
+  if (!v4.free) return false;
+  if (v6.free) return true;
+  if (v6.code === 'EADDRNOTAVAIL' || v6.code === 'EAFNOSUPPORT') return true;
+  return false;
+}
+
 async function isPortFree(port) {
   const v4 = await isPortFreeOn('127.0.0.1', port);
-  if (!v4) return false;
+  if (!v4.free) return false;
   const v6 = await isPortFreeOn('::1', port);
-  return v6;
+  return portFreeFromProbes(v4, v6);
 }
 
 // Port range tried sequentially, starting at 9222 for backward compat.
@@ -308,6 +324,7 @@ module.exports = {
   clearProfileMeta,
   isPortAlive,
   isPortFree,
+  portFreeFromProbes,
   findAvailablePort,
   findPidOnPort,
   findOrphanChromeForProfile,
