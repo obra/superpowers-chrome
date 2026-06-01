@@ -2,6 +2,14 @@
 
 All notable changes to the superpowers-chrome MCP project.
 
+## [3.0.2] - 2026-05-31 - IPv6-disabled loopback no longer blocks Chrome launch
+
+### Fixed
+- `skills/browsing/lib/chrome-launcher-helpers.js`: `isPortFree()` probed both `127.0.0.1` and `::1` and treated *any* `::1` bind failure as "port occupied". In a container with IPv6 loopback disabled (`net.ipv6.conf.lo.disable_ipv6=1`), every `::1` bind returns `EADDRNOTAVAIL`, so every port in 9222–12111 looked occupied and `findAvailablePort()` threw "No available port" — Chrome never launched. Now distinguishes a genuine in-use signal (`EADDRINUSE`) from an unavailable loopback/address-family (`EADDRNOTAVAIL`/`EAFNOSUPPORT`): the dual-stack check stays a race-guard for hosts where Chrome may bind `::1` only, but a missing IPv6 loopback no longer vetoes the port. Decision extracted into a pure `portFreeFromProbes(v4, v6)` and unit-tested with both error codes; `isPortFreeOn` now resolves `{free, code}`.
+
+### Tests
+- `test/lib/chrome-process.test.mjs`: the two `getBrowserMode` "no listener → running:false" tests inherited the shared default `activePort` 9222, which the real-Chrome smoke suite binds — so they flaked under `node --test`'s parallel file execution (intermittent `running:true`). They now probe port 1 (privileged/unbound, deterministic), matching the sibling test. `npm test` is stable across parallel runs.
+
 ## [3.0.1] - 2026-05-22 - Lint fix
 
 3.0.0 shipped with five unused-variable lint errors that `npm test`
