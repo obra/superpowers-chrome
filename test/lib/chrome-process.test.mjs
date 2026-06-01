@@ -458,6 +458,10 @@ describe('chrome-process: getBrowserMode profileDir symmetry', () => {
     state.chromeProcess = null;
     state.chromeUserDataDir = null;
     state.chromeProfileName = 'superpowers-chrome';
+    // Probe a port nothing listens on, not the shared default 9222 — a real
+    // Chrome from a parallel suite (e.g. the smoke) binds 9222 and made the
+    // "stopped" assertion flaky. Port 1 is privileged/unbound.
+    state.activePort = 1;
     const mode = await getBrowserMode();
     // Should be a non-null string derived from the profile name, not null
     assert.ok(typeof mode.profileDir === 'string', 'profileDir should be a string even when stopped');
@@ -626,9 +630,11 @@ describe('chrome-process: getBrowserMode for adopted Chrome', () => {
   });
 
   it('running:false and pid:null when no Chrome is on activePort', async () => {
-    // Pick an activePort that nothing is listening on.
-    const { getBrowserMode } = setup();
-    // setup() leaves activePort at 9222 but no real Chrome is running here.
+    const { getBrowserMode, state } = setup();
+    // Probe a port nothing listens on. NOT the shared default 9222 — a real
+    // Chrome from a parallel suite (e.g. the smoke) binds 9222 and made this
+    // flaky. Port 1 is privileged/unbound (mirrors the sibling test below).
+    state.activePort = 1;
     const mode = await getBrowserMode();
     assert.equal(mode.running, false, 'no listener → running:false');
     assert.equal(mode.pid, null, 'no listener → pid:null');
