@@ -51,6 +51,7 @@ if (command === '--version' || command === '-v') {
 
 const hostOverride = require('./host-override').createOverride();
 const { createSession } = require('./chrome-ws-lib');
+const { buildChromeArgs } = require('./lib/chrome-launcher-helpers');
 const CHROME_DEBUG_HOST = hostOverride.getHost();
 const CHROME_DEBUG_PORT = hostOverride.getPort();
 const WS_OVERRIDE_ENABLED = hostOverride.isOverrideEnabled();
@@ -326,10 +327,11 @@ if (command === 'start') {
     ? 'C:\\temp\\chrome-debug'
     : '/tmp/chrome-debug';
 
-  const chromeArgs = [
-    `--remote-debugging-port=${effectivePort}`,
-    `--user-data-dir=${userDataDir}`
-  ];
+  const chromeArgs = buildChromeArgs({
+    chosenPort: effectivePort,
+    chromeUserDataDir: userDataDir,
+    chromeHeadless: false,
+  });
 
   console.log(`Starting Chrome: ${chromePath}`);
   const chrome = spawn(chromePath, chromeArgs, {

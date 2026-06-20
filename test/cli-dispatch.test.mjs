@@ -15,15 +15,18 @@
 import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
 import { spawnSync } from 'node:child_process';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CLI = path.join(__dirname, '..', 'skills', 'browsing', 'chrome-ws');
 
-function runCLI(args, { timeoutMs = 5000 } = {}) {
+function runCLI(args, { env = {}, timeoutMs = 5000 } = {}) {
   return spawnSync('node', [CLI, ...args], {
     encoding: 'utf8',
+    env: { ...process.env, ...env },
     timeout: timeoutMs,
   });
 }
@@ -71,5 +74,41 @@ describe('chrome-ws CLI dispatch', () => {
       /Usage: chrome-ws raw </,
       'stop must not print the raw usage banner'
     );
+  });
+
+  it('start uses the shared Chrome arg builder and honors CHROME_EXTRA_ARGS', () => {
+    const dir = path.join(tmpdir(), `chrome-ws-cli-args-${process.pid}-${Date.now()}`);
+    mkdirSync(dir, { recursive: true });
+    const fakeChrome = path.join(dir, 'fake-chrome');
+    const argsFile = path.join(dir, 'args.json');
+
+    writeFileSync(fakeChrome, `#!/usr/bin/env node
+const fs = require('node:fs');
+fs.writeFileSync(process.env.FAKE_CHROME_ARGS_FILE, JSON.stringify(process.argv.slice(2)));
+`, { mode: 0o755 });
+
+    try {
+      const r = runCLI(['--port=49217', 'start'], {
+        env: {
+          CHROME_WS_BROWSER: fakeChrome,
+          CHROME_EXTRA_ARGS: '--headless=new --disable-gpu --flag-from-env',
+          FAKE_CHROME_ARGS_FILE: argsFile,
+        },
+        timeoutMs: 5000,
+      });
+
+      assert.equal(r.status, 1, 'fake Chrome never opens the debug port, so start should fail');
+      assert.ok(existsSync(argsFile), 'fake Chrome should have been spawned');
+
+      const args = JSON.parse(readFileSync(argsFile, 'utf8'));
+      assert.ok(args.includes('--remote-debugging-port=49217'));
+      assert.ok(args.some(a => a.startsWith('--user-data-dir=')));
+      assert.ok(args.includes('--no-first-run'), 'baseline shared-helper flag should be present');
+      assert.ok(args.includes('--headless=new'), 'CHROME_EXTRA_ARGS should be appended');
+      assert.ok(args.includes('--disable-gpu'), 'CHROME_EXTRA_ARGS should support multiple flags');
+      assert.ok(args.includes('--flag-from-env'), 'CHROME_EXTRA_ARGS should reach CLI start');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
