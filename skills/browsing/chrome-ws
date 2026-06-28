@@ -31,6 +31,7 @@ Commands:
   wait-for <tab> <selector> [timeout-ms]        Wait for element to appear
   wait-text <tab> <text> [timeout-ms]           Wait for text to appear
   screenshot <tab> <filename.png> [--fullpage]  Take a screenshot
+  screencast <tab> <seconds> [file.mp4]         Record tab as MP4 (needs ffmpeg)
   markdown <tab> <filename.md>                  Save page as markdown
   har <tab> <filename.har>                      Export HAR (after har-start)
   raw <ws-url> <json-rpc-payload>               Send raw CDP command
@@ -772,6 +773,41 @@ if (command === 'screenshot') {
       process.exit(0);
     } catch (e) {
       console.error('Screenshot failed:', e.message);
+      process.exit(1);
+    }
+  })();
+  return;
+}
+
+// Command: screencast - record a tab as a video for a fixed duration
+// (The MCP server exposes start/stop/status as separate calls because it is a
+// long-lived process; the CLI spawns fresh per command, so the frame buffer
+// can't survive across two invocations. The CLI therefore records in one
+// blocking call: start, sleep <seconds>, stop+assemble.)
+if (command === 'screencast') {
+  const [secondsArg, filename] = args;
+  const seconds = parseFloat(secondsArg);
+  if (!wsUrlOrIndex || !secondsArg || Number.isNaN(seconds) || seconds <= 0) {
+    console.error('Usage: chrome-ws screencast <tab-index-or-ws-url> <seconds> [filename.mp4]');
+    process.exit(1);
+  }
+  (async () => {
+    try {
+      const tab = resolveTabArg(wsUrlOrIndex);
+      await session.startScreencast(tab, {});
+      console.error(`Recording for ${seconds}s...`);
+      await new Promise(r => setTimeout(r, seconds * 1000));
+      const result = await session.stopScreencast(tab, filename ? { path: filename } : {});
+      if (!result.recorded) {
+        console.error(result.message || 'No video produced.');
+        process.exit(1);
+      }
+      console.log(result.format === 'mp4'
+        ? `Screencast saved to ${result.path} (${result.frameCount} frames)`
+        : (result.message || `Frames saved to ${result.path}`));
+      process.exit(0);
+    } catch (e) {
+      console.error('Screencast failed:', e.message);
       process.exit(1);
     }
   })();

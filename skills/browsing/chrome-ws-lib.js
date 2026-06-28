@@ -33,6 +33,7 @@ const { createBrowserSession } = require('./lib/browser-session');
 const { attachBrowserBridge } = require('./lib/browser-bridge');
 const { attachFileUpload } = require('./lib/file-upload');
 const { attachConsoleLogging } = require('./lib/console-logging');
+const { attachScreencast } = require('./lib/screencast');
 const { attachSelectOption } = require('./lib/select-option');
 const { attachDialogs, DialogRefusedError } = require('./lib/dialogs');
 const { renderSyntheticArtifacts } = require('./lib/dialogs-render');
@@ -296,6 +297,9 @@ function createSession({ host, port, _testFakes } = {}) {
   // Wire the forward reference so screenshot.js can call initializeSession.
   screenshotDirRef.initializeSession = initializeSession;
 
+  const { startScreencast, stopScreencast, isScreencastRecording } =
+    attachScreencast({ state, getPageSession, initializeSession });
+
   const { navigate, waitForElement, waitForText, back, forward } =
     attachNavigation({ state, getPageSession, capturePageArtifacts, evaluate });
 
@@ -406,6 +410,11 @@ function createSession({ host, port, _testFakes } = {}) {
     enableConsoleLogging,
     getConsoleMessages,
     clearConsoleMessages,
+
+    // Screencast video recording (Page.startScreencast frame stream → MP4)
+    startScreencast,
+    stopScreencast,
+    isScreencastRecording,
 
     // Session management
     getXdgCacheHome,

@@ -10,7 +10,7 @@ Direct browser control via Chrome DevTools Protocol. Two modes available:
 - **Zero dependencies** - Built-in WebSocket, no npm install needed
 - **Idiotproof API** - Tab index syntax (`0`, `1`, `2`) instead of WebSocket URLs
 - **Platform-agnostic** - `chrome-ws start` works on macOS, Linux, Windows
-- **17 commands** covering all browser automation needs
+- **Screencast recording** - Capture a tab as an MP4 video (great for agent demos/showcases)
 - **Complete documentation** with real-world examples
 
 ## Installation
@@ -63,7 +63,7 @@ CHROME_EXTRA_ARGS="--use-gl=angle --use-angle=swiftshader-webgl --enable-unsafe-
 - **Navigation**: `navigate`, `wait-for`, `wait-text`
 - **Interaction**: `click`, `fill`, `select`
 - **Extraction**: `eval`, `extract`, `attr`, `html`
-- **Export**: `screenshot`, `markdown`
+- **Export**: `screenshot`, `markdown`, `screencast` (record tab as MP4)
 - **Raw protocol**: `raw` (full CDP access)
 
 ## Dialog Handling
@@ -207,6 +207,26 @@ DOM:
 ```
 
 Get help: `{"action": "help"}` - Returns complete documentation
+
+### Screencast Recording
+
+Record the active tab as an MP4 video — useful for capturing agent browsing
+sessions for demos and showcases.
+
+```json
+{"action": "start_screencast"}
+{"action": "screencast_status"}
+{"action": "stop_screencast", "payload": {"path": "demo.mp4"}}
+```
+
+`start_screencast` begins streaming frames via CDP `Page.startScreencast`;
+`stop_screencast` assembles them into an MP4 (timed from each frame's real
+timestamp) and writes it to the session directory (or `payload.path`).
+
+**Requires [ffmpeg](https://ffmpeg.org/) on PATH** to produce an MP4. Without
+ffmpeg, the raw frame sequence is saved to a directory instead and the path is
+reported. Only a visible surface is captured, so keep the tab focused
+(`show_browser`) while recording. CLI: `chrome-ws screencast <tab> <seconds> [file.mp4]`.
 
 See [mcp/README.md](mcp/README.md) for complete documentation.
 

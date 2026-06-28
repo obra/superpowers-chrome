@@ -13941,6 +13941,9 @@ var BrowserAction = /* @__PURE__ */ ((BrowserAction2) => {
   BrowserAction2["ENABLE_CONSOLE_LOGGING"] = "enable_console_logging";
   BrowserAction2["GET_CONSOLE_MESSAGES"] = "get_console_messages";
   BrowserAction2["CLEAR_CONSOLE_MESSAGES"] = "clear_console_messages";
+  BrowserAction2["START_SCREENCAST"] = "start_screencast";
+  BrowserAction2["STOP_SCREENCAST"] = "stop_screencast";
+  BrowserAction2["SCREENCAST_STATUS"] = "screencast_status";
   BrowserAction2["KILL_CHROME"] = "kill_chrome";
   BrowserAction2["RESTART_CHROME"] = "restart_chrome";
   return BrowserAction2;
@@ -13951,7 +13954,7 @@ var UseBrowserParams = {
     "CSS or XPath selector \u2014 what to act on. Null/omitted for actions that don't target an element (navigate, eval, list_tabs, etc.). XPath must start with / or //. dialog::accept and dialog::dismiss are special selectors for handling open dialogs."
   ),
   payload: external_exports.union([external_exports.string(), external_exports.record(external_exports.any())]).optional().describe(
-    "Extra data for the action. String for simple cases (navigate=URL, type=text, eval=JS, keyboard_press=key, set_profile=name, new_tab=URL). Object for structured cases (set_viewport={width,height,mobile?}, keyboard_press={key,modifiers:{shift?,ctrl?,alt?,meta?}}, extract={format:'text'|'html'|'markdown'}, screenshot={path?,fullpage?}, scroll={deltaX?,deltaY?} or direction string, drag_drop={x,y} or selector string for target, mouse_move={x,y,steps?,fromX?,fromY?}, file_upload={files:[...]}, get_console_messages={since:epochMs}, await_text=text string or {text,timeout?}, switch_tab=tab index/url-substring/title-substring). See action='help' for per-action payload shapes."
+    "Extra data for the action. String for simple cases (navigate=URL, type=text, eval=JS, keyboard_press=key, set_profile=name, new_tab=URL). Object for structured cases (set_viewport={width,height,mobile?}, keyboard_press={key,modifiers:{shift?,ctrl?,alt?,meta?}}, extract={format:'text'|'html'|'markdown'}, screenshot={path?,fullpage?}, scroll={deltaX?,deltaY?} or direction string, drag_drop={x,y} or selector string for target, mouse_move={x,y,steps?,fromX?,fromY?}, file_upload={files:[...]}, get_console_messages={since:epochMs}, start_screencast={path?,format?,quality?,maxWidth?,maxHeight?,everyNthFrame?}, stop_screencast={path?,keepFrames?}, await_text=text string or {text,timeout?}, switch_tab=tab index/url-substring/title-substring). See action='help' for per-action payload shapes."
   ),
   timeout: external_exports.number().int().min(0).max(6e4).optional().describe("Timeout in ms for await_element / await_text actions."),
   // Postel-accept legacy parameter. Many agents emit `tab_index` from prior
@@ -14518,6 +14521,44 @@ Result: ${evalResult.result}`);
       await chromeLib.clearConsoleMessages(tabIndex);
       return `Console messages cleared`;
     }
+    case "start_screencast" /* START_SCREENCAST */: {
+      const p = parsePayload(payload, "path");
+      const options = {};
+      if (typeof p.path === "string") options.path = p.path;
+      if (typeof p.format === "string") options.format = p.format;
+      if (typeof p.quality === "number") options.quality = p.quality;
+      if (typeof p.maxWidth === "number") options.maxWidth = p.maxWidth;
+      if (typeof p.maxHeight === "number") options.maxHeight = p.maxHeight;
+      if (typeof p.everyNthFrame === "number") options.everyNthFrame = p.everyNthFrame;
+      const startResult = await chromeLib.startScreencast(tabIndex, options);
+      return `Screencast recording started (${startResult.format} frames). Call screencast_status to check progress, stop_screencast to finish and save the video.`;
+    }
+    case "stop_screencast" /* STOP_SCREENCAST */: {
+      const p = parsePayload(payload, "path");
+      const options = {};
+      if (typeof p.path === "string") options.path = p.path;
+      if (p.keepFrames === true) options.keepFrames = true;
+      const stopResult = await chromeLib.stopScreencast(tabIndex, options);
+      if (!stopResult.recorded) {
+        return stopResult.message || "Screencast stopped \u2014 no video produced.";
+      }
+      if (stopResult.format === "mp4") {
+        const secs = (stopResult.durationMs / 1e3).toFixed(1);
+        const kept = stopResult.framesDir ? `
+Raw frames kept at: ${stopResult.framesDir}` : "";
+        return `Screencast saved to ${stopResult.path}
+${stopResult.frameCount} frames over ${secs}s.${kept}`;
+      }
+      return stopResult.message || `Screencast frames saved to ${stopResult.path} (${stopResult.frameCount} frames).`;
+    }
+    case "screencast_status" /* SCREENCAST_STATUS */: {
+      const status = await chromeLib.isScreencastRecording(tabIndex);
+      if (!status.recording) {
+        return `No screencast is recording for this tab.`;
+      }
+      const secs = (status.elapsedMs / 1e3).toFixed(1);
+      return `Recording: ${status.frameCount} ${status.format} frames captured over ${secs}s.`;
+    }
     case "kill_chrome" /* KILL_CHROME */: {
       await chromeLib.killChrome();
       return `Chrome killed.`;
@@ -14578,6 +14619,7 @@ show_browser, hide_browser, browser_mode \u2192 Toggle headless/headed mode
 set_viewport, clear_viewport, get_viewport \u2192 Device emulation (mobile/tablet/desktop)
 clear_cookies \u2192 Clear all browser cookies
 set_profile, get_profile \u2192 Manage Chrome profiles
+start_screencast, stop_screencast, screencast_status \u2192 Record the tab as an MP4 video
 kill_chrome, restart_chrome \u2192 Chrome lifecycle control (recovery)
 
 ## Schema: 4 parameters
@@ -14662,6 +14704,16 @@ enable_console_logging: {"action": "enable_console_logging"}
 get_console_messages: {"action": "get_console_messages"} \u2192 all messages
 get_console_messages: {"action": "get_console_messages", "payload": {"since": 1716000000000}} \u2192 since epoch ms
 clear_console_messages: {"action": "clear_console_messages"}
+
+## Screencast Video Recording
+Record the active tab as a video (CDP Page.startScreencast frame stream \u2192 MP4).
+Useful for capturing agent browsing sessions for demos and showcases.
+start_screencast: {"action": "start_screencast"} \u2192 auto-named MP4 in session dir
+start_screencast: {"action": "start_screencast", "payload": {"path": "demo.mp4", "format": "jpeg", "quality": 80, "maxWidth": 1280, "maxHeight": 720, "everyNthFrame": 1}}
+screencast_status: {"action": "screencast_status"} \u2192 frames captured so far
+stop_screencast: {"action": "stop_screencast"} \u2192 assemble + save video, return path
+stop_screencast: {"action": "stop_screencast", "payload": {"path": "out.mp4", "keepFrames": true}}
+\u26A0\uFE0F Requires ffmpeg on PATH to produce an MP4. Without ffmpeg, raw frames are saved to a directory instead. Only a visible surface is captured \u2014 keep the tab focused (show_browser) for best results.
 
 ## Chrome Lifecycle (Recovery)
 kill_chrome: {"action": "kill_chrome"} \u2192 Kill Chrome process
