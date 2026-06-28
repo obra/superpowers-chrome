@@ -2,6 +2,18 @@
 
 All notable changes to the superpowers-chrome MCP project.
 
+## [3.1.0] - 2026-06-28 - Screencast video recording
+
+### Added
+- **Screencast recording** — capture the active tab as a video, for recording agent browsing sessions for demos and showcases. New module `skills/browsing/lib/screencast.js` subscribes to the CDP `Page.startScreencast` frame stream (mirroring the event-stream pattern in `console-logging.js`), writes each frame to disk, and acks it so Chrome keeps streaming.
+  - **MCP actions:** `start_screencast` (`payload={path?,format?,quality?,maxWidth?,maxHeight?,everyNthFrame?}`), `stop_screencast` (`payload={path?,keepFrames?}`), `screencast_status`. Because the MCP server caches one page session per tab for its lifetime, the frame listener registered by `start_screencast` is still live when a later `stop_screencast` call arrives — the two calls share in-process state.
+  - **CLI command:** `chrome-ws screencast <tab> <seconds> [file.mp4]` records in a single blocking call (the CLI spawns a fresh process per command, so it can't buffer frames across two invocations the way the MCP can).
+  - **Output:** on stop, frames are muxed into an MP4 via `ffmpeg` using the concat demuxer with per-frame durations derived from each frame's `metadata.timestamp`, so variable frame intervals keep real timing. Output defaults to a timestamped name in the auto-capture session dir; `payload.path` overrides (absolute used as-is, relative resolved against the session dir) — matching `screenshot`'s path resolution.
+  - **No hard dependency:** ffmpeg is best-effort, the same stance `screenshot.js` takes with sips/ImageMagick downscaling. When ffmpeg is absent (or muxing fails), the raw numbered frame sequence is left on disk and its directory is reported instead of an MP4.
+
+### Tests
+- `test/lib/screencast.test.mjs`: 12 unit tests covering `Page.startScreencast` option mapping, per-frame acking, on-disk frame buffering, status reporting, double-start/empty-stop guards, state cleanup, and the MP4-vs-frames output contract. Deterministic whether or not ffmpeg is installed.
+
 ## [3.0.2] - 2026-05-31 - IPv6-disabled loopback no longer blocks Chrome launch
 
 ### Fixed

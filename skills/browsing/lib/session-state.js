@@ -40,6 +40,11 @@ function createState({ host, port } = {}) {
     // Per-tab buffer of console messages for auto-capture.
     consoleMessages: new Map(),
 
+    // Active screencast recordings keyed by page-session sessionId. Each entry
+    // holds the frames directory, buffered frame metadata, and the CDP event
+    // unsubscribe handle. Spans the start_screencast → stop_screencast calls.
+    screencasts: new Map(),
+
     // Auto-capture session: lazily initialised on first capture.
     sessionDir: null,
     captureCounter: 0,
