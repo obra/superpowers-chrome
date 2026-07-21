@@ -151,11 +151,16 @@ function attachChromeProcess({ state, chromeHttp, getTabs, newTab }) {
     const platform = os.platform();
     const paths = chromePaths[platform] || [];
 
-    let chromePath = null;
-    for (const path of paths) {
-      if (existsSync(path)) {
-        chromePath = path;
-        break;
+    // CHROME_WS_BROWSER overrides auto-detection (documented in README.md /
+    // COMMANDLINE-USAGE.md, already honored by the chrome-ws CLI) — this path
+    // is what the MCP `use_browser` tool actually runs, so it needs the same.
+    let chromePath = process.env.CHROME_WS_BROWSER;
+    if (!chromePath) {
+      for (const path of paths) {
+        if (existsSync(path)) {
+          chromePath = path;
+          break;
+        }
       }
     }
 
