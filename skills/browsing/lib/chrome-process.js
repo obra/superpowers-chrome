@@ -154,7 +154,11 @@ function attachChromeProcess({ state, chromeHttp, getTabs, newTab }) {
     // CHROME_WS_BROWSER overrides auto-detection (documented in README.md /
     // COMMANDLINE-USAGE.md, already honored by the chrome-ws CLI) — this path
     // is what the MCP `use_browser` tool actually runs, so it needs the same.
+    // A stale or mistyped override would otherwise be spawned as-is, surfacing as
+    // an opaque "Chrome did not become ready" timeout, so fall back to
+    // auto-detection when the path does not exist.
     let chromePath = process.env.CHROME_WS_BROWSER;
+    if (chromePath && !existsSync(chromePath)) chromePath = null;
     if (!chromePath) {
       for (const path of paths) {
         if (existsSync(path)) {
