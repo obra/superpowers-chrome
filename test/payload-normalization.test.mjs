@@ -33,6 +33,7 @@ const {
   resolveStrictStructuredPayload,
   tryParseJsonObject,
   tryParseCoords,
+  describeUnusableScrollPayload,
 } = await import(path.join(__dirname, '..', 'mcp', 'dist', 'payload.js'));
 
 // ---------------------------------------------------------------------------
@@ -269,6 +270,37 @@ describe('scroll / drag_drop: shared JSON-object decoding primitive', () => {
 
   it('tryParseCoords returns undefined for a plain selector string (drag_drop target form)', () => {
     assert.equal(tryParseCoords('#target'), undefined);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// scroll: the empty-error-detail bug (obra's review nit on PR #43). A
+// string payload that's valid JSON but not a direction keyword or a
+// {deltaX,deltaY} object (e.g. '[1,2]', '5') used to reach the throw with
+// an EMPTY detail — the JSON.parse-and-discard probe in the old inline
+// code succeeded silently instead of explaining the shape mismatch, unlike
+// every other structured action's three-way (missing / unparsable /
+// wrong-shape) error split.
+// ---------------------------------------------------------------------------
+
+describe('scroll: honest detail when a string payload is JSON but not a usable shape', () => {
+  it('a JSON array ("[1,2]") is reported as valid JSON but not an object, not left blank', () => {
+    const detail = describeUnusableScrollPayload('[1,2]');
+    assert.notEqual(detail, '');
+    assert.match(detail, /valid JSON but not an object/);
+    assert.match(detail, /\[1,2\]/);
+  });
+
+  it('a bare JSON number ("5") is reported as valid JSON but not an object, not left blank', () => {
+    const detail = describeUnusableScrollPayload('5');
+    assert.notEqual(detail, '');
+    assert.match(detail, /valid JSON but not an object/);
+  });
+
+  it('a string that is not valid JSON at all is still reported as unparsable (unchanged case)', () => {
+    const detail = describeUnusableScrollPayload('not json at all {');
+    assert.notEqual(detail, '');
+    assert.match(detail, /could not be parsed as JSON/);
   });
 });
 

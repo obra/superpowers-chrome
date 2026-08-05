@@ -9,7 +9,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { join, dirname, resolve as resolvePath } from "path";
+import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import { createRequire } from "module";
 import {
@@ -18,13 +18,14 @@ import {
   tryParseJsonObject,
   tryParseCoords,
   truncateForError,
+  describeUnusableScrollPayload,
 } from "./payload.js";
 
 // Re-exported for tests (mcp/src/payload.ts has no side effects and is
 // also importable directly from mcp/dist/payload.js — this re-export just
 // makes the normalization helpers reachable from the bundled entry point
 // too, without requiring tests to boot a browser or an MCP server).
-export { parsePayload, resolveStrictStructuredPayload, tryParseJsonObject, tryParseCoords, PAYLOAD_SPECS } from "./payload.js";
+export { parsePayload, resolveStrictStructuredPayload, tryParseJsonObject, tryParseCoords, describeUnusableScrollPayload, PAYLOAD_SPECS } from "./payload.js";
 
 // Get the directory and import chrome-ws-lib
 const __filename = fileURLToPath(import.meta.url);
@@ -738,15 +739,8 @@ async function executeBrowserAction(params: UseBrowserInput): Promise<string> {
       } else if (typeof payload === 'string') {
         const parsedObj = tryParseJsonObject(payload);
         if (!parsedObj) {
-          const detail = (() => {
-            try {
-              JSON.parse(payload);
-              return '';
-            } catch {
-              return ` (payload was a string that could not be parsed as JSON: ${truncateForError(payload)})`;
-            }
-          })();
-          throw new Error(`scroll payload must be a direction (up/down/left/right) or {deltaX?,deltaY?,selector?}${detail}`);
+          const detail = describeUnusableScrollPayload(payload);
+          throw new Error(`scroll payload must be a direction (up/down/left/right) or {deltaX?,deltaY?,selector?} (${detail})`);
         }
         effectivePayload = parsedObj;
       }

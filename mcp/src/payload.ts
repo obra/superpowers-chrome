@@ -101,16 +101,6 @@ export function truncateForError(s: string, max = 80): string {
 }
 
 /**
- * True when `s`, trimmed, starts with '{' or '[' — i.e. looks like it was
- * meant to be JSON. Used only to decide whether to *attempt* a parse, not
- * to decide whether the result is valid.
- */
-export function looksJsonShaped(s: string): boolean {
-  const t = s.trim();
-  return t.startsWith('{') || t.startsWith('[');
-}
-
-/**
  * Attempt to JSON.parse a string payload into a plain object (never an
  * array — callers that want array results, like file_upload's file list,
  * handle that themselves). Returns undefined if the input isn't a string,
@@ -144,6 +134,26 @@ export function tryParseCoords(payload: unknown): { x: number; y: number } | und
     return { x: obj.x, y: obj.y };
   }
   return undefined;
+}
+
+/**
+ * Explain why a scroll payload string wasn't a usable {deltaX,deltaY}
+ * shape, once it's already failed the direction-keyword check and the
+ * tryParseJsonObject() decode. Two distinct causes, same as
+ * resolveStrictStructuredPayload's split:
+ *   (a) the string wasn't valid JSON at all
+ *   (b) it was valid JSON but not an object (e.g. '[1,2]', '5') —
+ *       previously reported with an EMPTY detail, silently dropping the
+ *       "payload parsed but wasn't the right shape" information that
+ *       every other structured action's error already gives.
+ */
+export function describeUnusableScrollPayload(payload: string): string {
+  try {
+    JSON.parse(payload);
+  } catch {
+    return `payload was a string that could not be parsed as JSON: ${truncateForError(payload)}`;
+  }
+  return `payload was valid JSON but not an object with deltaX/deltaY (or a recognized direction string): ${truncateForError(payload)}`;
 }
 
 /**
