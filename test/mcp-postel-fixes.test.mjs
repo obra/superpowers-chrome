@@ -63,16 +63,24 @@ describe('Fix 1: auto-restart banner in MCP source', () => {
 // ---------------------------------------------------------------------------
 
 describe('Fix 2a: attr accepts bare string payload', () => {
-  it('source handles typeof payload === "string" in ATTR case', () => {
-    // The fix adds a branch for bare string payloads in the ATTR handler.
-    // We look for the pattern in the source.
+  it("source routes ATTR through the shared parsePayload(payload, 'attr') normalizer", () => {
+    // As of the Postel's-law refactor (see mcp/src/payload.ts and
+    // test/payload-normalization.test.mjs for the behavioral coverage),
+    // the bare-string-is-the-attribute-name case is no longer a bespoke
+    // `typeof payload === 'string'` branch inline in the ATTR handler --
+    // it's the literal-wrap fallback of parsePayload's 'structured'
+    // handling for the 'attr' action, which also now accepts a
+    // JSON-encoded {selector,attr} string. This test just checks the
+    // handler is wired to that shared mechanism; the actual behavior
+    // (bare string AND JSON string AND native object) is covered
+    // behaviorally in test/payload-normalization.test.mjs.
     const attrSection = srcContent.slice(srcContent.indexOf('BrowserAction.ATTR'));
     const nextCaseIdx = attrSection.indexOf('case BrowserAction', 10);
     const attrHandler = nextCaseIdx > 0 ? attrSection.slice(0, nextCaseIdx) : attrSection.slice(0, 500);
     assert.ok(
-      attrHandler.includes("typeof payload === 'string'") ||
-      attrHandler.includes('typeof payload === "string"'),
-      'ATTR handler should check typeof payload === "string" for bare-string form'
+      attrHandler.includes("parsePayload(payload, 'attr')") ||
+      attrHandler.includes('parsePayload(payload, "attr")'),
+      "ATTR handler should call parsePayload(payload, 'attr')"
     );
   });
 });
@@ -82,14 +90,24 @@ describe('Fix 2a: attr accepts bare string payload', () => {
 // ---------------------------------------------------------------------------
 
 describe('Fix 2b: drag_drop accepts bare string and bare {x,y} payload', () => {
-  it('source handles bare string payload in DRAG_DROP case', () => {
+  it('source decodes a JSON-shaped string up front, then still accepts a bare string payload in DRAG_DROP case', () => {
+    // Since the Postel's-law refactor, DRAG_DROP first runs the payload
+    // through tryParseJsonObject() (shared with scroll's decoding) so a
+    // JSON-encoded {source,target} string works too; a bare (non-JSON)
+    // string still falls through unchanged to the original bare-string =
+    // target-selector handling. See test/payload-normalization.test.mjs
+    // for the behavioral coverage of both forms.
     const dragSection = srcContent.slice(srcContent.indexOf('BrowserAction.DRAG_DROP'));
     const nextCaseIdx = dragSection.indexOf('case BrowserAction', 10);
     const dragHandler = nextCaseIdx > 0 ? dragSection.slice(0, nextCaseIdx) : dragSection.slice(0, 600);
     assert.ok(
-      dragHandler.includes("typeof payload === 'string'") ||
-      dragHandler.includes('typeof payload === "string"'),
-      'DRAG_DROP handler should accept bare string payload'
+      dragHandler.includes('tryParseJsonObject(payload)'),
+      'DRAG_DROP handler should decode a JSON-shaped string via tryParseJsonObject'
+    );
+    assert.ok(
+      dragHandler.includes("typeof decodedPayload === 'string'") ||
+      dragHandler.includes('typeof decodedPayload === "string"'),
+      'DRAG_DROP handler should still accept a bare string payload (as decodedPayload)'
     );
   });
 
@@ -176,26 +194,41 @@ describe('Fix 5: tab_index is Postel-accepted as implicit switch_tab', () => {
 // ---------------------------------------------------------------------------
 
 describe('Fix 6: extract treats bare-string payload as format, not selector', () => {
-  it('EXTRACT handler calls parsePayload with defaultKey="format"', () => {
-    // Earlier code used parsePayload(payload, 'selector') which silently
-    // routed payload="html" into selector="html" and left format="text"
-    // (the default). Regression caught by scenario 02 step 3.
+  // Earlier code used parsePayload(payload, 'selector') which silently
+  // routed payload="html" into selector="html" and left format="text"
+  // (the default). Regression caught by scenario 02 step 3.
+  //
+  // Since the Postel's-law refactor, parsePayload(payload, action) takes
+  // the action name and looks up its defaultKey from the PAYLOAD_SPECS
+  // table in mcp/src/payload.ts, rather than taking the field name
+  // directly. The two things this test actually needs to guard — (a) the
+  // EXTRACT handler is wired to the 'extract' spec, not a leftover
+  // 'selector' one, and (b) that spec's defaultKey really is 'format', not
+  // 'selector' — are checked separately below.
+  it('EXTRACT handler calls parsePayload(payload, \'extract\')', () => {
     // Match against the executable line specifically (no comment lines start
     // with `const p = parsePayload`).
     assert.match(
       srcContent,
-      /const p = parsePayload\(payload,\s*['"]format['"]\)/,
-      'EXTRACT handler should use parsePayload(payload, "format") on the executable line'
+      /const p = parsePayload\(payload,\s*['"]extract['"]\)/,
+      'EXTRACT handler should use parsePayload(payload, "extract") on the executable line'
     );
   });
 
-  it('bundle reflects the parsePayload("format") form', () => {
+  it("PAYLOAD_SPECS['extract'].defaultKey is 'format', not 'selector'", async () => {
+    const { PAYLOAD_SPECS } = await import(
+      path.join(__dirname, '..', 'mcp', 'dist', 'payload.js')
+    );
+    assert.equal(PAYLOAD_SPECS.extract.defaultKey, 'format');
+  });
+
+  it('bundle reflects the parsePayload(payload, "extract") call', () => {
     // The bundle goes to users; make sure the source fix actually shipped.
     // The bundle has no comments, so a plain substring search is enough.
     assert.ok(
-      bundleSrc.includes('parsePayload(payload, "format")') ||
-      bundleSrc.includes("parsePayload(payload, 'format')"),
-      'bundle should include the parsePayload(payload, "format") call'
+      bundleSrc.includes('parsePayload(payload, "extract")') ||
+      bundleSrc.includes("parsePayload(payload, 'extract')"),
+      'bundle should include the parsePayload(payload, "extract") call'
     );
   });
 });
