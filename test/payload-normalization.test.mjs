@@ -34,6 +34,8 @@ const {
   tryParseJsonObject,
   tryParseCoords,
   describeUnusableScrollPayload,
+  resolveConsoleSince,
+  tryParseIntegerValue,
 } = await import(path.join(__dirname, '..', 'mcp', 'dist', 'payload.js'));
 
 // ---------------------------------------------------------------------------
@@ -301,6 +303,142 @@ describe('scroll: honest detail when a string payload is JSON but not a usable s
     const detail = describeUnusableScrollPayload('not json at all {');
     assert.notEqual(detail, '');
     assert.match(detail, /could not be parsed as JSON/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// get_console_messages: a bare epoch-ms string must work like {since:n}.
+// The Postel gap this PR exists to close, and the same honesty class as the
+// misleading error: a payload of '1785900000000' used to be wrapped as the
+// STRING {since:'1785900000000'}, fail the handler's typeof-number check,
+// and be dropped without a word — returning every message as if no filter
+// had been asked for.
+// ---------------------------------------------------------------------------
+
+describe('get_console_messages: bare numeric string since (the Postel gap)', () => {
+  it('a bare epoch-ms string is coerced to a NUMBER under `since`', () => {
+    const p = parsePayload('1785900000000', 'get_console_messages');
+    assert.equal(p.since, 1785900000000);
+    assert.equal(typeof p.since, 'number');
+  });
+
+  it('a bare epoch-ms string resolves identically to the {since:n} object form', () => {
+    const fromString = parsePayload('1785900000000', 'get_console_messages');
+    const fromObject = parsePayload({ since: 1785900000000 }, 'get_console_messages');
+    assert.deepEqual(fromString, fromObject);
+    assert.deepEqual(
+      resolveConsoleSince(fromString.since),
+      resolveConsoleSince(fromObject.since)
+    );
+    assert.equal(resolveConsoleSince(fromString.since).ms, 1785900000000);
+  });
+
+  it('the JSON-stringified object form still works (unchanged)', () => {
+    const p = parsePayload('{"since":1785900000000}', 'get_console_messages');
+    assert.equal(resolveConsoleSince(p.since).ms, 1785900000000);
+  });
+
+  it('a non-numeric bare string is an explicit error, never silently ignored', () => {
+    const p = parsePayload('yesterday', 'get_console_messages');
+    // Not coerced: stays the literal string under the defaultKey...
+    assert.equal(p.since, 'yesterday');
+    // ...and resolving it reports the problem instead of dropping the filter.
+    const resolved = resolveConsoleSince(p.since);
+    assert.equal(resolved.ms, undefined);
+    assert.match(resolved.errorDetail, /epoch-ms timestamp/);
+    assert.match(resolved.errorDetail, /yesterday/);
+  });
+
+  it('an absent payload means "no filter" — no error, no since', () => {
+    for (const absent of [undefined, null]) {
+      const p = parsePayload(absent, 'get_console_messages');
+      assert.deepEqual(p, {});
+      const resolved = resolveConsoleSince(p.since);
+      assert.equal(resolved.ms, undefined);
+      assert.equal(resolved.errorDetail, undefined);
+    }
+  });
+
+  it('a numeric string inside the object form is accepted too', () => {
+    const p = parsePayload({ since: '1785900000000' }, 'get_console_messages');
+    assert.equal(resolveConsoleSince(p.since).ms, 1785900000000);
+  });
+
+  it('a number since keeps its historical leniency (floats pass through)', () => {
+    assert.equal(resolveConsoleSince(1785900000000).ms, 1785900000000);
+    assert.equal(resolveConsoleSince(1.5).ms, 1.5);
+  });
+
+  it('non-timestamp since values are reported, not swallowed', () => {
+    for (const bad of ['1.5', '1e3', 'now', '', true, {}, Number.NaN, Number.POSITIVE_INFINITY]) {
+      const resolved = resolveConsoleSince(bad);
+      assert.equal(resolved.ms, undefined, `${JSON.stringify(bad)} should not resolve`);
+      assert.ok(resolved.errorDetail, `${JSON.stringify(bad)} should report an errorDetail`);
+    }
+  });
+
+  it('the numeric coercion is declared per-action, not hardcoded at a call site', () => {
+    assert.equal(PAYLOAD_SPECS.get_console_messages.numericDefaultKey, true);
+    // switch_tab's bare string is ALSO legitimately a url/title substring,
+    // so it must NOT be coerced here — it resolves numeric-vs-substring itself.
+    assert.notEqual(PAYLOAD_SPECS.switch_tab.numericDefaultKey, true);
+    assert.equal(parsePayload('1', 'switch_tab').tab, '1');
+  });
+
+  it('tryParseIntegerValue accepts integers/digit-strings and rejects the rest', () => {
+    assert.equal(tryParseIntegerValue(42), 42);
+    assert.equal(tryParseIntegerValue('42'), 42);
+    assert.equal(tryParseIntegerValue('-42'), -42);
+    assert.equal(tryParseIntegerValue(' 42 '), 42);
+    for (const bad of ['1.5', '1e3', '0x10', '', ' ', 'abc', '4 2', 1.5, Number.NaN, null, undefined, {}]) {
+      assert.equal(tryParseIntegerValue(bad), undefined, `${JSON.stringify(bad)} should be rejected`);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Idiom consolidation: parsePayload's structured path and tryParseJsonObject
+// are now built on ONE shared decode primitive. These pin the behavior that
+// had to survive the consolidation unchanged — including the one difference
+// that was deliberately KEPT (see the trimBeforeParse note on parsePayload):
+// a JSON string prefixed by something JSON.parse rejects but trim() removes
+// (BOM, non-breaking space) still literal-wraps for parsePayload while
+// tryParseJsonObject still parses it.
+// ---------------------------------------------------------------------------
+
+describe('consolidated JSON decode: behavior preserved on both sides', () => {
+  it('structured object strings still parse to the object', () => {
+    assert.deepEqual(parsePayload('{"url":"https://x.com"}', 'navigate'), { url: 'https://x.com' });
+  });
+
+  it('structured array strings still wrap under defaultKey (file_upload)', () => {
+    assert.deepEqual(parsePayload('["/a.txt","/b.txt"]', 'file_upload'), { files: ['/a.txt', '/b.txt'] });
+  });
+
+  it('a CSS attribute selector still literal-wraps, never parses as an array', () => {
+    assert.deepEqual(parsePayload('[data-foo]', 'await_element'), { selector: '[data-foo]' });
+  });
+
+  it('malformed JSON still literal-wraps rather than throwing', () => {
+    assert.deepEqual(parsePayload('{"url":', 'navigate'), { url: '{"url":' });
+  });
+
+  it('a parsed non-object primitive still literal-wraps (non-numeric specs)', () => {
+    assert.deepEqual(parsePayload('5', 'navigate'), { url: '5' });
+    assert.deepEqual(parsePayload('true', 'navigate'), { url: 'true' });
+  });
+
+  it('scalar actions are still never parsed', () => {
+    assert.deepEqual(parsePayload('{"a":1}', 'eval'), { expression: '{"a":1}' });
+  });
+
+  it('the one deliberately-kept difference: trim-sensitive JSON prefixes', () => {
+    const bom = '\uFEFF{"url":"https://x.com"}';
+    // parsePayload parses the RAW string, which JSON.parse rejects for a BOM,
+    // so it literal-wraps exactly as it always has.
+    assert.deepEqual(parsePayload(bom, 'navigate'), { url: bom });
+    // tryParseJsonObject trims first, so it parses — also exactly as before.
+    assert.deepEqual(tryParseJsonObject(bom), { url: 'https://x.com' });
   });
 });
 

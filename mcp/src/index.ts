@@ -19,13 +19,14 @@ import {
   tryParseCoords,
   truncateForError,
   describeUnusableScrollPayload,
+  resolveConsoleSince,
 } from "./payload.js";
 
 // Re-exported for tests (mcp/src/payload.ts has no side effects and is
 // also importable directly from mcp/dist/payload.js — this re-export just
 // makes the normalization helpers reachable from the bundled entry point
 // too, without requiring tests to boot a browser or an MCP server).
-export { parsePayload, resolveStrictStructuredPayload, tryParseJsonObject, tryParseCoords, describeUnusableScrollPayload, PAYLOAD_SPECS } from "./payload.js";
+export { parsePayload, resolveStrictStructuredPayload, tryParseJsonObject, tryParseCoords, describeUnusableScrollPayload, resolveConsoleSince, tryParseIntegerValue, PAYLOAD_SPECS } from "./payload.js";
 
 // Get the directory and import chrome-ws-lib
 const __filename = fileURLToPath(import.meta.url);
@@ -122,7 +123,7 @@ enum BrowserAction {
   CLEAR_COOKIES = "clear_cookies",
   // Console logging capture (Runtime.consoleAPICalled stream)
   ENABLE_CONSOLE_LOGGING = "enable_console_logging",
-  GET_CONSOLE_MESSAGES = "get_console_messages", // payload={since?} (epoch ms)
+  GET_CONSOLE_MESSAGES = "get_console_messages", // payload={since?} (epoch ms; also accepted as a bare epoch-ms number/string)
   CLEAR_CONSOLE_MESSAGES = "clear_console_messages",
   // Chrome lifecycle control
   KILL_CHROME = "kill_chrome",
@@ -160,7 +161,7 @@ const UseBrowserParams = {
       "drag_drop=target selector string, {x,y} target coords, or {source,target}, " +
       "mouse_move={x,y,steps?,fromX?,fromY?} (no bare-string form), " +
       "file_upload=path string, JSON array-of-paths string, or {selector,files:[...]}, " +
-      "get_console_messages={since:epochMs}, " +
+      "get_console_messages={since:epochMs} or a bare epoch-ms timestamp, " +
       "switch_tab=tab index/url-substring/title-substring). " +
       "See action='help' for per-action payload shapes."
     ),
@@ -893,7 +894,17 @@ async function executeBrowserAction(params: UseBrowserInput): Promise<string> {
 
     case BrowserAction.GET_CONSOLE_MESSAGES: {
       const p = parsePayload(payload, 'get_console_messages');
-      const since = (typeof p.since === 'number') ? new Date(p.since) : null;
+      // A bare numeric string payload ('1785900000000') is coerced to a
+      // number by parsePayload via the spec's numericDefaultKey, so it
+      // behaves exactly like {since:1785900000000}. A `since` that was
+      // supplied but can't be a timestamp is now an honest error instead of
+      // being silently ignored (which returned every message, as if no
+      // filter had been requested).
+      const resolvedSince = resolveConsoleSince(p.since);
+      if (resolvedSince.errorDetail) {
+        throw new Error(`get_console_messages payload must be an epoch-ms timestamp or {since:epochMs} (${resolvedSince.errorDetail})`);
+      }
+      const since = (resolvedSince.ms !== undefined) ? new Date(resolvedSince.ms) : null;
       const messages = await chromeLib.getConsoleMessages(tabIndex, since);
       if (!messages || messages.length === 0) {
         return `No console messages captured. (Call enable_console_logging first if you haven't.)`;
@@ -1066,6 +1077,7 @@ When two or more MCP servers run on the same host with the default profile, the 
 enable_console_logging: {"action": "enable_console_logging"}
 get_console_messages: {"action": "get_console_messages"} → all messages
 get_console_messages: {"action": "get_console_messages", "payload": {"since": 1716000000000}} → since epoch ms
+get_console_messages: {"action": "get_console_messages", "payload": "1716000000000"} → same, bare epoch-ms string
 clear_console_messages: {"action": "clear_console_messages"}
 
 ## Chrome Lifecycle (Recovery)
