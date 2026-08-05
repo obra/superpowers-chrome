@@ -2,6 +2,15 @@
 
 All notable changes to the superpowers-chrome MCP project.
 
+## [3.0.4] - 2026-08-05 - Dependency security updates (all 21 Dependabot alerts)
+
+### Security
+- `@modelcontextprotocol/sdk` 1.20.1 → 1.30.0, closing three advisories against the bundled SDK: DNS rebinding protection not enabled by default, cross-client data leak via shared server/transport reuse, and a ReDoS. The two transport-level issues only affect HTTP transports (this server is stdio-only), but the SDK is baked into the shipped `mcp/dist/index.js`, so the vulnerable code was distributed regardless of reachability.
+- Transitive express-stack deps refreshed with the SDK, closing eight DoS-class advisories: `body-parser` 2.3.0, `qs` 6.15.3, `ajv` 8.20.0, `path-to-regexp` 8.4.2.
+- `undici` 7.25.0 → 7.29.0 (root devDependency via `jsdom`, eleven advisories; never shipped to users — recorded here for the audit trail).
+
+No package.json ranges changed; every update was within existing semver. Bundle rebuilt (574KB → 776KB from ten SDK minor versions); 496/496 tests pass.
+
 ## [3.0.3] - 2026-08-05 - Stringified JSON payloads work for structured actions
 
 ### Fixed
