@@ -13917,6 +13917,14 @@ function tryParseCoords(payload) {
   }
   return void 0;
 }
+function describeUnusableScrollPayload(payload) {
+  try {
+    JSON.parse(payload);
+  } catch {
+    return `payload was a string that could not be parsed as JSON: ${truncateForError(payload)}`;
+  }
+  return `payload was valid JSON but not an object with deltaX/deltaY (or a recognized direction string): ${truncateForError(payload)}`;
+}
 function parsePayload(payload, action) {
   const spec = PAYLOAD_SPECS[action];
   if (!spec) {
@@ -14457,15 +14465,8 @@ Result: ${evalResult.result}`);
       } else if (typeof payload === "string") {
         const parsedObj = tryParseJsonObject(payload);
         if (!parsedObj) {
-          const detail = (() => {
-            try {
-              JSON.parse(payload);
-              return "";
-            } catch {
-              return ` (payload was a string that could not be parsed as JSON: ${truncateForError(payload)})`;
-            }
-          })();
-          throw new Error(`scroll payload must be a direction (up/down/left/right) or {deltaX?,deltaY?,selector?}${detail}`);
+          const detail = describeUnusableScrollPayload(payload);
+          throw new Error(`scroll payload must be a direction (up/down/left/right) or {deltaX?,deltaY?,selector?} (${detail})`);
         }
         effectivePayload = parsedObj;
       }
@@ -14889,6 +14890,7 @@ main().catch((error) => {
 });
 export {
   PAYLOAD_SPECS,
+  describeUnusableScrollPayload,
   parsePayload,
   resolveStrictStructuredPayload,
   tryParseCoords,
