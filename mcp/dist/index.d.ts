@@ -5,5 +5,5 @@
  * Provides a single `use_browser` tool with multiple actions for browser control.
  * Auto-starts Chrome when needed. Uses chrome-ws-lib for direct CDP access.
  */
-export {};
+export { parsePayload, resolveStrictStructuredPayload, tryParseJsonObject, tryParseCoords, PAYLOAD_SPECS } from "./payload.js";
 //# sourceMappingURL=index.d.ts.map
