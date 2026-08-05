@@ -1,6 +1,6 @@
 {
   "name": "superpowers-chrome-mcp",
-  "version": "3.0.2",
+  "version": "3.0.3",
   "description": "Ultra-lightweight Chrome DevTools Protocol MCP server with auto-capture",
   "type": "module",
   "main": "mcp/dist/index.js",

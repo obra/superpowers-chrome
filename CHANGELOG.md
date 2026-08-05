@@ -2,6 +2,17 @@
 
 All notable changes to the superpowers-chrome MCP project.
 
+## [3.0.3] - 2026-08-05 - Stringified JSON payloads work for structured actions
+
+### Fixed
+- `use_browser` payload handling (PR #43): a JSON-stringified payload for `set_viewport` or `mouse_move` (e.g. `payload: '{"width":390,"height":844}'`, common when client tooling always `JSON.stringify`s arguments) was wrapped literally instead of parsed, then failed with a misleading "requires payload with width and height" even though both fields were supplied. Payload normalization is now extracted into `mcp/src/payload.ts`, driven by a per-action `PAYLOAD_SPECS` table: `'structured'` actions accept an equivalent JSON-encoded string anywhere an object works, while `'scalar'` actions (`eval`, `type`, `await_text`, `select`) are never JSON-parsed — `eval` given `[1, 2]` stays a JS array literal, not a parsed JSON array.
+- `set_viewport`/`mouse_move` errors now distinguish no-payload / unparseable-JSON / parsed-but-wrong-fields instead of one generic "missing" message; `scroll`'s valid-JSON-but-wrong-shape case (`'[1,2]'`, `'5'`) reports an honest detail instead of an empty one (previously it silently scrolled by 0).
+- `get_console_messages` accepts a bare epoch-ms payload (`payload: "1785900000000"` works like `{since: 1785900000000}`); a supplied `since` that can't be a timestamp is now an explicit error instead of silently returning every message unfiltered.
+- `scroll`/`drag_drop`'s hand-rolled `JSON.parse` fallbacks folded into shared `tryParseJsonObject`/`tryParseCoords` primitives; `scroll`'s string-derived deltas now get the same `typeof number` validation as its object path. CSS attribute selectors like `[data-foo]` are never misparsed as JSON (guarded by prefix gate + tests).
+
+### Tests
+- New `test/payload-normalization.test.mjs` (61 tests) executes the compiled normalization logic directly — behavioral coverage replacing the source-text-grep style that let this bug ship. Covers the stringified/native equivalence for every structured action, the never-parse guarantee for every scalar action, the `since` coercion matrix, and the BOM/whitespace edge semantics preserved through the decode consolidation.
+
 ## [3.0.2] - 2026-05-31 - IPv6-disabled loopback no longer blocks Chrome launch
 
 ### Fixed
