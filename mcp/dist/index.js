@@ -13891,24 +13891,51 @@ var PAYLOAD_SPECS = {
   set_profile: { kind: "structured", defaultKey: "name" },
   file_upload: { kind: "structured", defaultKey: "files" },
   keyboard_press: { kind: "structured", defaultKey: "key" },
-  get_console_messages: { kind: "structured", defaultKey: "since" },
+  get_console_messages: { kind: "structured", defaultKey: "since", numericDefaultKey: true },
   switch_tab: { kind: "structured", defaultKey: "tab" }
 };
 function truncateForError(s, max = 80) {
   return s.length > max ? `${s.slice(0, max)}\u2026` : s;
 }
-function tryParseJsonObject(payload) {
+function tryParseJsonShape(payload, opener, trimBeforeParse) {
   if (typeof payload !== "string") return void 0;
   const trimmed = payload.trim();
-  if (!trimmed.startsWith("{")) return void 0;
+  if (!trimmed.startsWith(opener)) return void 0;
+  let parsed;
   try {
-    const parsed = JSON.parse(trimmed);
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-      return parsed;
-    }
+    parsed = JSON.parse(trimBeforeParse ? trimmed : payload);
   } catch {
+    return void 0;
   }
-  return void 0;
+  if (!parsed || typeof parsed !== "object") return void 0;
+  const wantArray = opener === "[";
+  return Array.isArray(parsed) === wantArray ? parsed : void 0;
+}
+function tryParseJsonObject(payload) {
+  return tryParseJsonShape(payload, "{", true);
+}
+function tryParseIntegerValue(value) {
+  if (typeof value === "number") {
+    return Number.isSafeInteger(value) ? value : void 0;
+  }
+  if (typeof value !== "string") return void 0;
+  const trimmed = value.trim();
+  if (!/^-?\d+$/.test(trimmed)) return void 0;
+  const parsed = Number(trimmed);
+  return Number.isSafeInteger(parsed) ? parsed : void 0;
+}
+function resolveConsoleSince(value) {
+  if (value === void 0 || value === null) return {};
+  if (typeof value === "number") {
+    if (Number.isFinite(value)) return { ms: value };
+    return { errorDetail: `since must be an epoch-ms timestamp, got the non-finite number ${String(value)}` };
+  }
+  const asInteger = tryParseIntegerValue(value);
+  if (asInteger !== void 0) return { ms: asInteger };
+  const shown = typeof value === "string" ? truncateForError(value) : typeof value;
+  return {
+    errorDetail: `since must be an epoch-ms timestamp (a number, or a string of digits), got ${shown}`
+  };
 }
 function tryParseCoords(payload) {
   const obj = tryParseJsonObject(payload);
@@ -13935,15 +13962,13 @@ function parsePayload(payload, action) {
   if (spec.kind === "scalar") {
     return { [spec.defaultKey]: payload };
   }
-  try {
-    const parsed = JSON.parse(payload);
-    if (parsed && typeof parsed === "object") {
-      if (Array.isArray(parsed)) {
-        return { [spec.defaultKey]: parsed };
-      }
-      return parsed;
-    }
-  } catch {
+  const asObject = tryParseJsonShape(payload, "{", false);
+  if (asObject) return asObject;
+  const asArray = tryParseJsonShape(payload, "[", false);
+  if (asArray) return { [spec.defaultKey]: asArray };
+  if (spec.numericDefaultKey) {
+    const asInteger = tryParseIntegerValue(payload);
+    if (asInteger !== void 0) return { [spec.defaultKey]: asInteger };
   }
   return { [spec.defaultKey]: payload };
 }
@@ -14047,7 +14072,7 @@ var UseBrowserParams = {
     "CSS or XPath selector \u2014 what to act on. Null/omitted for actions that don't target an element (navigate, eval, list_tabs, etc.). XPath must start with / or //. dialog::accept and dialog::dismiss are special selectors for handling open dialogs."
   ),
   payload: external_exports.union([external_exports.string(), external_exports.record(external_exports.any())]).optional().describe(
-    `Extra data for the action. Both a plain object and an equivalent JSON-encoded string are accepted for every structured shape below (e.g. set_viewport accepts either {width:390,height:844} or '{"width":390,"height":844}'). Literal string for code/free-text actions, taken as-is and never JSON-parsed even if it happens to look like JSON (eval=JS source, type=literal text, await_text=literal text to wait for, select=literal option value). String or object for simple cases (navigate=URL, set_profile=name, new_tab=URL, attr=attribute name or {selector,attr}). Structured object (or its JSON-string equivalent) for the rest: set_viewport={width,height,mobile?} (no bare-string form), keyboard_press=key string or {key,modifiers:{shift?,ctrl?,alt?,meta?}}, extract=format string or {format:'text'|'html'|'markdown',selector?}, screenshot=path string or {path,fullpage?,selector?}, scroll=direction string or {deltaX?,deltaY?,selector?}, drag_drop=target selector string, {x,y} target coords, or {source,target}, mouse_move={x,y,steps?,fromX?,fromY?} (no bare-string form), file_upload=path string, JSON array-of-paths string, or {selector,files:[...]}, get_console_messages={since:epochMs}, switch_tab=tab index/url-substring/title-substring). See action='help' for per-action payload shapes.`
+    `Extra data for the action. Both a plain object and an equivalent JSON-encoded string are accepted for every structured shape below (e.g. set_viewport accepts either {width:390,height:844} or '{"width":390,"height":844}'). Literal string for code/free-text actions, taken as-is and never JSON-parsed even if it happens to look like JSON (eval=JS source, type=literal text, await_text=literal text to wait for, select=literal option value). String or object for simple cases (navigate=URL, set_profile=name, new_tab=URL, attr=attribute name or {selector,attr}). Structured object (or its JSON-string equivalent) for the rest: set_viewport={width,height,mobile?} (no bare-string form), keyboard_press=key string or {key,modifiers:{shift?,ctrl?,alt?,meta?}}, extract=format string or {format:'text'|'html'|'markdown',selector?}, screenshot=path string or {path,fullpage?,selector?}, scroll=direction string or {deltaX?,deltaY?,selector?}, drag_drop=target selector string, {x,y} target coords, or {source,target}, mouse_move={x,y,steps?,fromX?,fromY?} (no bare-string form), file_upload=path string, JSON array-of-paths string, or {selector,files:[...]}, get_console_messages={since:epochMs} or a bare epoch-ms timestamp, switch_tab=tab index/url-substring/title-substring). See action='help' for per-action payload shapes.`
   ),
   timeout: external_exports.number().int().min(0).max(6e4).optional().describe("Timeout in ms for await_element / await_text actions."),
   // Postel-accept legacy parameter. Many agents emit `tab_index` from prior
@@ -14594,7 +14619,11 @@ Result: ${evalResult.result}`);
     }
     case "get_console_messages" /* GET_CONSOLE_MESSAGES */: {
       const p = parsePayload(payload, "get_console_messages");
-      const since = typeof p.since === "number" ? new Date(p.since) : null;
+      const resolvedSince = resolveConsoleSince(p.since);
+      if (resolvedSince.errorDetail) {
+        throw new Error(`get_console_messages payload must be an epoch-ms timestamp or {since:epochMs} (${resolvedSince.errorDetail})`);
+      }
+      const since = resolvedSince.ms !== void 0 ? new Date(resolvedSince.ms) : null;
       const messages = await chromeLib.getConsoleMessages(tabIndex, since);
       if (!messages || messages.length === 0) {
         return `No console messages captured. (Call enable_console_logging first if you haven't.)`;
@@ -14749,6 +14778,7 @@ When two or more MCP servers run on the same host with the default profile, the 
 enable_console_logging: {"action": "enable_console_logging"}
 get_console_messages: {"action": "get_console_messages"} \u2192 all messages
 get_console_messages: {"action": "get_console_messages", "payload": {"since": 1716000000000}} \u2192 since epoch ms
+get_console_messages: {"action": "get_console_messages", "payload": "1716000000000"} \u2192 same, bare epoch-ms string
 clear_console_messages: {"action": "clear_console_messages"}
 
 ## Chrome Lifecycle (Recovery)
@@ -14892,8 +14922,10 @@ export {
   PAYLOAD_SPECS,
   describeUnusableScrollPayload,
   parsePayload,
+  resolveConsoleSince,
   resolveStrictStructuredPayload,
   tryParseCoords,
+  tryParseIntegerValue,
   tryParseJsonObject
 };
 /*! Bundled license information:

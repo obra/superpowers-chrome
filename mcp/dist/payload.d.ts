@@ -32,6 +32,21 @@ export interface PayloadSpec {
     kind: PayloadKind;
     /** The object key a bare (non-JSON, or not-an-object) string payload is wrapped under. */
     defaultKey: string;
+    /**
+     * True when defaultKey is semantically an INTEGER, so a bare numeric
+     * string payload should be wrapped as a number rather than as the raw
+     * string. Declared here (not special-cased in the action's handler) so
+     * the per-action shape table stays the single source of truth for how a
+     * string payload is interpreted.
+     *
+     * Only get_console_messages sets this: its `since` is an epoch-ms
+     * timestamp, and a caller passing the bare string '1785900000000' plainly
+     * means that instant. Deliberately NOT set for switch_tab, whose bare
+     * string is ALSO legitimately a URL/title substring — it resolves numeric
+     * vs. substring itself, and coercing here would change which branch a
+     * numeric-looking string takes.
+     */
+    numericDefaultKey?: boolean;
 }
 /**
  * Per-action payload shape declaration — the source of truth Postel's-law
@@ -88,6 +103,38 @@ export declare function truncateForError(s: string, max?: number): string;
  */
 export declare function tryParseJsonObject(payload: unknown): Record<string, any> | undefined;
 /**
+ * True-integer parse for values that are semantically integers (epoch-ms
+ * timestamps). Accepts a number that is already an integer, or a string of
+ * plain digits with an optional leading '-'. Deliberately rejects floats
+ * ('1.5'), exponent notation ('1e3'), hex, whitespace-only, empty strings
+ * and anything outside the safe-integer range: an epoch-ms value is an
+ * integer, and a caller who sent something else more likely has a bug than
+ * an intent, so the caller reports it rather than guessing.
+ */
+export declare function tryParseIntegerValue(value: unknown): number | undefined;
+/**
+ * Resolve get_console_messages' `since` filter to epoch ms.
+ *
+ * Three outcomes, mirroring resolveStrictStructuredPayload's honest split:
+ *   - absent (no payload / no `since`) -> {} : return every message, the
+ *     long-standing default.
+ *   - usable -> { ms } : a number, or a bare/embedded integer string, so
+ *     payload '1785900000000' behaves exactly like {since:1785900000000}.
+ *   - unusable -> { errorDetail } : `since` WAS supplied but can't be a
+ *     timestamp ('yesterday', '1.5', true, {}). Previously these were
+ *     silently dropped and every message was returned as if no filter had
+ *     been asked for — the same quiet-wrong-answer class as the misleading
+ *     "missing fields" error this module was written to fix.
+ *
+ * Non-integer FINITE numbers are accepted (and floored by Date) rather than
+ * rejected, preserving the historical `typeof since === 'number'` behavior
+ * for callers already passing one.
+ */
+export declare function resolveConsoleSince(value: unknown): {
+    ms?: number;
+    errorDetail?: string;
+};
+/**
  * Attempt to JSON.parse a string into {x,y} coordinates. Returns undefined
  * if it isn't a string, isn't valid JSON, or doesn't have numeric x/y.
  */
@@ -114,13 +161,26 @@ export declare function describeUnusableScrollPayload(payload: string): string;
  *  - object payload -> returned as-is (unchanged; this path never had a bug)
  *  - string payload, kind 'scalar' -> always `{ [defaultKey]: payload }`,
  *    literally, never parsed — this is the code/free-text exemption.
- *  - string payload, kind 'structured' -> JSON.parse attempted. A plain
- *    object result is returned directly. An array result is wrapped under
- *    defaultKey (file_upload's files list). Anything else (parse failure,
- *    or a parsed primitive like a bare number/boolean/null) falls back to
- *    the literal wrap under defaultKey, so an existing bare-string call
- *    (a URL, a selector, a key name, a file path, ...) keeps working
- *    exactly as before.
+ *  - string payload, kind 'structured' -> decoded via the shared
+ *    tryParseJsonShape() primitive. A plain object result is returned
+ *    directly. An array result is wrapped under defaultKey (file_upload's
+ *    files list). For a spec with numericDefaultKey, a bare integer string
+ *    is wrapped as a NUMBER under defaultKey (get_console_messages'
+ *    epoch-ms `since`). Anything else (parse failure, or a parsed primitive
+ *    like a bare boolean/null) falls back to the literal wrap under
+ *    defaultKey, so an existing bare-string call (a URL, a selector, a key
+ *    name, a file path, ...) keeps working exactly as before.
+ *
+ * The object and array decodes go through the same primitive that backs
+ * tryParseJsonObject(), so there is one implementation of "maybe-JSON
+ * string -> shape" rather than the two idioms this module used to carry.
+ * The primitive is called with trimBeforeParse=false here, preserving this
+ * path's historical raw-JSON.parse semantics: a JSON string prefixed with
+ * something JSON.parse rejects but String.trim() removes (a BOM, a
+ * non-breaking space) has always fallen back to the literal wrap for these
+ * actions, and it still does. That single flag is the ONE difference left
+ * between the two callers, and it is deliberate — collapsing it would
+ * change behavior for whichever side lost its policy.
  */
 export declare function parsePayload(payload: string | Record<string, any> | undefined | null, action: keyof typeof PAYLOAD_SPECS): Record<string, any>;
 /**

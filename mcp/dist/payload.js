@@ -82,12 +82,57 @@ export const PAYLOAD_SPECS = {
     set_profile: { kind: 'structured', defaultKey: 'name' },
     file_upload: { kind: 'structured', defaultKey: 'files' },
     keyboard_press: { kind: 'structured', defaultKey: 'key' },
-    get_console_messages: { kind: 'structured', defaultKey: 'since' },
+    get_console_messages: { kind: 'structured', defaultKey: 'since', numericDefaultKey: true },
     switch_tab: { kind: 'structured', defaultKey: 'tab' },
 };
 /** Truncate a string for embedding in an error message. */
 export function truncateForError(s, max = 80) {
     return s.length > max ? `${s.slice(0, max)}…` : s;
+}
+/**
+ * The one JSON-decode primitive every string-payload path is built on.
+ *
+ * Both callers want the same thing — "parse this string IF it's JSON of the
+ * shape I expect, otherwise tell me nothing and let me keep the literal
+ * string" — so the mechanics (prefix gate, try/catch, shape check) live
+ * here once instead of being spelled out twice.
+ *
+ * `opener` is the character a JSON value of the wanted shape must start
+ * with ('{' for an object, '[' for an array). Gating on it keeps CSS
+ * attribute selectors like `[data-foo]` (start with '[', NOT valid JSON)
+ * and other bare strings from even being offered to JSON.parse.
+ *
+ * `trimBeforeParse` exists because the two historical idioms differed here
+ * and collapsing them would change behavior (see the comment on
+ * parsePayload's structured path):
+ *   - true  -> the trimmed string is parsed (tryParseJsonObject's long-
+ *              standing behavior, used by scroll/drag_drop).
+ *   - false -> the raw string is parsed, so leading characters JSON.parse
+ *              itself rejects (a BOM, a non-breaking space — JSON.parse
+ *              only accepts space/\t/\n/\r as whitespace) keep failing to
+ *              parse and fall back to the literal wrap, exactly as
+ *              parsePayload has always done.
+ * The prefix gate always looks at the trimmed string; only what gets handed
+ * to JSON.parse differs.
+ */
+function tryParseJsonShape(payload, opener, trimBeforeParse) {
+    if (typeof payload !== 'string')
+        return undefined;
+    const trimmed = payload.trim();
+    if (!trimmed.startsWith(opener))
+        return undefined;
+    let parsed;
+    try {
+        parsed = JSON.parse(trimBeforeParse ? trimmed : payload);
+    }
+    catch {
+        // Not valid JSON — caller keeps the original literal string.
+        return undefined;
+    }
+    if (!parsed || typeof parsed !== 'object')
+        return undefined;
+    const wantArray = opener === '[';
+    return Array.isArray(parsed) === wantArray ? parsed : undefined;
 }
 /**
  * Attempt to JSON.parse a string payload into a plain object (never an
@@ -99,21 +144,62 @@ export function truncateForError(s, max = 80) {
  * with '[' and are NOT valid JSON) are never at risk of misinterpretation.
  */
 export function tryParseJsonObject(payload) {
-    if (typeof payload !== 'string')
-        return undefined;
-    const trimmed = payload.trim();
-    if (!trimmed.startsWith('{'))
-        return undefined;
-    try {
-        const parsed = JSON.parse(trimmed);
-        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-            return parsed;
-        }
+    return tryParseJsonShape(payload, '{', true);
+}
+/**
+ * True-integer parse for values that are semantically integers (epoch-ms
+ * timestamps). Accepts a number that is already an integer, or a string of
+ * plain digits with an optional leading '-'. Deliberately rejects floats
+ * ('1.5'), exponent notation ('1e3'), hex, whitespace-only, empty strings
+ * and anything outside the safe-integer range: an epoch-ms value is an
+ * integer, and a caller who sent something else more likely has a bug than
+ * an intent, so the caller reports it rather than guessing.
+ */
+export function tryParseIntegerValue(value) {
+    if (typeof value === 'number') {
+        return Number.isSafeInteger(value) ? value : undefined;
     }
-    catch {
-        // Not valid JSON — caller keeps the original literal string.
+    if (typeof value !== 'string')
+        return undefined;
+    const trimmed = value.trim();
+    if (!/^-?\d+$/.test(trimmed))
+        return undefined;
+    const parsed = Number(trimmed);
+    return Number.isSafeInteger(parsed) ? parsed : undefined;
+}
+/**
+ * Resolve get_console_messages' `since` filter to epoch ms.
+ *
+ * Three outcomes, mirroring resolveStrictStructuredPayload's honest split:
+ *   - absent (no payload / no `since`) -> {} : return every message, the
+ *     long-standing default.
+ *   - usable -> { ms } : a number, or a bare/embedded integer string, so
+ *     payload '1785900000000' behaves exactly like {since:1785900000000}.
+ *   - unusable -> { errorDetail } : `since` WAS supplied but can't be a
+ *     timestamp ('yesterday', '1.5', true, {}). Previously these were
+ *     silently dropped and every message was returned as if no filter had
+ *     been asked for — the same quiet-wrong-answer class as the misleading
+ *     "missing fields" error this module was written to fix.
+ *
+ * Non-integer FINITE numbers are accepted (and floored by Date) rather than
+ * rejected, preserving the historical `typeof since === 'number'` behavior
+ * for callers already passing one.
+ */
+export function resolveConsoleSince(value) {
+    if (value === undefined || value === null)
+        return {};
+    if (typeof value === 'number') {
+        if (Number.isFinite(value))
+            return { ms: value };
+        return { errorDetail: `since must be an epoch-ms timestamp, got the non-finite number ${String(value)}` };
     }
-    return undefined;
+    const asInteger = tryParseIntegerValue(value);
+    if (asInteger !== undefined)
+        return { ms: asInteger };
+    const shown = typeof value === 'string' ? truncateForError(value) : typeof value;
+    return {
+        errorDetail: `since must be an epoch-ms timestamp (a number, or a string of digits), got ${shown}`,
+    };
 }
 /**
  * Attempt to JSON.parse a string into {x,y} coordinates. Returns undefined
@@ -153,13 +239,26 @@ export function describeUnusableScrollPayload(payload) {
  *  - object payload -> returned as-is (unchanged; this path never had a bug)
  *  - string payload, kind 'scalar' -> always `{ [defaultKey]: payload }`,
  *    literally, never parsed — this is the code/free-text exemption.
- *  - string payload, kind 'structured' -> JSON.parse attempted. A plain
- *    object result is returned directly. An array result is wrapped under
- *    defaultKey (file_upload's files list). Anything else (parse failure,
- *    or a parsed primitive like a bare number/boolean/null) falls back to
- *    the literal wrap under defaultKey, so an existing bare-string call
- *    (a URL, a selector, a key name, a file path, ...) keeps working
- *    exactly as before.
+ *  - string payload, kind 'structured' -> decoded via the shared
+ *    tryParseJsonShape() primitive. A plain object result is returned
+ *    directly. An array result is wrapped under defaultKey (file_upload's
+ *    files list). For a spec with numericDefaultKey, a bare integer string
+ *    is wrapped as a NUMBER under defaultKey (get_console_messages'
+ *    epoch-ms `since`). Anything else (parse failure, or a parsed primitive
+ *    like a bare boolean/null) falls back to the literal wrap under
+ *    defaultKey, so an existing bare-string call (a URL, a selector, a key
+ *    name, a file path, ...) keeps working exactly as before.
+ *
+ * The object and array decodes go through the same primitive that backs
+ * tryParseJsonObject(), so there is one implementation of "maybe-JSON
+ * string -> shape" rather than the two idioms this module used to carry.
+ * The primitive is called with trimBeforeParse=false here, preserving this
+ * path's historical raw-JSON.parse semantics: a JSON string prefixed with
+ * something JSON.parse rejects but String.trim() removes (a BOM, a
+ * non-breaking space) has always fallen back to the literal wrap for these
+ * actions, and it still does. That single flag is the ONE difference left
+ * between the two callers, and it is deliberate — collapsing it would
+ * change behavior for whichever side lost its policy.
  */
 export function parsePayload(payload, action) {
     const spec = PAYLOAD_SPECS[action];
@@ -174,18 +273,16 @@ export function parsePayload(payload, action) {
         return { [spec.defaultKey]: payload };
     }
     // kind === 'structured'
-    try {
-        const parsed = JSON.parse(payload);
-        if (parsed && typeof parsed === 'object') {
-            if (Array.isArray(parsed)) {
-                return { [spec.defaultKey]: parsed };
-            }
-            return parsed;
-        }
-    }
-    catch {
-        // Not valid JSON — literal wrap below preserves the action's existing
-        // bare-string meaning (a URL, a selector, a keyword, a name, ...).
+    const asObject = tryParseJsonShape(payload, '{', false);
+    if (asObject)
+        return asObject;
+    const asArray = tryParseJsonShape(payload, '[', false);
+    if (asArray)
+        return { [spec.defaultKey]: asArray };
+    if (spec.numericDefaultKey) {
+        const asInteger = tryParseIntegerValue(payload);
+        if (asInteger !== undefined)
+            return { [spec.defaultKey]: asInteger };
     }
     return { [spec.defaultKey]: payload };
 }
