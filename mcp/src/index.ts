@@ -12,6 +12,21 @@ import { z } from "zod";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import { createRequire } from "module";
+import {
+  parsePayload,
+  resolveStrictStructuredPayload,
+  tryParseJsonObject,
+  tryParseCoords,
+  truncateForError,
+  describeUnusableScrollPayload,
+  resolveConsoleSince,
+} from "./payload.js";
+
+// Re-exported for tests (mcp/src/payload.ts has no side effects and is
+// also importable directly from mcp/dist/payload.js — this re-export just
+// makes the normalization helpers reachable from the bundled entry point
+// too, without requiring tests to boot a browser or an MCP server).
+export { parsePayload, resolveStrictStructuredPayload, tryParseJsonObject, tryParseCoords, describeUnusableScrollPayload, resolveConsoleSince, tryParseIntegerValue, PAYLOAD_SPECS } from "./payload.js";
 
 // Get the directory and import chrome-ws-lib
 const __filename = fileURLToPath(import.meta.url);
@@ -70,15 +85,15 @@ enum BrowserAction {
   BACK = "back",                // history.back() — go back one entry
   FORWARD = "forward",          // history.forward() — go forward one entry
   CLICK = "click",              // Uses CDP mouse events (works with React); selector=CSS/XPath
-  TYPE = "type",                // Uses CDP humanType; selector=target (optional), payload=text or {text}
-  EXTRACT = "extract",          // selector=CSS/XPath (optional), payload={format?}
-  SCREENSHOT = "screenshot",    // selector=CSS/XPath element (optional), payload={path,fullpage?}
-  EVAL = "eval",                // payload=JS string
-  SELECT = "select",            // selector=CSS/XPath, payload={value,index?} object
-  ATTR = "attr",                // selector=CSS/XPath, payload={attr} object
-  AWAIT_ELEMENT = "await_element", // selector=CSS/XPath to wait for
-  AWAIT_TEXT = "await_text",    // payload={text,timeout?} or text string; timeout= top-level ms
-  NEW_TAB = "new_tab",          // payload=URL string (optional)
+  TYPE = "type",                // Uses CDP humanType; selector=target (optional), payload=literal text to type (never JSON-parsed)
+  EXTRACT = "extract",          // selector=CSS/XPath (optional), payload=format keyword string or {format?,selector?} (also accepted as a JSON-encoded string)
+  SCREENSHOT = "screenshot",    // selector=CSS/XPath element (optional), payload=path string or {path,fullpage?,selector?} (also accepted as a JSON-encoded string)
+  EVAL = "eval",                // payload=JS source string, taken literally (never JSON-parsed, even if it looks like JSON e.g. "[1,2]")
+  SELECT = "select",            // selector=CSS/XPath, payload=literal option value/text, or {selector,value} (value never JSON-parsed as a whole; a JSON array string is still accepted for multi-select)
+  ATTR = "attr",                // selector=CSS/XPath, payload=bare attribute name string, or {selector,attr} (also accepted as a JSON-encoded string)
+  AWAIT_ELEMENT = "await_element", // selector=CSS/XPath to wait for; payload={selector?,timeout?} also accepted as a JSON-encoded string
+  AWAIT_TEXT = "await_text",    // payload=literal text to wait for (never JSON-parsed); timeout= top-level ms
+  NEW_TAB = "new_tab",          // payload=URL string (optional; also accepted as a JSON-encoded {url} string)
   CLOSE_TAB = "close_tab",      // closes activeTab
   LIST_TABS = "list_tabs",
   // Tab management
@@ -86,29 +101,29 @@ enum BrowserAction {
   SHOW_BROWSER = "show_browser",
   HIDE_BROWSER = "hide_browser",
   BROWSER_MODE = "browser_mode",
-  SET_PROFILE = "set_profile",  // payload=profile name string
+  SET_PROFILE = "set_profile",  // payload=profile name string (also accepted as a JSON-encoded {name} string)
   GET_PROFILE = "get_profile",
   HELP = "help",
   // Mouse actions (CDP-level, bypasses synthetic event restrictions)
   HOVER = "hover",              // payload=selector string
-  DRAG_DROP = "drag_drop",      // payload={source,target} where target is selector or {x,y}
-  MOUSE_MOVE = "mouse_move",    // payload={x,y,steps?,fromX?,fromY?} object
-  SCROLL = "scroll",            // payload={deltaX?,deltaY?,selector?} or direction string
+  DRAG_DROP = "drag_drop",      // payload=target selector string, {x,y} target coords, or {source,target} (source/target form also accepted as a JSON-encoded string)
+  MOUSE_MOVE = "mouse_move",    // payload={x,y,steps?,fromX?,fromY?} — object or an equivalent JSON string; no bare-string form (there's no single string that means "x and y")
+  SCROLL = "scroll",            // payload=direction string (up/down/left/right) or {deltaX?,deltaY?,selector?} (also accepted as a JSON-encoded string)
   DOUBLE_CLICK = "double_click", // payload=selector string
   RIGHT_CLICK = "right_click",  // payload=selector string
   // File upload (DOM.setFileInputFiles)
-  FILE_UPLOAD = "file_upload",  // payload={selector,files} object
+  FILE_UPLOAD = "file_upload",  // payload=single file path string, JSON array-of-paths string, or {selector,files}
   // Special keys (Tab, Enter, Escape, Arrow keys, etc.)
-  KEYBOARD_PRESS = "keyboard_press", // payload={key,modifiers?} or key string
+  KEYBOARD_PRESS = "keyboard_press", // payload={key,modifiers?} or key string (also accepted as a JSON-encoded string)
   // Viewport control (mobile testing, responsive design)
-  SET_VIEWPORT = "set_viewport", // payload={width,height,deviceScaleFactor?,mobile?} object
+  SET_VIEWPORT = "set_viewport", // payload={width,height,deviceScaleFactor?,mobile?} — object or an equivalent JSON string; no bare-string form (there's no single string that means "width and height")
   CLEAR_VIEWPORT = "clear_viewport",
   GET_VIEWPORT = "get_viewport",
   // Cookie management
   CLEAR_COOKIES = "clear_cookies",
   // Console logging capture (Runtime.consoleAPICalled stream)
   ENABLE_CONSOLE_LOGGING = "enable_console_logging",
-  GET_CONSOLE_MESSAGES = "get_console_messages", // payload={since?} (epoch ms)
+  GET_CONSOLE_MESSAGES = "get_console_messages", // payload={since?} (epoch ms; also accepted as a bare epoch-ms number/string)
   CLEAR_CONSOLE_MESSAGES = "clear_console_messages",
   // Chrome lifecycle control
   KILL_CHROME = "kill_chrome",
@@ -127,16 +142,26 @@ const UseBrowserParams = {
     ),
   payload: z.union([z.string(), z.record(z.any())]).optional()
     .describe(
-      "Extra data for the action. String for simple cases (navigate=URL, type=text, eval=JS, " +
-      "keyboard_press=key, set_profile=name, new_tab=URL). " +
-      "Object for structured cases (set_viewport={width,height,mobile?}, " +
-      "keyboard_press={key,modifiers:{shift?,ctrl?,alt?,meta?}}, " +
-      "extract={format:'text'|'html'|'markdown'}, screenshot={path?,fullpage?}, " +
-      "scroll={deltaX?,deltaY?} or direction string, " +
-      "drag_drop={x,y} or selector string for target, " +
-      "mouse_move={x,y,steps?,fromX?,fromY?}, " +
-      "file_upload={files:[...]}, get_console_messages={since:epochMs}, " +
-      "await_text=text string or {text,timeout?}, " +
+      "Extra data for the action. Both a plain object and an equivalent " +
+      "JSON-encoded string are accepted for every structured shape below " +
+      "(e.g. set_viewport accepts either {width:390,height:844} or " +
+      "'{\"width\":390,\"height\":844}'). " +
+      "Literal string for code/free-text actions, taken as-is and never " +
+      "JSON-parsed even if it happens to look like JSON (eval=JS source, " +
+      "type=literal text, await_text=literal text to wait for, " +
+      "select=literal option value). " +
+      "String or object for simple cases (navigate=URL, set_profile=name, " +
+      "new_tab=URL, attr=attribute name or {selector,attr}). " +
+      "Structured object (or its JSON-string equivalent) for the rest: " +
+      "set_viewport={width,height,mobile?} (no bare-string form), " +
+      "keyboard_press=key string or {key,modifiers:{shift?,ctrl?,alt?,meta?}}, " +
+      "extract=format string or {format:'text'|'html'|'markdown',selector?}, " +
+      "screenshot=path string or {path,fullpage?,selector?}, " +
+      "scroll=direction string or {deltaX?,deltaY?,selector?}, " +
+      "drag_drop=target selector string, {x,y} target coords, or {source,target}, " +
+      "mouse_move={x,y,steps?,fromX?,fromY?} (no bare-string form), " +
+      "file_upload=path string, JSON array-of-paths string, or {selector,files:[...]}, " +
+      "get_console_messages={since:epochMs} or a bare epoch-ms timestamp, " +
       "switch_tab=tab index/url-substring/title-substring). " +
       "See action='help' for per-action payload shapes."
     ),
@@ -155,18 +180,6 @@ const UseBrowserParams = {
 };
 
 type UseBrowserInput = z.infer<ReturnType<typeof z.object<typeof UseBrowserParams>>>;
-
-/**
- * Helper: coerce payload to an object.
- * If payload is a string, wraps it as { [defaultKey]: payload }.
- * If payload is already an object, returns it directly.
- * If payload is absent, returns {}.
- */
-function parsePayload(payload: string | Record<string, any> | undefined, defaultKey: string): Record<string, any> {
-  if (payload === undefined || payload === null) return {};
-  if (typeof payload === 'string') return { [defaultKey]: payload };
-  return payload as Record<string, any>;
-}
 
 /**
  * Ensure Chrome is running, auto-start if needed.
@@ -296,7 +309,7 @@ async function executeBrowserAction(params: UseBrowserInput): Promise<string> {
 
   switch (params.action) {
     case BrowserAction.NAVIGATE: {
-      const p = parsePayload(payload, 'url');
+      const p = parsePayload(payload, 'navigate');
       const url = p.url;
       if (!url || typeof url !== 'string') {
         throw new Error("navigate requires payload with URL");
@@ -362,7 +375,7 @@ async function executeBrowserAction(params: UseBrowserInput): Promise<string> {
     }
 
     case BrowserAction.TYPE: {
-      const p = parsePayload(payload, 'text');
+      const p = parsePayload(payload, 'type');
       const text = p.text;
       const selector = topSelector ?? p.selector ?? null;
       if (!text || typeof text !== 'string') {
@@ -393,7 +406,7 @@ async function executeBrowserAction(params: UseBrowserInput): Promise<string> {
       // versions used parsePayload(payload, 'selector') here, which bound
       // payload="html" to selector="html" and silently degraded to
       // format="text" (scenario 02 step 3 regression).
-      const p = parsePayload(payload, 'format');
+      const p = parsePayload(payload, 'extract');
       const selector = topSelector ?? (typeof p.selector === 'string' ? p.selector : undefined);
       const format = typeof p.format === 'string' ? p.format : 'text';
 
@@ -440,7 +453,7 @@ async function executeBrowserAction(params: UseBrowserInput): Promise<string> {
     }
 
     case BrowserAction.SCREENSHOT: {
-      const p = parsePayload(payload, 'path');
+      const p = parsePayload(payload, 'screenshot');
       const filepath = p.path;
       if (!filepath || typeof filepath !== 'string') {
         throw new Error("screenshot requires payload with filename (string or {path,fullpage?})");
@@ -452,7 +465,7 @@ async function executeBrowserAction(params: UseBrowserInput): Promise<string> {
     }
 
     case BrowserAction.SELECT: {
-      const p = parsePayload(payload, 'value');
+      const p = parsePayload(payload, 'select');
       const selector = topSelector ?? p.selector;
       if (!selector || typeof selector !== 'string') {
         throw new Error("select requires selector (top-level or payload.selector)");
@@ -479,7 +492,7 @@ async function executeBrowserAction(params: UseBrowserInput): Promise<string> {
     }
 
     case BrowserAction.EVAL: {
-      const p = parsePayload(payload, 'expression');
+      const p = parsePayload(payload, 'eval');
       const expression = p.expression;
       if (!expression || typeof expression !== 'string') {
         throw new Error("eval requires payload with JavaScript code");
@@ -489,20 +502,15 @@ async function executeBrowserAction(params: UseBrowserInput): Promise<string> {
     }
 
     case BrowserAction.ATTR: {
-      // Liberal accept: payload may be a bare string (attribute name) or
-      // an object {attr: "name"} (and optionally {selector, attr}).
-      // Selector always comes from top-level param when payload is a bare string.
-      let selector: string | null;
-      let attr: string;
-      if (typeof payload === 'string') {
-        // Bare string form: payload = attribute name, selector = top-level param
-        selector = topSelector;
-        attr = payload;
-      } else {
-        const p = parsePayload(payload, 'selector');
-        selector = topSelector ?? p.selector;
-        attr = p.attr;
-      }
+      // Liberal accept: payload may be a bare string (attribute name), a
+      // JSON-encoded string of the object form, or a native object
+      // {attr: "name"} (and optionally {selector, attr}). parsePayload's
+      // 'structured' handling for 'attr' gives us all three: a plain
+      // string that isn't valid JSON falls back to the historical
+      // bare-string-is-the-attribute-name behavior via defaultKey='attr'.
+      const p = parsePayload(payload, 'attr');
+      const selector: string | null = topSelector ?? p.selector ?? null;
+      const attr: string = p.attr;
       if (!selector || typeof selector !== 'string') {
         throw new Error("attr requires selector (top-level or payload.selector)");
       }
@@ -514,7 +522,7 @@ async function executeBrowserAction(params: UseBrowserInput): Promise<string> {
     }
 
     case BrowserAction.AWAIT_ELEMENT: {
-      const p = parsePayload(payload, 'selector');
+      const p = parsePayload(payload, 'await_element');
       const selector = topSelector ?? (typeof p.selector === 'string' ? p.selector : null);
       if (!selector || typeof selector !== 'string') {
         throw new Error("await_element requires selector (top-level or payload)");
@@ -525,7 +533,7 @@ async function executeBrowserAction(params: UseBrowserInput): Promise<string> {
     }
 
     case BrowserAction.AWAIT_TEXT: {
-      const p = parsePayload(payload, 'text');
+      const p = parsePayload(payload, 'await_text');
       const text = p.text;
       if (!text || typeof text !== 'string') {
         throw new Error("await_text requires payload with text to wait for");
@@ -536,7 +544,7 @@ async function executeBrowserAction(params: UseBrowserInput): Promise<string> {
     }
 
     case BrowserAction.NEW_TAB: {
-      const p = parsePayload(payload, 'url');
+      const p = parsePayload(payload, 'new_tab');
       const newTabUrl = (typeof p.url === 'string' && p.url.trim()) ? p.url.trim() : undefined;
       const newTabResult = await chromeLib.newTab(newTabUrl);
       activeTab = 0; // New tab becomes the first tab (Chrome inserts at front)
@@ -576,7 +584,7 @@ async function executeBrowserAction(params: UseBrowserInput): Promise<string> {
     }
 
     case BrowserAction.SET_PROFILE: {
-      const p = parsePayload(payload, 'name');
+      const p = parsePayload(payload, 'set_profile');
       const profileName = p.name;
       if (!profileName || typeof profileName !== 'string') {
         throw new Error("set_profile requires payload with profile name");
@@ -613,47 +621,52 @@ async function executeBrowserAction(params: UseBrowserInput): Promise<string> {
       //   2. {x: N, y: N}           → coords-only object = target coords; source = top-level selector
       //   3. {source: "...", target: ...} → full form
       //   4. {target: ...}          → target only; source = top-level selector (legacy form)
+      //   3'/4' as a JSON-encoded string, e.g. '{"source":"#a","target":"#b"}'
+      //
+      // A JSON-shaped string (starts with '{') is decoded up front so forms
+      // 3 & 4 below see a real object either way — the same Postel's-law
+      // fold-in as scroll. A bare selector string (form 1) is deliberately
+      // NOT decoded here: CSS attribute selectors like `[data-foo]` start
+      // with '[' and are not valid JSON, and even a selector that started
+      // with '{' would fail JSON.parse and fall through unchanged, so
+      // there's no real ambiguity — tryParseJsonObject only ever overrides
+      // the literal-string interpretation when the string actually is a
+      // parseable JSON object.
+      const decodedPayload = tryParseJsonObject(payload) ?? payload;
+
       let source: string;
       let dragTarget: string | { x: number; y: number };
 
-      if (typeof payload === 'string') {
+      if (typeof decodedPayload === 'string') {
         // Form 1: bare string = target selector
         source = topSelector ?? '';
-        dragTarget = payload;
+        dragTarget = decodedPayload;
       } else if (
-        typeof payload === 'object' && payload !== null &&
-        (payload as Record<string, any>).x !== undefined &&
-        (payload as Record<string, any>).y !== undefined &&
-        (payload as Record<string, any>).target === undefined &&
-        (payload as Record<string, any>).source === undefined
+        typeof decodedPayload === 'object' && decodedPayload !== null &&
+        (decodedPayload as Record<string, any>).x !== undefined &&
+        (decodedPayload as Record<string, any>).y !== undefined &&
+        (decodedPayload as Record<string, any>).target === undefined &&
+        (decodedPayload as Record<string, any>).source === undefined
       ) {
         // Form 2: bare coords object = target coords
-        const p = payload as Record<string, any>;
+        const p = decodedPayload as Record<string, any>;
         source = topSelector ?? '';
         dragTarget = { x: p.x as number, y: p.y as number };
       } else {
         // Forms 3 & 4: object with source/target fields
-        const p = parsePayload(payload, 'source');
+        const p = decodedPayload as Record<string, any>;
         source = topSelector ?? p.source;
         const targetRaw = p.target;
         if (targetRaw === undefined) {
           throw new Error("drag_drop requires payload.target (target selector or {x,y})");
         }
-        // Parse target: coordinates object or selector string
+        // Parse target: coordinates object, a JSON-encoded coordinates
+        // string, or a plain selector string.
         if (typeof targetRaw === 'object' && targetRaw.x !== undefined && targetRaw.y !== undefined) {
           dragTarget = { x: targetRaw.x, y: targetRaw.y };
         } else if (typeof targetRaw === 'string') {
-          // Try to parse as JSON coordinates
-          try {
-            const parsed = JSON.parse(targetRaw);
-            if (typeof parsed === 'object' && parsed.x !== undefined && parsed.y !== undefined) {
-              dragTarget = { x: parsed.x, y: parsed.y };
-            } else {
-              dragTarget = targetRaw;
-            }
-          } catch {
-            dragTarget = targetRaw;
-          }
+          const coords = tryParseCoords(targetRaw);
+          dragTarget = coords ?? targetRaw;
         } else {
           throw new Error("drag_drop payload.target must be a selector string or {x,y} coordinates");
         }
@@ -675,9 +688,20 @@ async function executeBrowserAction(params: UseBrowserInput): Promise<string> {
     }
 
     case BrowserAction.MOUSE_MOVE: {
-      const p = parsePayload(payload, 'coords');
+      // mouse_move has no legitimate bare-string form (there's no sensible
+      // single string that means "x and y"), so it uses the strict
+      // resolver: a string payload MUST be parseable JSON, and a failure
+      // to parse is reported honestly instead of being silently wrapped
+      // under a throwaway key and then failing the field check below with
+      // a misleading "missing" message.
+      const shapeHint = '{x,y} or {x,y,steps?,fromX?,fromY?}';
+      const resolved = resolveStrictStructuredPayload(payload);
+      if (resolved.errorDetail) {
+        throw new Error(`mouse_move requires payload with x and y coordinates: ${shapeHint} (${resolved.errorDetail})`);
+      }
+      const p = resolved.object!;
       if (typeof p.x !== 'number' || typeof p.y !== 'number') {
-        throw new Error("mouse_move requires payload with x and y coordinates: {x,y} or {x,y,steps?,fromX?,fromY?}");
+        throw new Error(`mouse_move requires payload with x and y coordinates: ${shapeHint} (payload parsed but x/y are missing or not numbers: ${truncateForError(JSON.stringify(p))})`);
       }
       const moveResult = await chromeLib.mouseMove(tabIndex, p.x, p.y, {
         steps: p.steps,
@@ -693,37 +717,47 @@ async function executeBrowserAction(params: UseBrowserInput): Promise<string> {
       // Top-level selector wins over payload.selector
       if (topSelector) scrollOpts.selector = topSelector;
 
-      if (typeof payload === 'object' && payload !== null) {
-        const p = payload as Record<string, any>;
-        if (!topSelector && typeof p.selector === 'string') scrollOpts.selector = p.selector;
-        if (typeof p.deltaX === 'number') scrollOpts.deltaX = p.deltaX;
-        if (typeof p.deltaY === 'number') scrollOpts.deltaY = p.deltaY;
-        if (!('deltaX' in p) && !('deltaY' in p)) {
-          throw new Error("scroll object payload requires at least deltaX or deltaY");
-        }
+      const scrollAmount = 300;
+      const SCROLL_DIRECTIONS: Record<string, { deltaX?: number; deltaY?: number }> = {
+        down: { deltaY: scrollAmount },
+        up: { deltaY: -scrollAmount },
+        right: { deltaX: scrollAmount },
+        left: { deltaX: -scrollAmount },
+      };
+
+      // A direction keyword (form 1) is checked first: it's a fixed, known
+      // vocabulary that never overlaps with JSON syntax. Anything else that
+      // is a string is then decoded via the same tryParseJsonObject()
+      // primitive drag_drop uses, folding scroll's previously hand-rolled
+      // (and untyped — it did `parsed.deltaX || 0` without checking the
+      // parsed value was actually a number) JSON.parse fallback into the
+      // same mechanism and the same typeof-number validation as the native
+      // object payload path below.
+      let effectivePayload: string | Record<string, any> | undefined = payload;
+      const direction = typeof payload === 'string' ? SCROLL_DIRECTIONS[payload.toLowerCase().trim()] : undefined;
+      if (direction) {
+        Object.assign(scrollOpts, direction);
       } else if (typeof payload === 'string') {
-        // Direction string or JSON
-        const scrollAmount = 300;
-        const payloadLower = payload.toLowerCase().trim();
-        if (payloadLower === 'down') {
-          scrollOpts.deltaY = scrollAmount;
-        } else if (payloadLower === 'up') {
-          scrollOpts.deltaY = -scrollAmount;
-        } else if (payloadLower === 'right') {
-          scrollOpts.deltaX = scrollAmount;
-        } else if (payloadLower === 'left') {
-          scrollOpts.deltaX = -scrollAmount;
-        } else {
-          try {
-            const parsed = JSON.parse(payload);
-            scrollOpts.deltaX = parsed.deltaX || 0;
-            scrollOpts.deltaY = parsed.deltaY || 0;
-          } catch {
-            throw new Error("scroll payload must be a direction (up/down/left/right) or {deltaX?,deltaY?,selector?}");
-          }
+        const parsedObj = tryParseJsonObject(payload);
+        if (!parsedObj) {
+          const detail = describeUnusableScrollPayload(payload);
+          throw new Error(`scroll payload must be a direction (up/down/left/right) or {deltaX?,deltaY?,selector?} (${detail})`);
         }
-      } else {
-        throw new Error("scroll requires payload: direction string or {deltaX?,deltaY?,selector?}");
+        effectivePayload = parsedObj;
+      }
+
+      if (!direction) {
+        if (typeof effectivePayload === 'object' && effectivePayload !== null) {
+          const p = effectivePayload as Record<string, any>;
+          if (!topSelector && typeof p.selector === 'string') scrollOpts.selector = p.selector;
+          if (typeof p.deltaX === 'number') scrollOpts.deltaX = p.deltaX;
+          if (typeof p.deltaY === 'number') scrollOpts.deltaY = p.deltaY;
+          if (!('deltaX' in p) && !('deltaY' in p)) {
+            throw new Error("scroll object payload requires at least deltaX or deltaY");
+          }
+        } else {
+          throw new Error("scroll requires payload: direction string or {deltaX?,deltaY?,selector?}");
+        }
       }
 
       const scrollResult = await chromeLib.scroll(tabIndex, scrollOpts);
@@ -760,7 +794,7 @@ async function executeBrowserAction(params: UseBrowserInput): Promise<string> {
     }
 
     case BrowserAction.FILE_UPLOAD: {
-      const p = parsePayload(payload, 'files');
+      const p = parsePayload(payload, 'file_upload');
       const selector = topSelector ?? p.selector;
       if (!selector || typeof selector !== 'string') {
         throw new Error("file_upload requires selector (top-level or payload.selector) for the file input element");
@@ -792,7 +826,7 @@ async function executeBrowserAction(params: UseBrowserInput): Promise<string> {
     }
 
     case BrowserAction.KEYBOARD_PRESS: {
-      const p = parsePayload(payload, 'key');
+      const p = parsePayload(payload, 'keyboard_press');
       const key = p.key;
       if (!key || typeof key !== 'string') {
         throw new Error("keyboard_press requires payload with key name (e.g., Tab, Enter, Escape) — string or {key,modifiers?}");
@@ -817,11 +851,22 @@ async function executeBrowserAction(params: UseBrowserInput): Promise<string> {
     }
 
     case BrowserAction.SET_VIEWPORT: {
-      const p = parsePayload(payload, 'viewport');
-      // Accept payload as the viewport object directly, or {width,...} at top level
-      const vp = (p.width !== undefined) ? p : (p.viewport || {});
-      if (!vp.width || !vp.height) {
-        throw new Error("set_viewport requires payload with width and height: {width,height,deviceScaleFactor?,mobile?}");
+      // set_viewport has no legitimate bare-string form (there's no
+      // sensible single string that means "width and height"), so it uses
+      // the strict resolver: a string payload MUST be parseable JSON. This
+      // is the exact bug this fix addresses — set_viewport given
+      // '{"width":390,"height":844}' used to fall through parsePayload's
+      // literal-wrap fallback, land in the (p.viewport || {}) branch
+      // below with an empty object, and throw "requires payload with width
+      // and height" even though both were supplied, just JSON-encoded.
+      const shapeHint = '{width,height,deviceScaleFactor?,mobile?}';
+      const resolved = resolveStrictStructuredPayload(payload);
+      if (resolved.errorDetail) {
+        throw new Error(`set_viewport requires payload with width and height: ${shapeHint} (${resolved.errorDetail})`);
+      }
+      const vp = resolved.object!;
+      if (typeof vp.width !== 'number' || typeof vp.height !== 'number') {
+        throw new Error(`set_viewport requires payload with width and height: ${shapeHint} (payload parsed but width/height are missing or not numbers: ${truncateForError(JSON.stringify(vp))})`);
       }
       const viewportResult = await chromeLib.setViewport(tabIndex, vp);
       return `Viewport set: ${viewportResult.width}x${viewportResult.height} CSS pixels (scale: ${viewportResult.deviceScaleFactor}, mobile: ${viewportResult.mobile}, touch: ${viewportResult.touch})`;
@@ -848,8 +893,18 @@ async function executeBrowserAction(params: UseBrowserInput): Promise<string> {
     }
 
     case BrowserAction.GET_CONSOLE_MESSAGES: {
-      const p = parsePayload(payload, 'since');
-      const since = (typeof p.since === 'number') ? new Date(p.since) : null;
+      const p = parsePayload(payload, 'get_console_messages');
+      // A bare numeric string payload ('1785900000000') is coerced to a
+      // number by parsePayload via the spec's numericDefaultKey, so it
+      // behaves exactly like {since:1785900000000}. A `since` that was
+      // supplied but can't be a timestamp is now an honest error instead of
+      // being silently ignored (which returned every message, as if no
+      // filter had been requested).
+      const resolvedSince = resolveConsoleSince(p.since);
+      if (resolvedSince.errorDetail) {
+        throw new Error(`get_console_messages payload must be an epoch-ms timestamp or {since:epochMs} (${resolvedSince.errorDetail})`);
+      }
+      const since = (resolvedSince.ms !== undefined) ? new Date(resolvedSince.ms) : null;
       const messages = await chromeLib.getConsoleMessages(tabIndex, since);
       if (!messages || messages.length === 0) {
         return `No console messages captured. (Call enable_console_logging first if you haven't.)`;
@@ -885,7 +940,7 @@ async function executeBrowserAction(params: UseBrowserInput): Promise<string> {
         type: tab.type
       }));
 
-      const p = parsePayload(payload, 'tab');
+      const p = parsePayload(payload, 'switch_tab');
       const target = p.tab ?? payload;
 
       let matchedIndex: number = -1;
@@ -944,8 +999,9 @@ kill_chrome, restart_chrome → Chrome lifecycle control (recovery)
 {"action": "...", "selector": "CSS or XPath (null/omit if no element target)", "payload": "..." or {...}, "timeout": ms}
 
 selector is a CSS or XPath string for actions that target an element (null/omit otherwise).
-payload is a string for simple actions (navigate, eval, keyboard_press, etc.)
-payload is an object for structured actions (set_viewport, drag_drop, etc.)
+payload is a literal string for code/free-text actions (eval, type, await_text, select) — never JSON-parsed.
+payload is a string or object for simple actions (navigate, set_profile, keyboard_press, etc.)
+payload is an object for structured actions (set_viewport, drag_drop, etc.) — a JSON-encoded string with the same fields works too, except set_viewport/mouse_move/drag_drop's coords form, which has no bare-string equivalent.
 timeout is milliseconds for await_element / await_text (default 5000).
 
 ## Navigation & Interaction (Auto-Capture with DOM Diff)
@@ -1021,6 +1077,7 @@ When two or more MCP servers run on the same host with the default profile, the 
 enable_console_logging: {"action": "enable_console_logging"}
 get_console_messages: {"action": "get_console_messages"} → all messages
 get_console_messages: {"action": "get_console_messages", "payload": {"since": 1716000000000}} → since epoch ms
+get_console_messages: {"action": "get_console_messages", "payload": "1716000000000"} → same, bare epoch-ms string
 clear_console_messages: {"action": "clear_console_messages"}
 
 ## Chrome Lifecycle (Recovery)
@@ -1106,7 +1163,7 @@ Prefer reading these files to using 'extract' or 'screenshot' whenever possible.
 Schema: 4 parameters — action, selector (CSS/XPath or null), payload (string or object), timeout (ms).
 selector targets a DOM element (null/omit for navigation, eval, tab management, etc.).
 payload is a string for simple actions (navigate=URL, type=text, eval=JS, keyboard_press=key).
-payload is an object for structured actions (set_viewport={width,height}, drag_drop={target}, etc.).
+payload is an object for structured actions (set_viewport={width,height}, drag_drop={target}, etc.) — a JSON-encoded string of the same object works too.
 Tabs are tracked as sticky state; use switch_tab to change the active tab.
 Use action='help' for full per-action payload shapes.`,
   UseBrowserParams,

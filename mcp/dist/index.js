@@ -13875,6 +13875,127 @@ var StdioServerTransport = class {
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import { createRequire } from "module";
+
+// src/payload.ts
+var PAYLOAD_SPECS = {
+  navigate: { kind: "structured", defaultKey: "url" },
+  type: { kind: "scalar", defaultKey: "text" },
+  extract: { kind: "structured", defaultKey: "format" },
+  screenshot: { kind: "structured", defaultKey: "path" },
+  select: { kind: "scalar", defaultKey: "value" },
+  eval: { kind: "scalar", defaultKey: "expression" },
+  attr: { kind: "structured", defaultKey: "attr" },
+  await_element: { kind: "structured", defaultKey: "selector" },
+  await_text: { kind: "scalar", defaultKey: "text" },
+  new_tab: { kind: "structured", defaultKey: "url" },
+  set_profile: { kind: "structured", defaultKey: "name" },
+  file_upload: { kind: "structured", defaultKey: "files" },
+  keyboard_press: { kind: "structured", defaultKey: "key" },
+  get_console_messages: { kind: "structured", defaultKey: "since", numericDefaultKey: true },
+  switch_tab: { kind: "structured", defaultKey: "tab" }
+};
+function truncateForError(s, max = 80) {
+  return s.length > max ? `${s.slice(0, max)}\u2026` : s;
+}
+function tryParseJsonShape(payload, opener, trimBeforeParse) {
+  if (typeof payload !== "string") return void 0;
+  const trimmed = payload.trim();
+  if (!trimmed.startsWith(opener)) return void 0;
+  let parsed;
+  try {
+    parsed = JSON.parse(trimBeforeParse ? trimmed : payload);
+  } catch {
+    return void 0;
+  }
+  if (!parsed || typeof parsed !== "object") return void 0;
+  const wantArray = opener === "[";
+  return Array.isArray(parsed) === wantArray ? parsed : void 0;
+}
+function tryParseJsonObject(payload) {
+  return tryParseJsonShape(payload, "{", true);
+}
+function tryParseIntegerValue(value) {
+  if (typeof value === "number") {
+    return Number.isSafeInteger(value) ? value : void 0;
+  }
+  if (typeof value !== "string") return void 0;
+  const trimmed = value.trim();
+  if (!/^-?\d+$/.test(trimmed)) return void 0;
+  const parsed = Number(trimmed);
+  return Number.isSafeInteger(parsed) ? parsed : void 0;
+}
+function resolveConsoleSince(value) {
+  if (value === void 0 || value === null) return {};
+  if (typeof value === "number") {
+    if (Number.isFinite(value)) return { ms: value };
+    return { errorDetail: `since must be an epoch-ms timestamp, got the non-finite number ${String(value)}` };
+  }
+  const asInteger = tryParseIntegerValue(value);
+  if (asInteger !== void 0) return { ms: asInteger };
+  const shown = typeof value === "string" ? truncateForError(value) : typeof value;
+  return {
+    errorDetail: `since must be an epoch-ms timestamp (a number, or a string of digits), got ${shown}`
+  };
+}
+function tryParseCoords(payload) {
+  const obj = tryParseJsonObject(payload);
+  if (obj && typeof obj.x === "number" && typeof obj.y === "number") {
+    return { x: obj.x, y: obj.y };
+  }
+  return void 0;
+}
+function describeUnusableScrollPayload(payload) {
+  try {
+    JSON.parse(payload);
+  } catch {
+    return `payload was a string that could not be parsed as JSON: ${truncateForError(payload)}`;
+  }
+  return `payload was valid JSON but not an object with deltaX/deltaY (or a recognized direction string): ${truncateForError(payload)}`;
+}
+function parsePayload(payload, action) {
+  const spec = PAYLOAD_SPECS[action];
+  if (!spec) {
+    throw new Error(`parsePayload: no PayloadSpec registered for action "${action}"`);
+  }
+  if (payload === void 0 || payload === null) return {};
+  if (typeof payload !== "string") return payload;
+  if (spec.kind === "scalar") {
+    return { [spec.defaultKey]: payload };
+  }
+  const asObject = tryParseJsonShape(payload, "{", false);
+  if (asObject) return asObject;
+  const asArray = tryParseJsonShape(payload, "[", false);
+  if (asArray) return { [spec.defaultKey]: asArray };
+  if (spec.numericDefaultKey) {
+    const asInteger = tryParseIntegerValue(payload);
+    if (asInteger !== void 0) return { [spec.defaultKey]: asInteger };
+  }
+  return { [spec.defaultKey]: payload };
+}
+function resolveStrictStructuredPayload(payload) {
+  if (payload === void 0 || payload === null) {
+    return { errorDetail: "no payload was supplied" };
+  }
+  if (typeof payload === "object") {
+    return { object: payload };
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(payload);
+  } catch {
+    return {
+      errorDetail: `payload was a string that could not be parsed as JSON: ${truncateForError(payload)}`
+    };
+  }
+  if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+    return { object: parsed };
+  }
+  return {
+    errorDetail: `payload was valid JSON but not an object: ${truncateForError(payload)}`
+  };
+}
+
+// src/index.ts
 var __filename = fileURLToPath(import.meta.url);
 var __dirname = dirname(__filename);
 var require2 = createRequire(import.meta.url);
@@ -13951,7 +14072,7 @@ var UseBrowserParams = {
     "CSS or XPath selector \u2014 what to act on. Null/omitted for actions that don't target an element (navigate, eval, list_tabs, etc.). XPath must start with / or //. dialog::accept and dialog::dismiss are special selectors for handling open dialogs."
   ),
   payload: external_exports.union([external_exports.string(), external_exports.record(external_exports.any())]).optional().describe(
-    "Extra data for the action. String for simple cases (navigate=URL, type=text, eval=JS, keyboard_press=key, set_profile=name, new_tab=URL). Object for structured cases (set_viewport={width,height,mobile?}, keyboard_press={key,modifiers:{shift?,ctrl?,alt?,meta?}}, extract={format:'text'|'html'|'markdown'}, screenshot={path?,fullpage?}, scroll={deltaX?,deltaY?} or direction string, drag_drop={x,y} or selector string for target, mouse_move={x,y,steps?,fromX?,fromY?}, file_upload={files:[...]}, get_console_messages={since:epochMs}, await_text=text string or {text,timeout?}, switch_tab=tab index/url-substring/title-substring). See action='help' for per-action payload shapes."
+    `Extra data for the action. Both a plain object and an equivalent JSON-encoded string are accepted for every structured shape below (e.g. set_viewport accepts either {width:390,height:844} or '{"width":390,"height":844}'). Literal string for code/free-text actions, taken as-is and never JSON-parsed even if it happens to look like JSON (eval=JS source, type=literal text, await_text=literal text to wait for, select=literal option value). String or object for simple cases (navigate=URL, set_profile=name, new_tab=URL, attr=attribute name or {selector,attr}). Structured object (or its JSON-string equivalent) for the rest: set_viewport={width,height,mobile?} (no bare-string form), keyboard_press=key string or {key,modifiers:{shift?,ctrl?,alt?,meta?}}, extract=format string or {format:'text'|'html'|'markdown',selector?}, screenshot=path string or {path,fullpage?,selector?}, scroll=direction string or {deltaX?,deltaY?,selector?}, drag_drop=target selector string, {x,y} target coords, or {source,target}, mouse_move={x,y,steps?,fromX?,fromY?} (no bare-string form), file_upload=path string, JSON array-of-paths string, or {selector,files:[...]}, get_console_messages={since:epochMs} or a bare epoch-ms timestamp, switch_tab=tab index/url-substring/title-substring). See action='help' for per-action payload shapes.`
   ),
   timeout: external_exports.number().int().min(0).max(6e4).optional().describe("Timeout in ms for await_element / await_text actions."),
   // Postel-accept legacy parameter. Many agents emit `tab_index` from prior
@@ -13963,11 +14084,6 @@ var UseBrowserParams = {
     "Legacy: behaves like switch_tab. Sets the active tab to this index before running the action. Prefer the switch_tab action."
   )
 };
-function parsePayload(payload, defaultKey) {
-  if (payload === void 0 || payload === null) return {};
-  if (typeof payload === "string") return { [defaultKey]: payload };
-  return payload;
-}
 async function ensureChromeRunning() {
   try {
     const spawned = await chromeLib.startChrome(headlessMode, void 0, explicitPort);
@@ -14043,7 +14159,7 @@ async function executeBrowserAction(params) {
   const topTimeout = params.timeout;
   switch (params.action) {
     case "navigate" /* NAVIGATE */: {
-      const p = parsePayload(payload, "url");
+      const p = parsePayload(payload, "navigate");
       const url = p.url;
       if (!url || typeof url !== "string") {
         throw new Error("navigate requires payload with URL");
@@ -14097,7 +14213,7 @@ async function executeBrowserAction(params) {
       return formatActionResponse(clickResult, `Clicked: ${selector}`);
     }
     case "type" /* TYPE */: {
-      const p = parsePayload(payload, "text");
+      const p = parsePayload(payload, "type");
       const text = p.text;
       const selector = topSelector ?? p.selector ?? null;
       if (!text || typeof text !== "string") {
@@ -14119,7 +14235,7 @@ async function executeBrowserAction(params) {
       );
     }
     case "extract" /* EXTRACT */: {
-      const p = parsePayload(payload, "format");
+      const p = parsePayload(payload, "extract");
       const selector = topSelector ?? (typeof p.selector === "string" ? p.selector : void 0);
       const format = typeof p.format === "string" ? p.format : "text";
       if (selector) {
@@ -14161,7 +14277,7 @@ async function executeBrowserAction(params) {
       }
     }
     case "screenshot" /* SCREENSHOT */: {
-      const p = parsePayload(payload, "path");
+      const p = parsePayload(payload, "screenshot");
       const filepath = p.path;
       if (!filepath || typeof filepath !== "string") {
         throw new Error("screenshot requires payload with filename (string or {path,fullpage?})");
@@ -14172,7 +14288,7 @@ async function executeBrowserAction(params) {
       return `Screenshot saved to ${savedPath}`;
     }
     case "select" /* SELECT */: {
-      const p = parsePayload(payload, "value");
+      const p = parsePayload(payload, "select");
       const selector = topSelector ?? p.selector;
       if (!selector || typeof selector !== "string") {
         throw new Error("select requires selector (top-level or payload.selector)");
@@ -14197,7 +14313,7 @@ async function executeBrowserAction(params) {
       return formatActionResponse(selectResult, `Selected ${JSON.stringify(selectValue)} in: ${selector}`);
     }
     case "eval" /* EVAL */: {
-      const p = parsePayload(payload, "expression");
+      const p = parsePayload(payload, "eval");
       const expression = p.expression;
       if (!expression || typeof expression !== "string") {
         throw new Error("eval requires payload with JavaScript code");
@@ -14207,16 +14323,9 @@ async function executeBrowserAction(params) {
 Result: ${evalResult.result}`);
     }
     case "attr" /* ATTR */: {
-      let selector;
-      let attr;
-      if (typeof payload === "string") {
-        selector = topSelector;
-        attr = payload;
-      } else {
-        const p = parsePayload(payload, "selector");
-        selector = topSelector ?? p.selector;
-        attr = p.attr;
-      }
+      const p = parsePayload(payload, "attr");
+      const selector = topSelector ?? p.selector ?? null;
+      const attr = p.attr;
       if (!selector || typeof selector !== "string") {
         throw new Error("attr requires selector (top-level or payload.selector)");
       }
@@ -14227,7 +14336,7 @@ Result: ${evalResult.result}`);
       return String(attrValue);
     }
     case "await_element" /* AWAIT_ELEMENT */: {
-      const p = parsePayload(payload, "selector");
+      const p = parsePayload(payload, "await_element");
       const selector = topSelector ?? (typeof p.selector === "string" ? p.selector : null);
       if (!selector || typeof selector !== "string") {
         throw new Error("await_element requires selector (top-level or payload)");
@@ -14237,7 +14346,7 @@ Result: ${evalResult.result}`);
       return `Element found: ${selector}`;
     }
     case "await_text" /* AWAIT_TEXT */: {
-      const p = parsePayload(payload, "text");
+      const p = parsePayload(payload, "await_text");
       const text = p.text;
       if (!text || typeof text !== "string") {
         throw new Error("await_text requires payload with text to wait for");
@@ -14247,7 +14356,7 @@ Result: ${evalResult.result}`);
       return `Text found: ${text}`;
     }
     case "new_tab" /* NEW_TAB */: {
-      const p = parsePayload(payload, "url");
+      const p = parsePayload(payload, "new_tab");
       const newTabUrl = typeof p.url === "string" && p.url.trim() ? p.url.trim() : void 0;
       const newTabResult = await chromeLib.newTab(newTabUrl);
       activeTab = 0;
@@ -14281,7 +14390,7 @@ Result: ${evalResult.result}`);
       return JSON.stringify(mode, null, 2);
     }
     case "set_profile" /* SET_PROFILE */: {
-      const p = parsePayload(payload, "name");
+      const p = parsePayload(payload, "set_profile");
       const profileName = p.name;
       if (!profileName || typeof profileName !== "string") {
         throw new Error("set_profile requires payload with profile name");
@@ -14310,17 +14419,18 @@ Result: ${evalResult.result}`);
       return formatCaptureResponse("Hovered", selector, hoverResult.capture, hoverResult.dialog, hoverResult.artifacts);
     }
     case "drag_drop" /* DRAG_DROP */: {
+      const decodedPayload = tryParseJsonObject(payload) ?? payload;
       let source;
       let dragTarget;
-      if (typeof payload === "string") {
+      if (typeof decodedPayload === "string") {
         source = topSelector ?? "";
-        dragTarget = payload;
-      } else if (typeof payload === "object" && payload !== null && payload.x !== void 0 && payload.y !== void 0 && payload.target === void 0 && payload.source === void 0) {
-        const p = payload;
+        dragTarget = decodedPayload;
+      } else if (typeof decodedPayload === "object" && decodedPayload !== null && decodedPayload.x !== void 0 && decodedPayload.y !== void 0 && decodedPayload.target === void 0 && decodedPayload.source === void 0) {
+        const p = decodedPayload;
         source = topSelector ?? "";
         dragTarget = { x: p.x, y: p.y };
       } else {
-        const p = parsePayload(payload, "source");
+        const p = decodedPayload;
         source = topSelector ?? p.source;
         const targetRaw = p.target;
         if (targetRaw === void 0) {
@@ -14329,16 +14439,8 @@ Result: ${evalResult.result}`);
         if (typeof targetRaw === "object" && targetRaw.x !== void 0 && targetRaw.y !== void 0) {
           dragTarget = { x: targetRaw.x, y: targetRaw.y };
         } else if (typeof targetRaw === "string") {
-          try {
-            const parsed = JSON.parse(targetRaw);
-            if (typeof parsed === "object" && parsed.x !== void 0 && parsed.y !== void 0) {
-              dragTarget = { x: parsed.x, y: parsed.y };
-            } else {
-              dragTarget = targetRaw;
-            }
-          } catch {
-            dragTarget = targetRaw;
-          }
+          const coords = tryParseCoords(targetRaw);
+          dragTarget = coords ?? targetRaw;
         } else {
           throw new Error("drag_drop payload.target must be a selector string or {x,y} coordinates");
         }
@@ -14355,9 +14457,14 @@ Result: ${evalResult.result}`);
       return formatCaptureResponse("Dragged", `${source} \u2192 ${targetDesc}`, dragResult.capture, dragResult.dialog, dragResult.artifacts);
     }
     case "mouse_move" /* MOUSE_MOVE */: {
-      const p = parsePayload(payload, "coords");
+      const shapeHint = "{x,y} or {x,y,steps?,fromX?,fromY?}";
+      const resolved = resolveStrictStructuredPayload(payload);
+      if (resolved.errorDetail) {
+        throw new Error(`mouse_move requires payload with x and y coordinates: ${shapeHint} (${resolved.errorDetail})`);
+      }
+      const p = resolved.object;
       if (typeof p.x !== "number" || typeof p.y !== "number") {
-        throw new Error("mouse_move requires payload with x and y coordinates: {x,y} or {x,y,steps?,fromX?,fromY?}");
+        throw new Error(`mouse_move requires payload with x and y coordinates: ${shapeHint} (payload parsed but x/y are missing or not numbers: ${truncateForError(JSON.stringify(p))})`);
       }
       const moveResult = await chromeLib.mouseMove(tabIndex, p.x, p.y, {
         steps: p.steps,
@@ -14369,36 +14476,37 @@ Result: ${evalResult.result}`);
     case "scroll" /* SCROLL */: {
       const scrollOpts = {};
       if (topSelector) scrollOpts.selector = topSelector;
-      if (typeof payload === "object" && payload !== null) {
-        const p = payload;
-        if (!topSelector && typeof p.selector === "string") scrollOpts.selector = p.selector;
-        if (typeof p.deltaX === "number") scrollOpts.deltaX = p.deltaX;
-        if (typeof p.deltaY === "number") scrollOpts.deltaY = p.deltaY;
-        if (!("deltaX" in p) && !("deltaY" in p)) {
-          throw new Error("scroll object payload requires at least deltaX or deltaY");
-        }
+      const scrollAmount = 300;
+      const SCROLL_DIRECTIONS = {
+        down: { deltaY: scrollAmount },
+        up: { deltaY: -scrollAmount },
+        right: { deltaX: scrollAmount },
+        left: { deltaX: -scrollAmount }
+      };
+      let effectivePayload = payload;
+      const direction = typeof payload === "string" ? SCROLL_DIRECTIONS[payload.toLowerCase().trim()] : void 0;
+      if (direction) {
+        Object.assign(scrollOpts, direction);
       } else if (typeof payload === "string") {
-        const scrollAmount = 300;
-        const payloadLower = payload.toLowerCase().trim();
-        if (payloadLower === "down") {
-          scrollOpts.deltaY = scrollAmount;
-        } else if (payloadLower === "up") {
-          scrollOpts.deltaY = -scrollAmount;
-        } else if (payloadLower === "right") {
-          scrollOpts.deltaX = scrollAmount;
-        } else if (payloadLower === "left") {
-          scrollOpts.deltaX = -scrollAmount;
-        } else {
-          try {
-            const parsed = JSON.parse(payload);
-            scrollOpts.deltaX = parsed.deltaX || 0;
-            scrollOpts.deltaY = parsed.deltaY || 0;
-          } catch {
-            throw new Error("scroll payload must be a direction (up/down/left/right) or {deltaX?,deltaY?,selector?}");
-          }
+        const parsedObj = tryParseJsonObject(payload);
+        if (!parsedObj) {
+          const detail = describeUnusableScrollPayload(payload);
+          throw new Error(`scroll payload must be a direction (up/down/left/right) or {deltaX?,deltaY?,selector?} (${detail})`);
         }
-      } else {
-        throw new Error("scroll requires payload: direction string or {deltaX?,deltaY?,selector?}");
+        effectivePayload = parsedObj;
+      }
+      if (!direction) {
+        if (typeof effectivePayload === "object" && effectivePayload !== null) {
+          const p = effectivePayload;
+          if (!topSelector && typeof p.selector === "string") scrollOpts.selector = p.selector;
+          if (typeof p.deltaX === "number") scrollOpts.deltaX = p.deltaX;
+          if (typeof p.deltaY === "number") scrollOpts.deltaY = p.deltaY;
+          if (!("deltaX" in p) && !("deltaY" in p)) {
+            throw new Error("scroll object payload requires at least deltaX or deltaY");
+          }
+        } else {
+          throw new Error("scroll requires payload: direction string or {deltaX?,deltaY?,selector?}");
+        }
       }
       const scrollResult = await chromeLib.scroll(tabIndex, scrollOpts);
       const dir = scrollOpts.deltaY && scrollOpts.deltaY > 0 ? "down" : scrollOpts.deltaY && scrollOpts.deltaY < 0 ? "up" : scrollOpts.deltaX && scrollOpts.deltaX > 0 ? "right" : "left";
@@ -14429,7 +14537,7 @@ Result: ${evalResult.result}`);
       return formatCaptureResponse("Right-clicked", selector, rightClickResult.capture, rightClickResult.dialog, rightClickResult.artifacts);
     }
     case "file_upload" /* FILE_UPLOAD */: {
-      const p = parsePayload(payload, "files");
+      const p = parsePayload(payload, "file_upload");
       const selector = topSelector ?? p.selector;
       if (!selector || typeof selector !== "string") {
         throw new Error("file_upload requires selector (top-level or payload.selector) for the file input element");
@@ -14460,7 +14568,7 @@ Result: ${evalResult.result}`);
       );
     }
     case "keyboard_press" /* KEYBOARD_PRESS */: {
-      const p = parsePayload(payload, "key");
+      const p = parsePayload(payload, "keyboard_press");
       const key = p.key;
       if (!key || typeof key !== "string") {
         throw new Error("keyboard_press requires payload with key name (e.g., Tab, Enter, Escape) \u2014 string or {key,modifiers?}");
@@ -14481,10 +14589,14 @@ Result: ${evalResult.result}`);
       );
     }
     case "set_viewport" /* SET_VIEWPORT */: {
-      const p = parsePayload(payload, "viewport");
-      const vp = p.width !== void 0 ? p : p.viewport || {};
-      if (!vp.width || !vp.height) {
-        throw new Error("set_viewport requires payload with width and height: {width,height,deviceScaleFactor?,mobile?}");
+      const shapeHint = "{width,height,deviceScaleFactor?,mobile?}";
+      const resolved = resolveStrictStructuredPayload(payload);
+      if (resolved.errorDetail) {
+        throw new Error(`set_viewport requires payload with width and height: ${shapeHint} (${resolved.errorDetail})`);
+      }
+      const vp = resolved.object;
+      if (typeof vp.width !== "number" || typeof vp.height !== "number") {
+        throw new Error(`set_viewport requires payload with width and height: ${shapeHint} (payload parsed but width/height are missing or not numbers: ${truncateForError(JSON.stringify(vp))})`);
       }
       const viewportResult = await chromeLib.setViewport(tabIndex, vp);
       return `Viewport set: ${viewportResult.width}x${viewportResult.height} CSS pixels (scale: ${viewportResult.deviceScaleFactor}, mobile: ${viewportResult.mobile}, touch: ${viewportResult.touch})`;
@@ -14506,8 +14618,12 @@ Result: ${evalResult.result}`);
       return `Console logging enabled. Use get_console_messages to read; clear_console_messages to reset.`;
     }
     case "get_console_messages" /* GET_CONSOLE_MESSAGES */: {
-      const p = parsePayload(payload, "since");
-      const since = typeof p.since === "number" ? new Date(p.since) : null;
+      const p = parsePayload(payload, "get_console_messages");
+      const resolvedSince = resolveConsoleSince(p.since);
+      if (resolvedSince.errorDetail) {
+        throw new Error(`get_console_messages payload must be an epoch-ms timestamp or {since:epochMs} (${resolvedSince.errorDetail})`);
+      }
+      const since = resolvedSince.ms !== void 0 ? new Date(resolvedSince.ms) : null;
       const messages = await chromeLib.getConsoleMessages(tabIndex, since);
       if (!messages || messages.length === 0) {
         return `No console messages captured. (Call enable_console_logging first if you haven't.)`;
@@ -14536,7 +14652,7 @@ Result: ${evalResult.result}`);
         url: tab.url ?? "",
         type: tab.type
       }));
-      const p = parsePayload(payload, "tab");
+      const p = parsePayload(payload, "switch_tab");
       const target = p.tab ?? payload;
       let matchedIndex = -1;
       if (typeof target === "number") {
@@ -14584,8 +14700,9 @@ kill_chrome, restart_chrome \u2192 Chrome lifecycle control (recovery)
 {"action": "...", "selector": "CSS or XPath (null/omit if no element target)", "payload": "..." or {...}, "timeout": ms}
 
 selector is a CSS or XPath string for actions that target an element (null/omit otherwise).
-payload is a string for simple actions (navigate, eval, keyboard_press, etc.)
-payload is an object for structured actions (set_viewport, drag_drop, etc.)
+payload is a literal string for code/free-text actions (eval, type, await_text, select) \u2014 never JSON-parsed.
+payload is a string or object for simple actions (navigate, set_profile, keyboard_press, etc.)
+payload is an object for structured actions (set_viewport, drag_drop, etc.) \u2014 a JSON-encoded string with the same fields works too, except set_viewport/mouse_move/drag_drop's coords form, which has no bare-string equivalent.
 timeout is milliseconds for await_element / await_text (default 5000).
 
 ## Navigation & Interaction (Auto-Capture with DOM Diff)
@@ -14661,6 +14778,7 @@ When two or more MCP servers run on the same host with the default profile, the 
 enable_console_logging: {"action": "enable_console_logging"}
 get_console_messages: {"action": "get_console_messages"} \u2192 all messages
 get_console_messages: {"action": "get_console_messages", "payload": {"since": 1716000000000}} \u2192 since epoch ms
+get_console_messages: {"action": "get_console_messages", "payload": "1716000000000"} \u2192 same, bare epoch-ms string
 clear_console_messages: {"action": "clear_console_messages"}
 
 ## Chrome Lifecycle (Recovery)
@@ -14733,7 +14851,7 @@ Prefer reading these files to using 'extract' or 'screenshot' whenever possible.
 Schema: 4 parameters \u2014 action, selector (CSS/XPath or null), payload (string or object), timeout (ms).
 selector targets a DOM element (null/omit for navigation, eval, tab management, etc.).
 payload is a string for simple actions (navigate=URL, type=text, eval=JS, keyboard_press=key).
-payload is an object for structured actions (set_viewport={width,height}, drag_drop={target}, etc.).
+payload is an object for structured actions (set_viewport={width,height}, drag_drop={target}, etc.) \u2014 a JSON-encoded string of the same object works too.
 Tabs are tracked as sticky state; use switch_tab to change the active tab.
 Use action='help' for full per-action payload shapes.`,
   UseBrowserParams,
@@ -14800,6 +14918,16 @@ main().catch((error) => {
   console.error("Server error:", error);
   process.exit(1);
 });
+export {
+  PAYLOAD_SPECS,
+  describeUnusableScrollPayload,
+  parsePayload,
+  resolveConsoleSince,
+  resolveStrictStructuredPayload,
+  tryParseCoords,
+  tryParseIntegerValue,
+  tryParseJsonObject
+};
 /*! Bundled license information:
 
 uri-js/dist/es5/uri.all.js:
