@@ -172,15 +172,30 @@ describe('Fix D: restartInMode probes liveness before returning alreadyMessage',
 
   function withFakeIsPortAlive(portAliveResult, testFn) {
     const origHelpers = require.cache[HELPERS_PATH];
+    const origCp = require.cache['child_process'];
 
     const origExports = origHelpers ? origHelpers.exports : require(HELPERS_PATH);
+    // Fake every helper that could reach a real process: the dead-Chrome path
+    // runs killChrome (findPidOnPort + process.kill would SIGTERM whatever
+    // real process holds port 9222 — e.g. the smoke test's Chrome when the
+    // suite runs concurrently) and then restarts (a real spawn would launch
+    // and leak a real Chrome with profile 'test').
     const fakeHelpers = {
       ...origExports,
       isPortAlive: async () => portAliveResult,
+      findPidOnPort: () => null,
+      readProfileMeta: () => null,
+      writeProfileMeta: () => {},
+      clearProfileMeta: () => {},
+      findOrphanChromeForProfile: () => null,
     };
 
     require.cache[HELPERS_PATH] = {
       id: HELPERS_PATH, filename: HELPERS_PATH, loaded: true, exports: fakeHelpers,
+    };
+    require.cache['child_process'] = {
+      id: 'child_process', filename: 'child_process', loaded: true,
+      exports: { spawn: () => { throw new Error('no real Chrome spawn in tests'); } },
     };
     delete require.cache[CHROME_PROCESS_PATH];
     const { attachChromeProcess: fresh } = require(CHROME_PROCESS_PATH);
@@ -190,6 +205,8 @@ describe('Fix D: restartInMode probes liveness before returning alreadyMessage',
     } finally {
       if (origHelpers) { require.cache[HELPERS_PATH] = origHelpers; }
       else { delete require.cache[HELPERS_PATH]; }
+      if (origCp) { require.cache['child_process'] = origCp; }
+      else { delete require.cache['child_process']; }
       delete require.cache[CHROME_PROCESS_PATH];
       require(CHROME_PROCESS_PATH);
     }
