@@ -341,7 +341,9 @@ describe('chrome-process: Bug 1b — startChrome clears chromeProcess on readine
       linux: ['/usr/bin/google-chrome', '/usr/bin/chromium-browser', '/usr/bin/chromium'],
       win32: ['C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe'],
     };
-    const chromeInstalled = (chromePaths[platform()] || []).some(p => existsSync(p));
+    const chromeInstalled =
+      (process.env.CHROME_WS_BROWSER && existsSync(process.env.CHROME_WS_BROWSER)) ||
+      (chromePaths[platform()] || []).some(p => existsSync(p));
     if (!chromeInstalled) return; // self-skip: binary discovery happens inside module
 
     const fakeProc = makeFakeProc();
@@ -648,5 +650,118 @@ describe('chrome-process: getBrowserMode for adopted Chrome', () => {
     const mode = await getBrowserMode();
     assert.equal(mode.running, false);
     assert.equal(mode.pid, null);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// CHROME_WS_BROWSER: env override of binary auto-detection in the MCP launch
+// path (issue #40). The CLI honored it already; chrome-process.js must too.
+// ---------------------------------------------------------------------------
+
+describe('chrome-process: CHROME_WS_BROWSER overrides binary auto-detection', () => {
+  const HELPERS_PATH = require.resolve('../../skills/browsing/lib/chrome-launcher-helpers.js');
+
+  // Runs startChrome with fake helpers and a spawn stub that records the
+  // binary path and flips isPortAlive to true so the readiness poll returns
+  // immediately.
+  async function captureSpawnPath() {
+    const spawned = [];
+    let spawnCalled = false;
+
+    const origHelpers = require.cache[HELPERS_PATH];
+    const origCp = require.cache['child_process'];
+
+    const fakeHelpers = {
+      readProfileMeta: () => null,
+      writeProfileMeta: () => {},
+      clearProfileMeta: () => {},
+      isPortAlive: async () => spawnCalled,
+      findAvailablePort: async () => 9333,
+      findPidOnPort: () => null,
+      findOrphanChromeForProfile: () => null,
+      buildChromeArgs: () => ['--fake'],
+      getChromeProfileDir: () => '/tmp/fake-profile',
+    };
+
+    require.cache[HELPERS_PATH] = {
+      id: HELPERS_PATH, filename: HELPERS_PATH, loaded: true, exports: fakeHelpers,
+    };
+    require.cache['child_process'] = {
+      id: 'child_process', filename: 'child_process', loaded: true,
+      exports: {
+        spawn: (path) => {
+          spawned.push(path);
+          spawnCalled = true;
+          return makeFakeProc();
+        },
+      },
+    };
+    delete require.cache[CHROME_PROCESS_PATH];
+    const { attachChromeProcess: fresh } = require(CHROME_PROCESS_PATH);
+
+    try {
+      const state = {
+        hostOverride: { getHost: () => '127.0.0.1', getPort: () => 9222 },
+        activePort: 9222,
+        chromeHeadless: true,
+        chromeProcess: null,
+        chromeProfileName: 'test-env-override',
+        chromeUserDataDir: '/tmp/fake-profile',
+      };
+      const { startChrome } = fresh({
+        state,
+        chromeHttp: async () => ({}),
+        getTabs: async () => [],
+        newTab: async () => ({}),
+      });
+      await startChrome(true, null, null);
+      return spawned;
+    } finally {
+      if (origHelpers) { require.cache[HELPERS_PATH] = origHelpers; }
+      else { delete require.cache[HELPERS_PATH]; }
+      if (origCp) { require.cache['child_process'] = origCp; }
+      else { delete require.cache['child_process']; }
+      delete require.cache[CHROME_PROCESS_PATH];
+      require(CHROME_PROCESS_PATH);
+    }
+  }
+
+  it('spawns the CHROME_WS_BROWSER binary when the path exists', async () => {
+    const prior = process.env.CHROME_WS_BROWSER;
+    // process.execPath is a guaranteed-existing binary on every platform.
+    process.env.CHROME_WS_BROWSER = process.execPath;
+    try {
+      const spawned = await captureSpawnPath();
+      assert.deepEqual(spawned, [process.execPath]);
+    } finally {
+      if (prior === undefined) delete process.env.CHROME_WS_BROWSER;
+      else process.env.CHROME_WS_BROWSER = prior;
+    }
+  });
+
+  it('falls back to auto-detection when the CHROME_WS_BROWSER path is missing', async () => {
+    const { existsSync } = require('fs');
+    const { platform } = require('os');
+    const chromePaths = {
+      darwin: ['/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', '/Applications/Chromium.app/Contents/MacOS/Chromium'],
+      linux: ['/usr/bin/google-chrome', '/usr/bin/chromium-browser', '/usr/bin/chromium'],
+      win32: ['C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe'],
+    };
+    if (!(chromePaths[platform()] || []).some(p => existsSync(p))) {
+      return; // self-skip: fallback needs a real auto-detectable Chrome
+    }
+
+    const prior = process.env.CHROME_WS_BROWSER;
+    const bogus = '/nonexistent/chrome-ws-browser-override';
+    process.env.CHROME_WS_BROWSER = bogus;
+    try {
+      const spawned = await captureSpawnPath();
+      assert.equal(spawned.length, 1);
+      assert.notEqual(spawned[0], bogus, 'missing override must not be spawned');
+      assert.ok(existsSync(spawned[0]), 'fallback must resolve to a real binary');
+    } finally {
+      if (prior === undefined) delete process.env.CHROME_WS_BROWSER;
+      else process.env.CHROME_WS_BROWSER = prior;
+    }
   });
 });

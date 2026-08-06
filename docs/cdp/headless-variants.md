@@ -49,8 +49,8 @@ identical regardless of which binary you're connecting to.
 `/Applications/Google Chrome.app/Contents/MacOS/Google Chrome` on macOS,
 `/usr/bin/google-chrome` on Linux, etc.) and passes `--headless=new`. That is
 correct for 2026. A maintainer running in a minimal container who wants the shell
-binary must supply the binary path via environment or arguments; the library does
-not currently surface a binary-override option.
+binary can point `CHROME_WS_BROWSER` at it — the env var overrides
+auto-detection in both the CLI and the MCP launch path.
 
 ## Sources
 

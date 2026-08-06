@@ -151,16 +151,31 @@ function attachChromeProcess({ state, chromeHttp, getTabs, newTab }) {
     const platform = os.platform();
     const paths = chromePaths[platform] || [];
 
-    let chromePath = null;
-    for (const path of paths) {
-      if (existsSync(path)) {
-        chromePath = path;
-        break;
+    // CHROME_WS_BROWSER overrides auto-detection (documented in README.md /
+    // COMMANDLINE-USAGE.md, already honored by the chrome-ws CLI) — this path
+    // is what the MCP `use_browser` tool actually runs, so it needs the same.
+    // A stale or mistyped override would otherwise be spawned as-is, surfacing as
+    // an opaque "Chrome did not become ready" timeout, so fall back to
+    // auto-detection when the path does not exist.
+    let chromePath = process.env.CHROME_WS_BROWSER;
+    if (chromePath && !existsSync(chromePath)) {
+      console.error(`CHROME_WS_BROWSER is set to ${chromePath} but no file exists there; falling back to auto-detection`);
+      chromePath = null;
+    }
+    if (!chromePath) {
+      for (const path of paths) {
+        if (existsSync(path)) {
+          chromePath = path;
+          break;
+        }
       }
     }
 
     if (!chromePath) {
-      throw new Error(`Chrome not found. Searched: ${paths.join(', ')}`);
+      const overrideNote = process.env.CHROME_WS_BROWSER
+        ? ` (CHROME_WS_BROWSER=${process.env.CHROME_WS_BROWSER} does not exist)`
+        : '';
+      throw new Error(`Chrome not found. Searched: ${paths.join(', ')}${overrideNote}`);
     }
 
     // Persistent profile directory (re-used across sessions).
