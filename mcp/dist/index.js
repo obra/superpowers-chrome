@@ -22185,9 +22185,32 @@ Use action='help' for full per-action payload shapes.`,
     }
   }
 );
+function installHostLifecycleWatch() {
+  let exiting = false;
+  const shutdown = (reason) => {
+    if (exiting) return;
+    exiting = true;
+    console.error(`Chrome MCP server exiting: ${reason}`);
+    process.exit(0);
+  };
+  process.stdin.on("end", () => shutdown("stdin closed by host"));
+  process.stdin.on("close", () => shutdown("stdin closed by host"));
+  const originalPpid = process.ppid;
+  const watchdog = setInterval(() => {
+    if (process.ppid !== originalPpid) {
+      shutdown(`reparented (ppid ${originalPpid} -> ${process.ppid})`);
+    }
+  }, 3e4);
+  watchdog.unref();
+}
 async function main() {
   chromeLib.initializeSession();
   const transport = new StdioServerTransport();
+  installHostLifecycleWatch();
+  transport.onclose = () => {
+    console.error("Chrome MCP server exiting: transport closed");
+    process.exit(0);
+  };
   await server.connect(transport);
   const modeReason = forceHeadless ? "forced via --headless" : forceHeaded ? "forced via --headed" : headlessMode ? "auto-detected no display" : "display available";
   const portInfo = explicitPort ? `, port: ${explicitPort} (via --port)` : "";

@@ -1230,6 +1230,53 @@ Use action='help' for full per-action payload shapes.`,
   }
 );
 
+/**
+ * Exit when the host goes away.
+ *
+ * Nothing here shuts the server down on its own: the SDK's stdio transport only
+ * subscribes to stdin's 'data' and 'error', so an EOF on the pipe never reaches
+ * `transport.onclose`, and `main()` has no other exit path. A host that dies
+ * without draining us therefore leaves this process running forever.
+ *
+ * That leak is not merely untidy. Each live MCP holds a profile lock, so the
+ * next server finds slot 1 taken and falls through to `<profile>-2`, `-3`, ...,
+ * launching a *new* Chrome for each. Leaked servers accumulate leaked browsers.
+ * They also keep serving `require()`-cached copies of the launch code, so edits
+ * to chrome-process.js silently do not apply to them.
+ *
+ * Exiting normally releases the profile lock (see chrome-process.js), which lets
+ * the next server reclaim slot 1 and reconnect to — or adopt — the same Chrome
+ * instead of spawning another one.
+ */
+function installHostLifecycleWatch() {
+  let exiting = false;
+  const shutdown = (reason: string) => {
+    if (exiting) return;
+    exiting = true;
+    // process.exit runs the 'exit' handlers that release the profile lock.
+    console.error(`Chrome MCP server exiting: ${reason}`);
+    process.exit(0);
+  };
+
+  // Primary signal. Covers a clean host shutdown and, because the pipe's write
+  // end closes with the process, a host that is SIGKILLed as well.
+  process.stdin.on('end', () => shutdown('stdin closed by host'));
+  process.stdin.on('close', () => shutdown('stdin closed by host'));
+
+  // Backstop for the case stdin stays open on someone else's behalf — a shell
+  // wrapper, or another process inheriting the descriptor. Losing our original
+  // parent means we were reparented (to init, or to a subreaper), so the host
+  // we were speaking to is gone regardless of what stdin still says.
+  const originalPpid = process.ppid;
+  const watchdog = setInterval(() => {
+    if (process.ppid !== originalPpid) {
+      shutdown(`reparented (ppid ${originalPpid} -> ${process.ppid})`);
+    }
+  }, 30_000);
+  // Do not keep the event loop alive on the watchdog's account.
+  watchdog.unref();
+}
+
 // Main function
 async function main() {
   // Initialize session and register cleanup
@@ -1237,6 +1284,13 @@ async function main() {
 
   // Create stdio transport
   const transport = new StdioServerTransport();
+
+  // Leave no path where the host is gone and we keep running.
+  installHostLifecycleWatch();
+  transport.onclose = () => {
+    console.error('Chrome MCP server exiting: transport closed');
+    process.exit(0);
+  };
 
   // Connect server to transport
   await server.connect(transport);
