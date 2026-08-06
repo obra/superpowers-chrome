@@ -2,6 +2,15 @@
 
 All notable changes to the superpowers-chrome MCP project.
 
+## [Unreleased]
+
+### Fixed
+- MCP tool errors now set `isError: true` on the CallToolResult (#44). Thrown handler errors were returned as ordinary text, so clients recorded failures as successes and loop breakers keying on the error flag never engaged (observed as ~300 consecutive identical failing calls in one agent session). The one in-band error-string return (`extract`'s element-not-found) now throws, with identical user-visible text; the DialogRefusal synthetic response deliberately stays non-error.
+- `CHROME_WS_BROWSER` is honored by the MCP launch path (PR #41, partially addresses #40). It was documented and honored by the CLI but silently ignored by `chrome-process.js`. A set-but-missing path warns on stderr and falls back to auto-detection; the not-found error names the override.
+- The MCP server exits when its host goes away instead of leaking (PR #42, partially addresses #40). Shutdown on stdin end/close, transport close, and a 30s ppid watchdog; exiting releases the profile lock so the next server reclaims the profile and reconnects to the existing Chrome instead of spawning another.
+- `chrome-ws start` honors `CHROME_EXTRA_ARGS` via the shared `buildChromeArgs()` helper (PR #37, partially addresses #35). CLI start stays headed by default; the shared baseline flags mean headless-Linux-as-root works with no env var at all.
+- The schema-collapse dead-Chrome test faked only `isPortAlive`, so its kill path SIGTERMed whatever real process held port 9222 (intermittently killing the smoke test's Chrome mid-suite) and its restart path spawned and leaked a real Chrome with profile `test`. The harness now fakes every process-reaching helper.
+
 ## [3.0.4] - 2026-08-05 - Dependency security updates (all 21 Dependabot alerts)
 
 ### Security
