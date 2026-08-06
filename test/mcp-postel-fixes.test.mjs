@@ -128,21 +128,23 @@ describe('Fix 2b: drag_drop accepts bare string and bare {x,y} payload', () => {
 // ---------------------------------------------------------------------------
 
 describe('Fix 4: extract error prefix matches click error format', () => {
-  it('source returns "Error: Element not found: <selector>" from extract', () => {
-    assert.ok(
-      srcContent.includes('Error: Element not found:'),
-      'extract handler should prefix "Error:" before "Element not found:"'
-    );
-  });
-
-  it('extract error prefix starts with "Error:" like click errors', () => {
-    // Ensure the pattern is consistent with how click errors are surfaced
+  // Element-not-found now throws (issue #44) so the catch-all flags it with
+  // isError: true; the catch-all's "Error: " prefix keeps the user-visible
+  // text identical to the old in-band string and to click's format.
+  it('extract handler throws "Element not found: <selector>"', () => {
     const extractSection = srcContent.slice(srcContent.indexOf('BrowserAction.EXTRACT'));
     const nextCase = extractSection.indexOf('case BrowserAction', 10);
     const extractHandler = nextCase > 0 ? extractSection.slice(0, nextCase) : extractSection.slice(0, 800);
     assert.ok(
-      extractHandler.includes('Error: Element not found'),
-      'extract handler should produce "Error: Element not found: <selector>"'
+      extractHandler.includes('throw new Error(`Element not found:'),
+      'extract handler should throw "Element not found: <selector>"'
+    );
+  });
+
+  it('catch-all prefixes "Error:" so extract matches click error format', () => {
+    assert.ok(
+      srcContent.includes('text: `Error: ${errorMessage}`'),
+      'catch-all should surface thrown errors with the "Error:" prefix'
     );
   });
 });

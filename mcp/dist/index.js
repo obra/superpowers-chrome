@@ -21526,7 +21526,7 @@ async function executeBrowserAction(params) {
           throw new Error("selector-based extraction only supports 'text' or 'html' format");
         }
         if (extracted == null) {
-          return `Error: Element not found: ${selector}`;
+          throw new Error(`Element not found: ${selector}`);
         }
         return extracted;
       } else {
@@ -22179,7 +22179,8 @@ Use action='help' for full per-action payload shapes.`,
         content: [{
           type: "text",
           text: `Error: ${errorMessage}`
-        }]
+        }],
+        isError: true
       };
     }
   }
