@@ -13,7 +13,7 @@ chmod +x chrome-ws
 ./chrome-ws tabs     # Verify running
 ```
 
-Chrome starts with `--remote-debugging-port=9222` and separate profile in `/tmp/chrome-debug` (or `C:\temp\chrome-debug` on Windows).
+Chrome starts headed with `--remote-debugging-port=9222`, a separate profile in `/tmp/chrome-debug` (or `C:\temp\chrome-debug` on Windows), and the same automation flag set the MCP launch path uses.
 
 ## Environment Variables
 
@@ -22,6 +22,7 @@ Chrome starts with `--remote-debugging-port=9222` and separate profile in `/tmp/
 | `CHROME_WS_BROWSER` | (auto-detect) | Path to browser executable. Overrides auto-detection. |
 | `CHROME_WS_HOST` | `127.0.0.1` | Debug host address |
 | `CHROME_WS_PORT` | `9222` | Debug port number |
+| `CHROME_EXTRA_ARGS` | (none) | Whitespace-separated extra Chrome flags appended at launch. Needed on headless Linux / as root, e.g. `--no-sandbox --headless=new --disable-dev-shm-usage`. |
 | `CHROME_WS_PROFILE` | (auto) | Profile name. Default is `superpowers-chrome`; if another live process holds that profile's lock, the CLI / MCP falls through to `superpowers-chrome-2`, `-3`, etc. Set this to opt out — explicit names always claim the named profile (sharing with whoever else has it). |
 
 **Examples:**
