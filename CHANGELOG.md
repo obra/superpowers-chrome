@@ -2,7 +2,7 @@
 
 All notable changes to the superpowers-chrome MCP project.
 
-## [Unreleased]
+## [3.0.5] - 2026-08-07 - Reliability and hardening across the MCP and CLI launch paths
 
 ### Fixed
 - MCP tool errors now set `isError: true` on the CallToolResult (#44). Thrown handler errors were returned as ordinary text, so clients recorded failures as successes and loop breakers keying on the error flag never engaged (observed as ~300 consecutive identical failing calls in one agent session). The one in-band error-string return (`extract`'s element-not-found) now throws, with identical user-visible text; the DialogRefusal synthetic response deliberately stays non-error.
