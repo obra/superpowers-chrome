@@ -22187,29 +22187,41 @@ Use action='help' for full per-action payload shapes.`,
 );
 function installHostLifecycleWatch() {
   let exiting = false;
-  const shutdown = (reason) => {
+  const shutdown = (reason, code = 0) => {
     if (exiting) return;
     exiting = true;
     console.error(`Chrome MCP server exiting: ${reason}`);
-    process.exit(0);
+    process.exit(code);
   };
   process.stdin.on("end", () => shutdown("stdin closed by host"));
   process.stdin.on("close", () => shutdown("stdin closed by host"));
-  const originalPpid = process.ppid;
-  const watchdog = setInterval(() => {
-    if (process.ppid !== originalPpid) {
-      shutdown(`reparented (ppid ${originalPpid} -> ${process.ppid})`);
-    }
-  }, 3e4);
-  watchdog.unref();
+  const rawInterval = Number(process.env.CHROME_WS_PPID_WATCHDOG_MS);
+  const intervalMs = Number.isFinite(rawInterval) && rawInterval >= 0 ? rawInterval : 3e4;
+  if (intervalMs > 0) {
+    const originalPpid = process.ppid;
+    const watchdog = setInterval(() => {
+      if (process.ppid !== originalPpid) {
+        shutdown(`reparented (ppid ${originalPpid} -> ${process.ppid})`);
+      }
+    }, intervalMs);
+    watchdog.unref();
+  }
+  return shutdown;
 }
 async function main() {
   chromeLib.initializeSession();
   const transport = new StdioServerTransport();
-  installHostLifecycleWatch();
-  transport.onclose = () => {
-    console.error("Chrome MCP server exiting: transport closed");
-    process.exit(0);
+  const shutdown = installHostLifecycleWatch();
+  let transportErrored = false;
+  server.server.onerror = (error2) => {
+    transportErrored = true;
+    console.error(`Chrome MCP server transport error: ${error2?.message ?? error2}`);
+  };
+  server.server.onclose = () => {
+    shutdown(
+      transportErrored ? "transport closed after error" : "transport closed",
+      transportErrored ? 1 : 0
+    );
   };
   await server.connect(transport);
   const modeReason = forceHeadless ? "forced via --headless" : forceHeaded ? "forced via --headed" : headlessMode ? "auto-detected no display" : "display available";

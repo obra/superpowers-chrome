@@ -1248,14 +1248,14 @@ Use action='help' for full per-action payload shapes.`,
  * the next server reclaim slot 1 and reconnect to — or adopt — the same Chrome
  * instead of spawning another one.
  */
-function installHostLifecycleWatch() {
+function installHostLifecycleWatch(): (reason: string, code?: number) => void {
   let exiting = false;
-  const shutdown = (reason: string) => {
+  const shutdown = (reason: string, code = 0) => {
     if (exiting) return;
     exiting = true;
     // process.exit runs the 'exit' handlers that release the profile lock.
     console.error(`Chrome MCP server exiting: ${reason}`);
-    process.exit(0);
+    process.exit(code);
   };
 
   // Primary signal. Covers a clean host shutdown and, because the pipe's write
@@ -1267,14 +1267,22 @@ function installHostLifecycleWatch() {
   // wrapper, or another process inheriting the descriptor. Losing our original
   // parent means we were reparented (to init, or to a subreaper), so the host
   // we were speaking to is gone regardless of what stdin still says.
-  const originalPpid = process.ppid;
-  const watchdog = setInterval(() => {
-    if (process.ppid !== originalPpid) {
-      shutdown(`reparented (ppid ${originalPpid} -> ${process.ppid})`);
-    }
-  }, 30_000);
-  // Do not keep the event loop alive on the watchdog's account.
-  watchdog.unref();
+  // CHROME_WS_PPID_WATCHDOG_MS overrides the interval (0 disables) — the
+  // escape hatch for wrappers where the direct parent legitimately exits.
+  const rawInterval = Number(process.env.CHROME_WS_PPID_WATCHDOG_MS);
+  const intervalMs = Number.isFinite(rawInterval) && rawInterval >= 0 ? rawInterval : 30_000;
+  if (intervalMs > 0) {
+    const originalPpid = process.ppid;
+    const watchdog = setInterval(() => {
+      if (process.ppid !== originalPpid) {
+        shutdown(`reparented (ppid ${originalPpid} -> ${process.ppid})`);
+      }
+    }, intervalMs);
+    // Do not keep the event loop alive on the watchdog's account.
+    watchdog.unref();
+  }
+
+  return shutdown;
 }
 
 // Main function
@@ -1286,10 +1294,25 @@ async function main() {
   const transport = new StdioServerTransport();
 
   // Leave no path where the host is gone and we keep running.
-  installHostLifecycleWatch();
-  transport.onclose = () => {
-    console.error('Chrome MCP server exiting: transport closed');
-    process.exit(0);
+  const shutdown = installHostLifecycleWatch();
+
+  // Close/error handlers go on the Protocol (server.server), not the
+  // transport: Protocol.connect() chains a pre-existing transport.onclose in
+  // the current SDK, but older 1.x versions (within our ^1.6.1 range)
+  // overwrote it outright. Protocol's own onclose/onerror are public and
+  // order-independent. The transport closes itself on a fatal read error
+  // (oversized frame blowing the ReadBuffer) with the host still alive —
+  // that close is a failure and must not exit 0.
+  let transportErrored = false;
+  server.server.onerror = (error: Error) => {
+    transportErrored = true;
+    console.error(`Chrome MCP server transport error: ${error?.message ?? error}`);
+  };
+  server.server.onclose = () => {
+    shutdown(
+      transportErrored ? 'transport closed after error' : 'transport closed',
+      transportErrored ? 1 : 0
+    );
   };
 
   // Connect server to transport
