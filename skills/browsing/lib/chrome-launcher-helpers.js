@@ -265,7 +265,31 @@ function findOrphanChromeForProfile(profileName) {
   }
 }
 
-function buildChromeArgs({ chosenPort, chromeUserDataDir, chromeHeadless }) {
+// Chrome's sandbox cannot work as root, and usually not inside containers
+// (no user namespaces), so --no-sandbox is required there. Everywhere else
+// the sandbox stays on: this browser navigates to agent-chosen URLs, so
+// exploit containment matters. Params are injectable for tests; defaults
+// read the real environment.
+function sandboxDisableNeeded({
+  uid = (process.getuid ? process.getuid() : null),
+  dockerEnv = fs.existsSync('/.dockerenv'),
+  cgroup = readInitCgroup(),
+} = {}) {
+  if (uid === 0) return true;
+  if (dockerEnv) return true;
+  if (cgroup && /docker|kubepods|containerd|lxc/.test(cgroup)) return true;
+  return false;
+}
+
+function readInitCgroup() {
+  try {
+    return fs.readFileSync('/proc/1/cgroup', 'utf8');
+  } catch (_e) {
+    return null; // not Linux, or unreadable — no container signal
+  }
+}
+
+function buildChromeArgs({ chosenPort, chromeUserDataDir, chromeHeadless, noSandbox = sandboxDisableNeeded() }) {
   const args = [
     `--remote-debugging-port=${chosenPort}`,
     `--user-data-dir=${chromeUserDataDir}`,
@@ -291,10 +315,13 @@ function buildChromeArgs({ chosenPort, chromeUserDataDir, chromeHeadless }) {
     '--disable-sync',
     '--force-color-profile=srgb',
     '--metrics-recording-only',
-    '--no-sandbox',
     '--safebrowsing-disable-auto-update',
     '--disable-blink-features=AutomationControlled'
   ];
+
+  if (noSandbox) {
+    args.push('--no-sandbox');
+  }
 
   if (chromeHeadless) {
     args.push('--headless=new');
@@ -329,4 +356,5 @@ module.exports = {
   findPidOnPort,
   findOrphanChromeForProfile,
   buildChromeArgs,
+  sandboxDisableNeeded,
 };

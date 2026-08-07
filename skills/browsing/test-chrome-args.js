@@ -43,7 +43,9 @@ function run() {
     const args = buildChromeArgs(BASE_OPTS);
     assert.ok(args.includes('--remote-debugging-port=9222'), 'includes the port flag');
     assert.ok(args.includes('--user-data-dir=/tmp/test-profile'), 'includes the user-data-dir flag');
-    assert.ok(args.includes('--no-sandbox'), 'includes an expected baseline flag');
+    assert.ok(args.includes('--metrics-recording-only'), 'includes an expected baseline flag');
+    assert.ok(buildChromeArgs({ ...BASE_OPTS, noSandbox: true }).includes('--no-sandbox'), 'noSandbox: true adds --no-sandbox');
+    assert.ok(!buildChromeArgs({ ...BASE_OPTS, noSandbox: false }).includes('--no-sandbox'), 'noSandbox: false keeps the sandbox');
     assert.ok(!args.includes('--headless=new'), 'no headless flag when chromeHeadless is false');
   });
 

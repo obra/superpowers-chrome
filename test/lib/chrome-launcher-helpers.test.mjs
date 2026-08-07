@@ -13,6 +13,7 @@ const {
   findOrphanChromeForProfile,
   isPortFree,
   portFreeFromProbes,
+  sandboxDisableNeeded,
 } = require('../../skills/browsing/lib/chrome-launcher-helpers.js');
 
 describe('chrome-launcher-helpers', () => {
@@ -54,6 +55,44 @@ describe('chrome-launcher-helpers', () => {
     } finally {
       delete process.env.CHROME_EXTRA_ARGS;
     }
+  });
+
+  it('sandboxDisableNeeded is true for root', () => {
+    assert.equal(sandboxDisableNeeded({ uid: 0, dockerEnv: false, cgroup: null }), true);
+  });
+
+  it('sandboxDisableNeeded is true inside a container', () => {
+    assert.equal(sandboxDisableNeeded({ uid: 501, dockerEnv: true, cgroup: null }), true);
+    assert.equal(
+      sandboxDisableNeeded({ uid: 501, dockerEnv: false, cgroup: '12:pids:/docker/abc123' }),
+      true
+    );
+    assert.equal(
+      sandboxDisableNeeded({ uid: 501, dockerEnv: false, cgroup: '1:name=systemd:/kubepods/pod9' }),
+      true
+    );
+  });
+
+  it('sandboxDisableNeeded is false for a normal user outside containers', () => {
+    assert.equal(sandboxDisableNeeded({ uid: 501, dockerEnv: false, cgroup: null }), false);
+    assert.equal(
+      sandboxDisableNeeded({ uid: 501, dockerEnv: false, cgroup: '0::/init.scope' }),
+      false
+    );
+  });
+
+  it('buildChromeArgs keeps the sandbox unless noSandbox is needed', () => {
+    const base = { chosenPort: 9333, chromeUserDataDir: '/tmp/profile', chromeHeadless: false };
+    assert.ok(!buildChromeArgs({ ...base, noSandbox: false }).includes('--no-sandbox'),
+      'sandbox stays on for normal users');
+    assert.ok(buildChromeArgs({ ...base, noSandbox: true }).includes('--no-sandbox'),
+      'sandbox disabled where it cannot work (root/container)');
+    // Default follows environment detection.
+    assert.equal(
+      buildChromeArgs(base).includes('--no-sandbox'),
+      sandboxDisableNeeded(),
+      'default must follow sandboxDisableNeeded()'
+    );
   });
 
   it('buildChromeArgs includes first-run suppression and automation flags', () => {
