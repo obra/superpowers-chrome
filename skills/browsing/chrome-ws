@@ -334,11 +334,39 @@ if (command === 'start') {
   });
 
   console.log(`Starting Chrome: ${chromePath}`);
+
+  // Capture Chrome's stderr to a tempfile (issue #35): with stdio 'ignore',
+  // Chrome's own complaint (sandbox, missing libs, profile lock) vanished and
+  // every launch failure looked like an ambiguous port timeout.
+  const { openSync, closeSync, readFileSync: readFile, unlinkSync } = require('fs');
+  const pathMod = require('path');
+  const stderrLogPath = pathMod.join(os.tmpdir(), `chrome-ws-start-${process.pid}.log`);
+  const stderrFd = openSync(stderrLogPath, 'w');
+
   const chrome = spawn(chromePath, chromeArgs, {
     detached: true,
-    stdio: 'ignore'
+    stdio: ['ignore', 'ignore', stderrFd]
+  });
+
+  // Race Chrome's exit against the port poll so "Chrome died at launch" is
+  // reported as that, not as "debug port not accessible".
+  let exited = null;
+  chrome.on('exit', (code, signal) => { exited = { code, signal }; });
+  chrome.on('error', (err) => {
+    console.error(`Failed to launch Chrome (${chromePath}): ${err.message}`);
+    process.exit(1);
   });
   chrome.unref();
+  closeSync(stderrFd); // the child keeps its own descriptor
+
+  const stderrTail = () => {
+    try {
+      const lines = readFile(stderrLogPath, 'utf8').trim().split('\n');
+      return lines.slice(-20).join('\n').trim();
+    } catch (_e) {
+      return '';
+    }
+  };
 
   const debugBase = `http://${CHROME_DEBUG_HOST}:${effectivePort}`;
 
@@ -348,9 +376,20 @@ if (command === 'start') {
       const version = await chromeHttp('/json/version');
       console.log(`Chrome started: ${version.Browser}`);
       console.log(`Remote debugging: ${debugBase}`);
+      try { unlinkSync(stderrLogPath); } catch (_e) { /* best-effort */ }
     } catch (e) {
-      console.error('Chrome started but remote debugging not accessible');
-      console.error(`Try: curl ${debugBase}/json/version`);
+      if (exited) {
+        const how = exited.signal ? `signal ${exited.signal}` : `code ${exited.code}`;
+        console.error(`Chrome exited with ${how} before opening the debug port`);
+      } else {
+        console.error(`Chrome is running but the debug port at ${debugBase} is not responding`);
+        console.error(`Try: curl ${debugBase}/json/version`);
+      }
+      const tail = stderrTail();
+      if (tail) {
+        console.error(`Chrome stderr (full log: ${stderrLogPath}):`);
+        console.error(tail);
+      }
       process.exit(1);
     }
   }, 2000);

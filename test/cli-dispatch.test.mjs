@@ -112,6 +112,83 @@ fs.writeFileSync(process.env.FAKE_CHROME_ARGS_FILE, JSON.stringify(process.argv.
     }
   });
 
+  // Issue #35: when Chrome dies at launch, the CLI previously reported the
+  // ambiguous "Chrome started but remote debugging not accessible" and threw
+  // Chrome's stderr away, sending users down the wrong diagnostic path.
+  it('start reports an immediate Chrome exit with its code and stderr', () => {
+    const dir = path.join(tmpdir(), `chrome-ws-cli-exit-${process.pid}-${Date.now()}`);
+    mkdirSync(dir, { recursive: true });
+    const fakeChrome = path.join(dir, 'fake-chrome');
+
+    writeFileSync(fakeChrome, `#!/usr/bin/env node
+console.error('Running as root without --no-sandbox is not supported.');
+process.exit(3);
+`, { mode: 0o755 });
+
+    try {
+      const r = runCLI(['--port=49219', 'start'], {
+        env: { CHROME_WS_BROWSER: fakeChrome },
+        timeoutMs: 8000,
+      });
+
+      assert.equal(r.status, 1, 'start should fail when Chrome dies immediately');
+      assert.match(r.stderr, /Chrome exited with code 3 before opening the debug port/);
+      assert.match(r.stderr, /Running as root without --no-sandbox/,
+        "Chrome's own stderr must be surfaced");
+      assert.doesNotMatch(r.stderr, /Chrome started but remote debugging not accessible/,
+        'the old misleading message must be gone');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('start distinguishes a live Chrome with an unresponsive debug port', () => {
+    const dir = path.join(tmpdir(), `chrome-ws-cli-live-${process.pid}-${Date.now()}`);
+    mkdirSync(dir, { recursive: true });
+    const fakeChrome = path.join(dir, 'fake-chrome');
+
+    // Stays alive past the CLI's verify window without opening the port.
+    writeFileSync(fakeChrome, `#!/usr/bin/env node
+setTimeout(() => {}, 5000);
+`, { mode: 0o755 });
+
+    try {
+      const r = runCLI(['--port=49220', 'start'], {
+        env: { CHROME_WS_BROWSER: fakeChrome },
+        timeoutMs: 8000,
+      });
+
+      assert.equal(r.status, 1);
+      assert.match(r.stderr, /Chrome is running but the debug port .* is not responding/,
+        'a live-but-unreachable Chrome must be reported as such');
+      assert.doesNotMatch(r.stderr, /Chrome exited/,
+        'must not claim Chrome exited when it is still running');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('start reports a spawn failure cleanly instead of an uncaught exception', () => {
+    const dir = path.join(tmpdir(), `chrome-ws-cli-spawnfail-${process.pid}-${Date.now()}`);
+    mkdirSync(dir, { recursive: true });
+    // A directory passes the CLI's existence check but cannot be executed.
+
+    try {
+      const r = runCLI(['--port=49221', 'start'], {
+        env: { CHROME_WS_BROWSER: dir },
+        timeoutMs: 8000,
+      });
+
+      assert.equal(r.status, 1);
+      assert.match(r.stderr, /Failed to launch Chrome/,
+        'spawn failure must produce a clear message');
+      assert.doesNotMatch(r.stderr, /at .*chrome-ws/,
+        'must not dump an uncaught-exception stack trace');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('start stays headed by default (no --headless=new without CHROME_EXTRA_ARGS)', () => {
     const dir = path.join(tmpdir(), `chrome-ws-cli-headed-${process.pid}-${Date.now()}`);
     mkdirSync(dir, { recursive: true });
