@@ -654,6 +654,82 @@ describe('chrome-process: getBrowserMode for adopted Chrome', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Issue #46: a spawn failure emits 'error' on the ChildProcess; without a
+// listener that's an uncaught exception that kills the whole MCP server.
+// The likeliest trigger is user input: CHROME_WS_BROWSER pointing at a
+// directory (e.g. the .app bundle instead of the inner binary) passes the
+// existsSync guard and fails at spawn.
+// ---------------------------------------------------------------------------
+
+describe('chrome-process: spawn failure surfaces as an error, not a crash', () => {
+  const HELPERS_PATH = require.resolve('../../skills/browsing/lib/chrome-launcher-helpers.js');
+
+  it('startChrome rejects when the spawned proc emits error', async () => {
+    const origHelpers = require.cache[HELPERS_PATH];
+    const origCp = require.cache['child_process'];
+
+    const fakeHelpers = {
+      readProfileMeta: () => null,
+      writeProfileMeta: () => {},
+      clearProfileMeta: () => {},
+      isPortAlive: async () => false,
+      findAvailablePort: async () => 9333,
+      findPidOnPort: () => null,
+      findOrphanChromeForProfile: () => null,
+      buildChromeArgs: () => ['--fake'],
+      getChromeProfileDir: () => '/tmp/fake-profile',
+    };
+    require.cache[HELPERS_PATH] = {
+      id: HELPERS_PATH, filename: HELPERS_PATH, loaded: true, exports: fakeHelpers,
+    };
+    require.cache['child_process'] = {
+      id: 'child_process', filename: 'child_process', loaded: true,
+      exports: {
+        spawn: () => {
+          const proc = makeFakeProc();
+          // EACCES/EISDIR arrive asynchronously, after spawn returns.
+          setImmediate(() => proc.emit('error', new Error('spawn EACCES')));
+          return proc;
+        },
+      },
+    };
+    delete require.cache[CHROME_PROCESS_PATH];
+    const { attachChromeProcess: fresh } = require(CHROME_PROCESS_PATH);
+
+    try {
+      const state = {
+        hostOverride: { getHost: () => '127.0.0.1', getPort: () => 9222 },
+        activePort: 9222,
+        chromeHeadless: true,
+        chromeProcess: null,
+        chromeProfileName: 'test-spawn-error',
+        chromeUserDataDir: '/tmp/fake-profile',
+      };
+      const { startChrome } = fresh({
+        state,
+        chromeHttp: async () => ({}),
+        getTabs: async () => [],
+        newTab: async () => ({}),
+      });
+
+      await assert.rejects(
+        () => startChrome(true, null, null),
+        /Failed to launch Chrome/,
+        'spawn error must reject startChrome, not crash the process'
+      );
+      assert.equal(state.chromeProcess, null, 'dead handle must be cleared');
+    } finally {
+      if (origHelpers) { require.cache[HELPERS_PATH] = origHelpers; }
+      else { delete require.cache[HELPERS_PATH]; }
+      if (origCp) { require.cache['child_process'] = origCp; }
+      else { delete require.cache['child_process']; }
+      delete require.cache[CHROME_PROCESS_PATH];
+      require(CHROME_PROCESS_PATH);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // CHROME_WS_BROWSER: env override of binary auto-detection in the MCP launch
 // path (issue #40). The CLI honored it already; chrome-process.js must too.
 // ---------------------------------------------------------------------------

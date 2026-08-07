@@ -207,13 +207,31 @@ function attachChromeProcess({ state, chromeHttp, getTabs, newTab }) {
       }
     });
 
+    // Spawn failures (EACCES, EISDIR — e.g. CHROME_WS_BROWSER pointing at the
+    // .app bundle instead of the inner binary) arrive as an async 'error'
+    // event; without a listener that's an uncaught exception that kills the
+    // whole server. Capture it and fail the launch below.
+    let spawnError = null;
+    proc.on('error', (err) => {
+      spawnError = err;
+      if (state.chromeProcess === proc) {
+        state.chromeProcess = null;
+      }
+    });
+
     // Poll until Chrome's debug port is accepting connections (or 15s timeout).
     const POLL_INTERVAL_MS = 200;
     const POLL_TIMEOUT_MS = 15000;
     const deadline = Date.now() + POLL_TIMEOUT_MS;
     while (Date.now() < deadline) {
+      if (spawnError) {
+        throw new Error(`Failed to launch Chrome (${chromePath}): ${spawnError.message}`);
+      }
       if (await isPortAlive(CHROME_DEBUG_HOST, chosenPort)) break;
       await new Promise(resolve => setTimeout(resolve, POLL_INTERVAL_MS));
+    }
+    if (spawnError) {
+      throw new Error(`Failed to launch Chrome (${chromePath}): ${spawnError.message}`);
     }
     if (!(await isPortAlive(CHROME_DEBUG_HOST, chosenPort))) {
       state.chromeProcess = null;
