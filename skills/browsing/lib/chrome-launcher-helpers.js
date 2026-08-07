@@ -159,10 +159,16 @@ async function findAvailablePort(start = PORT_RANGE_START, end = PORT_RANGE_END)
 // Uses platform-native tools — lsof on macOS/Linux, netstat on Windows.
 // Returns null on any failure (parsing, missing tool, no listener).
 function findPidOnPort(port) {
-  const { execSync } = require('child_process');
+  const { execFileSync } = require('child_process');
+  // Guard against a non-numeric or out-of-range port before using it.
+  const portNum = Number(port);
+  if (!Number.isInteger(portNum) || portNum <= 0 || portNum > 65535) {
+    return null;
+  }
   try {
     if (process.platform === 'darwin' || process.platform === 'linux') {
-      const out = execSync(`lsof -ti:${port} -sTCP:LISTEN`, {
+      // argv form, no shell: the port can never be shell-interpreted.
+      const out = execFileSync('lsof', [`-ti:${portNum}`, '-sTCP:LISTEN'], {
         encoding: 'utf8',
         stdio: ['ignore', 'pipe', 'ignore']
       }).trim();
@@ -172,11 +178,19 @@ function findPidOnPort(port) {
       return Number.isFinite(pid) ? pid : null;
     }
     if (process.platform === 'win32') {
-      const out = execSync(`netstat -ano | findstr :${port}`, {
+      // execFileSync can't express the old `netstat -ano | findstr :PORT`
+      // pipeline (pipes need a shell), so filter in JS instead: LISTENING
+      // lines whose local-address column ends with exactly `:PORT`.
+      const out = execFileSync('netstat', ['-ano'], {
         encoding: 'utf8',
         stdio: ['ignore', 'pipe', 'ignore']
       });
-      const lines = out.split(/\r?\n/).filter(l => /LISTENING/i.test(l));
+      const portSuffix = `:${portNum}`;
+      const lines = out.split(/\r?\n/).filter(l => {
+        if (!/LISTENING/i.test(l)) return false;
+        const cols = l.trim().split(/\s+/);
+        return cols.length >= 2 && cols[1].endsWith(portSuffix);
+      });
       if (!lines.length) return null;
       const cols = lines[0].trim().split(/\s+/);
       const pid = parseInt(cols[cols.length - 1], 10);
