@@ -26,6 +26,11 @@ function detectChrome() {
 
 const CHROME_AVAILABLE = detectChrome();
 
+// Isolate every profile/meta/lock path into a per-run temp dir so even a
+// crashed run leaves nothing behind in the user's real cache directory.
+// (Each test file runs in its own process, so this cannot leak to siblings.)
+process.env.XDG_CACHE_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'dialogs-smoke-'));
+
 // Poll until predicate returns truthy (or resolves truthy) or timeout elapses.
 async function waitFor(predicate, ms = 3000, interval = 50) {
   const deadline = Date.now() + ms;

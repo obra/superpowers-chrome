@@ -17,6 +17,10 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { makePageSessionFake } from './lib/_helpers.mjs';
 
+// The restartInMode tests reach the real profile-lock helpers; isolate every
+// meta/lock path so this process never touches the user's real cache dir.
+process.env.XDG_CACHE_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'schema-collapse-test-'));
+
 const require = createRequire(import.meta.url);
 
 // ---------------------------------------------------------------------------

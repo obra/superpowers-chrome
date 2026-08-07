@@ -28,6 +28,11 @@ const { createSession } = require('../skills/browsing/chrome-ws-lib.js');
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURES = path.join(__dirname, 'fixtures');
 
+// Isolate every profile/meta/lock path into a per-run temp dir so even a
+// crashed run leaves nothing behind in the user's real cache directory.
+// (Each test file runs in its own process, so this cannot leak to siblings.)
+process.env.XDG_CACHE_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'popup-dialog-'));
+
 // ---------------------------------------------------------------------------
 // Chrome detection (matches smoke.test.mjs)
 // ---------------------------------------------------------------------------

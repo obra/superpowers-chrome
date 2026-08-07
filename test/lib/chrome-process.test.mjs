@@ -2,6 +2,16 @@ import { strict as assert } from 'node:assert';
 import { createRequire } from 'node:module';
 import { describe, it } from 'node:test';
 import { EventEmitter } from 'node:events';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+// Several tests here run killChrome/startChrome against the REAL meta/lock
+// helpers with the real default profile name — without this, they delete
+// ~/.cache (or ~/Library/Caches) meta.json for the user's live MCP sessions.
+// getXdgCacheHome() reads this env var at call time, so setting it up front
+// isolates every profile-meta and lock path this process touches.
+process.env.XDG_CACHE_HOME = mkdtempSync(join(tmpdir(), 'chrome-process-test-'));
 
 const require = createRequire(import.meta.url);
 const { attachChromeProcess } = require('../../skills/browsing/lib/chrome-process.js');
