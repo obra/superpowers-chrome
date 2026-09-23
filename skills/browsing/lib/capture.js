@@ -208,6 +208,21 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
         const artifacts = renderSyntheticArtifacts(open);
         const prefix = createCapturePrefix(actionType);
         const dir = state.sessionDir;
+        // The dialog's message (and, for prompt, its default value) is
+        // page/JS-controlled text — alert()/confirm()/prompt()/beforeunload
+        // can all put a credential-shaped string there. Guard it exactly
+        // like the on-page path below: no files, a credentialSuppressed
+        // marker, no payload — `open` itself carries the message, so only
+        // its `kind` (the one field a caller actually reads) survives.
+        if (mustSuppress(artifacts.markdown, artifacts.html, artifacts.consoleSnapshot)) {
+          return {
+            capturePrefix: prefix,
+            sessionDir: dir,
+            files: null,
+            dialog: { kind: open.kind },
+            credentialSuppressed: true,
+          };
+        }
         writeIfDir(dir, `${prefix}.md`, artifacts.markdown);
         writeIfDir(dir, `${prefix}.html`, artifacts.html);
         writeIfDir(dir, `${prefix}-console.txt`, artifacts.consoleSnapshot);
@@ -388,6 +403,21 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
         const artifacts = renderSyntheticArtifacts(openAfter);
         const afterPrefix = createCapturePrefix(actionType);
         const dir = state.sessionDir;
+        // Same guard as capturePageArtifacts's dialog short-circuit above: the
+        // dialog's message is page/JS-controlled and can carry a
+        // credential-shaped string. Suppress the files, withhold the raw
+        // artifacts (formatCaptureResponse falls back to `Dialog opened:
+        // ${dialog.kind}` when artifacts is absent), and strip the payload
+        // from the returned dialog descriptor — openAfter itself carries the
+        // message, so only its `kind` survives.
+        if (mustSuppress(artifacts.markdown, artifacts.html, artifacts.consoleSnapshot)) {
+          return {
+            actionResult,
+            capture: null,
+            dialog: { kind: openAfter.kind },
+            credentialSuppressed: true,
+          };
+        }
         writeIfDir(dir, `${afterPrefix}.md`, artifacts.markdown);
         writeIfDir(dir, `${afterPrefix}.html`, artifacts.html);
         writeIfDir(dir, `${afterPrefix}-console.txt`, artifacts.consoleSnapshot);
