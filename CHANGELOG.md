@@ -2,6 +2,21 @@
 
 All notable changes to the superpowers-chrome MCP project.
 
+## [3.0.6] - 2026-09-23 - Auto-capture no longer copies secrets to disk or into the agent's transcript
+
+### Security
+- Auto-capture leaked secrets a page displayed. Every DOM action (navigate, click, type, select, eval, keyboard_press, hover, drag_drop, double_click, right_click, file_upload) wrote the page's HTML, markdown, screenshot and diff to the session dir and returned a DOM summary (title, headings) and, for before/after actions, a raw-HTML diff excerpt to the agent. A page showing a Slack token, API token, 2FA seed or backup codes therefore landed on disk and in the agent's own context. This was observed on a live agent enabling Slack 2FA.
+- New shared detector `skills/browsing/lib/credential-guard.js` covers Slack tokens (`xox[abposr]-`, `xoxe.`/`xoxe-`, `xapp-`), GitHub tokens (`ghp_`, `gho_`, `ghu_`, `ghs_`, `ghr_`, `github_pat_`), 1Password service-account tokens (`ops_eyJ…`) and Secret Keys (`A3-…`), `otpauth://` URIs carrying a `secret=`, and an explicit page marker (any element with a `data-sen-secret` attribute) for secrets with no distinctive shape. Minimum lengths keep prose that only names a prefix ("bot tokens start with `xoxb-`") from tripping it. There is deliberately no leading word boundary, so URL-encoded or glued text (`%3Exoxb-…`) still matches.
+- When the page's HTML, markdown, DOM summary or live `input`/`textarea` values are credential-shaped (before or after the action), auto-capture writes **no files** for that action, takes no screenshots, and returns only URL, size, element counts and layout, plus `⚠️ Page shows credential-shaped content; auto-capture and DOM output suppressed. …`. The title, headings and DOM diff are dropped.
+- Every `use_browser` result, error and dialog refusal has credential-shaped substrings replaced with `[REDACTED credential-shaped]`, which covers `extract` and `eval` output. `eval` still returns non-secret values (e.g. a token's length). `screenshot` refuses on a credential-shaped page.
+- `SUPERPOWERS_CHROME_ALLOW_CREDENTIAL_CAPTURE=1` restores the old behavior for debugging your own browser. The default is the safe behavior.
+- Known limits: the check reads the main frame's DOM, so a secret rendered inside an iframe or a shadow root isn't seen. Secrets with no distinctive shape (bare base32 TOTP seeds, backup codes) are only caught when the page marks them with `data-sen-secret`.
+
+### Tests
+- `test/lib/credential-guard.test.mjs`: true and false positives for each pattern, the marker, glued/URL-encoded tokens, redaction, and the opt-out switch.
+- `test/lib/capture-credential-guard.test.mjs`: the single-capture and before/after capture paths write no files and return no page text for a token in the HTML, a token only in a live input value, or the marker. A normal page and the opt-out still capture as before.
+- `test/credential-guard-mcp.test.mjs`: the bundled MCP server driving real headless Chrome over `data:` URLs covers navigate, click, extract, eval, screenshot, a keypress that reveals a token, a normal page, and the opt-out.
+
 ## [3.0.5] - 2026-08-07 - Reliability and hardening across the MCP and CLI launch paths
 
 ### Fixed
