@@ -204,6 +204,7 @@ function attachNavigation({ state, getPageSession, capturePageArtifacts, evaluat
           sessionDir: artifacts.sessionDir,
           files: artifacts.files,
           domSummary: artifacts.domSummary,
+          credentialSuppressed: artifacts.credentialSuppressed,
           consoleLog
         };
       } catch (error) {

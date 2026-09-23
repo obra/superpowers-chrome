@@ -5,6 +5,24 @@ const { generateHtmlDiff } = require('./html-diff');
 const { throwIfExceptionDetails } = require('./cdp-utils');
 const markdownScript = require('./page-scripts/markdown');
 const domSummaryScript = require('./page-scripts/dom-summary');
+const { containsCredentialShaped, credentialCaptureAllowed } = require('./credential-guard');
+
+// Live values of text-entry fields. outerHTML only carries the value
+// *attribute*, so a token a page script writes into an <input>/<textarea>
+// is invisible to the HTML scan but still shows up in the screenshot.
+const FORM_VALUES_EXPRESSION =
+  "Array.from(document.querySelectorAll('input, textarea')).map(el => el.value).join('\\n')";
+
+// Only these DOM-summary lines are returned for a suppressed capture: they
+// are element counts and landmark structure. The title and headings lines
+// are page text and are dropped even when they look harmless, because a
+// truncated heading can carry a partial secret the detector can't match.
+function suppressedDomSummary(domSummary) {
+  return String(domSummary || '')
+    .split('\n')
+    .filter(line => line.startsWith('Interactive:') || line.startsWith('Layout:'))
+    .join('\n');
+}
 
 // Module-level registry of active session-cleanup callbacks.
 // Per-session initializeSession adds its bound cleanup to the set;
@@ -129,6 +147,31 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
     return result.result.value;
   }
 
+  async function getFormValues(tabIndexOrWsUrl) {
+    const ps = await getPageSession(tabIndexOrWsUrl);
+    const result = await ps.send('Runtime.evaluate', {
+      expression: FORM_VALUES_EXPRESSION,
+      returnByValue: true
+    });
+    throwIfExceptionDetails(result);
+    return result.result.value;
+  }
+
+  // True when auto-capture must not copy this page's content anywhere.
+  // Always false when SUPERPOWERS_CHROME_ALLOW_CREDENTIAL_CAPTURE=1.
+  function mustSuppress(...pageTexts) {
+    return !credentialCaptureAllowed() && pageTexts.some(containsCredentialShaped);
+  }
+
+  // Value-blind check the MCP server runs before an explicit screenshot.
+  async function pageContainsCredentialShaped(tabIndexOrWsUrl) {
+    const [html, formValues] = await Promise.all([
+      getHtml(tabIndexOrWsUrl),
+      getFormValues(tabIndexOrWsUrl)
+    ]);
+    return containsCredentialShaped(html) || containsCredentialShaped(formValues);
+  }
+
   // Write content to a file inside dir, silently skipping if dir doesn't exist.
   function writeIfDir(dir, filename, content) {
     if (!dir) return;
@@ -177,12 +220,24 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
     const prefix = createCapturePrefix(actionType);
     const dir = initializeSession();
 
-    const [html, markdown, pageSize, domSummary] = await Promise.all([
+    const [html, markdown, pageSize, domSummary, formValues] = await Promise.all([
       getHtml(tabIndexOrWsUrl),
       generateMarkdown(tabIndexOrWsUrl),
       getPageSize(tabIndexOrWsUrl),
-      generateDomSummary(tabIndexOrWsUrl)
+      generateDomSummary(tabIndexOrWsUrl),
+      getFormValues(tabIndexOrWsUrl)
     ]);
+
+    if (mustSuppress(html, markdown, domSummary, formValues)) {
+      return {
+        capturePrefix: prefix,
+        sessionDir: dir,
+        files: null,
+        pageSize,
+        domSummary: suppressedDomSummary(domSummary),
+        credentialSuppressed: true
+      };
+    }
 
     const htmlPath = path.join(dir, `${prefix}.html`);
     const markdownPath = path.join(dir, `${prefix}.md`);
@@ -294,11 +349,15 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
     // BEFORE: html + screenshot, with focus saved/restored around the screenshot.
     // Use pinnedTab throughout so a popup spawned mid-action doesn't redirect
     // capture to the wrong tab.
+    // A page that already shows a secret gets no BEFORE screenshot at all.
     const beforeHtml = await getHtml(pinnedTab);
-    const focusInfo = await saveFocus();
+    const beforeSuppressed = mustSuppress(beforeHtml, await getFormValues(pinnedTab));
     const beforeScreenshotPath = path.join(dir, `${prefix}-before.png`);
-    await screenshot(pinnedTab, beforeScreenshotPath);
-    await restoreFocus(focusInfo);
+    if (!beforeSuppressed) {
+      const focusInfo = await saveFocus();
+      await screenshot(pinnedTab, beforeScreenshotPath);
+      await restoreFocus(focusInfo);
+    }
 
     const actionResult = await actionFn();
 
@@ -328,12 +387,33 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
     // before the AFTER snapshot.
     await new Promise(resolve => setTimeout(resolve, settleTime));
 
-    const [afterHtml, markdown, pageSize, domSummary] = await Promise.all([
+    const [afterHtml, markdown, pageSize, domSummary, afterFormValues] = await Promise.all([
       getHtml(pinnedTab),
       generateMarkdown(pinnedTab),
       getPageSize(pinnedTab),
-      generateDomSummary(pinnedTab)
+      generateDomSummary(pinnedTab),
+      getFormValues(pinnedTab)
     ]);
+
+    // Either side showing a secret suppresses the whole action's capture:
+    // the diff of a before-page secret would reprint it as a REMOVED line.
+    // The BEFORE screenshot of a clean page is removed too, so the action
+    // leaves no artifacts behind.
+    if (beforeSuppressed || mustSuppress(afterHtml, markdown, domSummary, afterFormValues)) {
+      fs.rmSync(beforeScreenshotPath, { force: true });
+      return {
+        actionResult,
+        capture: {
+          prefix,
+          sessionDir: dir,
+          files: {},
+          pageSize,
+          domSummary: suppressedDomSummary(domSummary),
+          diffSummary: '',
+          credentialSuppressed: true
+        }
+      };
+    }
 
     const diff = generateHtmlDiff(beforeHtml, afterHtml);
 
@@ -399,6 +479,7 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
         sessionDir: artifacts.sessionDir,
         files: artifacts.files,
         domSummary: artifacts.domSummary,
+        credentialSuppressed: artifacts.credentialSuppressed,
         consoleLog: [] // Placeholder
       };
     };
@@ -423,6 +504,7 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
         sessionDir: artifacts.sessionDir,
         files: artifacts.files,
         domSummary: artifacts.domSummary,
+        credentialSuppressed: artifacts.credentialSuppressed,
         consoleLog: [] // Placeholder
       };
     };
@@ -447,6 +529,7 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
         sessionDir: artifacts.sessionDir,
         files: artifacts.files,
         domSummary: artifacts.domSummary,
+        credentialSuppressed: artifacts.credentialSuppressed,
         consoleLog: [] // Placeholder
       };
     };
@@ -471,6 +554,7 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
         sessionDir: artifacts.sessionDir,
         files: artifacts.files,
         domSummary: artifacts.domSummary,
+        credentialSuppressed: artifacts.credentialSuppressed,
         consoleLog: [] // Placeholder
       };
     };
@@ -489,6 +573,7 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
     generateMarkdown,
     capturePageArtifacts,
     captureActionWithDiff,
+    pageContainsCredentialShaped,
     clickWithCapture,
     fillWithCapture,
     selectOptionWithCapture,

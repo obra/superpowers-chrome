@@ -185,6 +185,8 @@ DOM-changing actions (navigate, click, type, select, eval) automatically capture
 - **DOM Summary**: Token-efficient page structure
 - **Session Organization**: Time-ordered captures in temp directory
 
+Pages showing credential-shaped content are not captured; see [Credential-shaped pages](#credential-shaped-pages).
+
 Response format:
 ```
 → https://example.com (capture #001)
@@ -196,6 +198,12 @@ DOM:
   Interactive: 0 buttons, 0 inputs, 1 links
   Layout: body
 ```
+
+### Credential-shaped pages
+
+When a page shows credential-shaped content, auto-capture writes **no files** for that action and the response carries only metadata (URL, size, element counts, layout) plus a `⚠️ Page shows credential-shaped content; auto-capture and DOM output suppressed.` line. No markdown, headings, title, or DOM diff is returned. This covers Slack tokens (`xox[abposr]-`, `xoxe.`/`xoxe-`, `xapp-`), GitHub tokens (`ghp_`, `gho_`, `ghu_`, `ghs_`, `ghr_`, `github_pat_`), 1Password service-account tokens (`ops_eyJ…`) and Secret Keys (`A3-…`), `otpauth://` URIs carrying a `secret=`, and any page containing an element with the `data-sen-secret` attribute (for secrets with no distinctive shape, like backup codes). The check covers the HTML, the rendered markdown, the DOM summary, and live `input`/`textarea` values; it does not see inside iframes or shadow roots.
+
+In addition, every `use_browser` result and error has credential-shaped substrings replaced with `[REDACTED credential-shaped]` (this is how `extract` and `eval` output is handled), and `screenshot` refuses on such a page. Set `SUPERPOWERS_CHROME_ALLOW_CREDENTIAL_CAPTURE=1` to restore the old behavior when debugging your own browser.
 
 ### Usage
 
