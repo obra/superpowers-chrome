@@ -34,7 +34,7 @@ Every DOM action (navigate, click, type, select, eval, keyboard_press, hover, dr
 
 Files are saved to the session directory with sequential prefixes (001-navigate, 002-click, etc.). You must check these before using extract or screenshot actions.
 
-**Credential-shaped pages:** when a page shows a token or secret (Slack `xoxb-`/`xapp-`, GitHub `ghp_`/`github_pat_`, 1Password `ops_`/`A3-` keys, `otpauth://` seeds, or any element marked `data-sen-secret`), no files are written for that action and the response says `⚠️ Page shows credential-shaped content; auto-capture and DOM output suppressed.` with only metadata. `extract`/`eval` output has such values replaced by `[REDACTED credential-shaped]`, and `screenshot` refuses. Capture secrets with a credential broker; use `eval` only for value-blind queries (e.g. "is the token field present?"). `SUPERPOWERS_CHROME_ALLOW_CREDENTIAL_CAPTURE=1` turns this off.
+**Credential-shaped pages:** when a page shows a token or secret (Slack `xoxb-`/`xapp-`, GitHub `ghp_`/`github_pat_`, 1Password `ops_`/`A3-` keys, `otpauth://` seeds, or any element marked `data-sen-secret`), no files are written for that action and the response says `⚠️ Page shows credential-shaped content; auto-capture and DOM output suppressed.` with only metadata. `extract`/`eval` output has such values replaced by `[REDACTED credential-shaped]`, and `screenshot` refuses. Capture secrets with a credential broker; use `eval` only for value-blind queries (e.g. "is the token field present?"). The check sees the HTML, rendered text and open shadow roots, but not closed shadow roots or iframes. `SUPERPOWERS_CHROME_ALLOW_CREDENTIAL_CAPTURE=1` turns this off.
 
 ## The use_browser Tool
 

@@ -67,6 +67,30 @@ function reserveFreePort() {
   });
 }
 
+// The token as a JS expression that assembles it at runtime, so it never
+// appears whole in a page's HTML source (only in what the page renders).
+const TOKEN_JS_EXPR = FAKE_TOKEN.match(/.{1,8}/g).map((part) => `'${part}'`).join(' + ');
+
+// The token split across inline spans: rendered as one run of text, but
+// never whole in outerHTML or in the markdown extractor's elements.
+const SPLIT_SPAN_PAGE = dataUrl(
+  '<title>Split page</title><div>' +
+  FAKE_TOKEN.match(/.{1,6}/g).map((part) => `<span>${part}</span>`).join('') +
+  '</div>'
+);
+// The token inside an open shadow root.
+const SHADOW_ROOT_PAGE = dataUrl(
+  '<title>Shadow page</title><div id="host"></div>' +
+  `<script>document.getElementById('host').attachShadow({ mode: 'open' }).innerHTML = '<p>' + ${TOKEN_JS_EXPR} + '</p>';</script>`
+);
+// Clicking "Show" reveals the token 20ms later, i.e. while the post-click
+// auto-capture is running (the XHR-after-"Generate" shape).
+const DELAYED_REVEAL_PAGE = dataUrl(
+  '<title>Delayed page</title><button id="show">Show</button><div id="out"></div>' +
+  `<script>document.getElementById('show').addEventListener('click', () => setTimeout(() => { ` +
+  `document.getElementById('out').textContent = ${TOKEN_JS_EXPR}; }, 20));</script>`
+);
+
 /**
  * One MCP server process with its own XDG cache (so its Chrome profile and
  * session dir are private to this test). call() issues a use_browser
@@ -219,6 +243,34 @@ describe('credential guard through the MCP server (real Chrome)', { skip: !CHROM
     assertNoLeak(text);
     assert.ok(!text.includes('DOM Changes'), text);
     assert.equal(server.capturedFiles().length, filesBefore, 'no before/after/diff files may remain');
+  });
+
+  for (const [name, page] of [
+    ['split across inline spans', SPLIT_SPAN_PAGE],
+    ['inside an open shadow root', SHADOW_ROOT_PAGE],
+  ]) {
+    it(`a token ${name} is suppressed and refuses screenshot`, async () => {
+      const filesBefore = server.capturedFiles().length;
+      const { text } = await server.call({ action: 'navigate', payload: page });
+
+      assert.ok(text.includes(NOTICE), text);
+      assertNoLeak(text);
+      assert.equal(server.capturedFiles().length, filesBefore, 'no capture artifacts may be written');
+
+      const shot = path.join(server.xdg, 'hidden-token.png');
+      const shotResult = await server.call({ action: 'screenshot', payload: shot });
+      assert.equal(shotResult.isError, true, shotResult.text);
+      assert.equal(fs.existsSync(shot), false);
+    });
+  }
+
+  it('a token revealed while the post-click capture runs leaves no files', async () => {
+    await server.call({ action: 'navigate', payload: DELAYED_REVEAL_PAGE });
+    const filesBefore = server.capturedFiles().length;
+    const { text } = await server.call({ action: 'click', selector: '#show' });
+
+    assertNoLeak(text);
+    assert.equal(server.capturedFiles().length, filesBefore, 'no artifact (PNG included) may survive');
   });
 
   it('a normal page still captures files and DOM text as before', async () => {

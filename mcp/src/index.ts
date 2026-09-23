@@ -491,14 +491,14 @@ async function executeBrowserAction(params: UseBrowserInput): Promise<string> {
         throw new Error("screenshot requires payload with filename (string or {path,fullpage?})");
       }
       const fullpage = p.fullpage ?? false;
-      if (!credentialGuard.credentialCaptureAllowed() && await chromeLib.pageContainsCredentialShaped(tabIndex)) {
+      const selectorForScreenshot = topSelector ?? (typeof p.selector === 'string' ? p.selector : undefined);
+      const savedPath = await chromeLib.screenshotUnlessCredentialShaped(tabIndex, filepath, selectorForScreenshot, fullpage);
+      if (!savedPath) {
         throw new Error(
           "screenshot refused: page shows credential-shaped content. " +
           "Use the credential broker to capture values; use eval only for value-blind queries."
         );
       }
-      const selectorForScreenshot = topSelector ?? (typeof p.selector === 'string' ? p.selector : undefined);
-      const savedPath = await chromeLib.screenshot(tabIndex, filepath, selectorForScreenshot, fullpage);
       return `Screenshot saved to ${savedPath}`;
     }
 

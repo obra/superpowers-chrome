@@ -1,6 +1,6 @@
 // Auto-capture must not copy credential-shaped page content to disk or back
 // into the tool result. These tests drive capture.js with a fake page whose
-// HTML / markdown / DOM summary / live form values are controlled per test.
+// HTML / markdown / DOM summary / rendered text are controlled per test.
 // The token strings are obviously fake.
 import { strict as assert } from 'node:assert';
 import * as fs from 'node:fs';
@@ -24,28 +24,29 @@ const CLEAN_PAGE = {
   html: '<html><body><h1>Welcome</h1></body></html>',
   markdown: '# Welcome',
   domSummary: 'Welcome\nInteractive: 1 buttons, 0 inputs, 2 links\nHeadings: "Welcome"\nLayout: body',
-  formValues: '',
+  renderedText: '',
 };
 
 const TOKEN_PAGE = {
   html: `<html><body><h1>${SECRET_HEADING}</h1><code>${FAKE_TOKEN}</code></body></html>`,
   markdown: `# ${SECRET_HEADING}\n\n${FAKE_TOKEN}`,
   domSummary: `Token page\nInteractive: 1 buttons, 1 inputs, 0 links\nHeadings: "${SECRET_HEADING}"\nLayout: body`,
-  formValues: '',
+  renderedText: '',
 };
 
-// A token that appears only in a live input value (set by script, so it is
-// not in outerHTML or the markdown).
+// A token that appears only in the rendered text (a live input value set by
+// script, text split across inline spans, or an open shadow root), so it is
+// not in outerHTML or the markdown.
 const TOKEN_IN_INPUT_VALUE_PAGE = {
   ...CLEAN_PAGE,
-  formValues: FAKE_TOKEN,
+  renderedText: FAKE_TOKEN,
 };
 
 const MARKER_PAGE = {
   html: '<html><body><h1>Backup codes</h1><ul data-sen-secret><li>1234 5678</li></ul></body></html>',
   markdown: '# Backup codes\n\n- 1234 5678',
   domSummary: 'Backup codes\nInteractive: 0 buttons, 0 inputs, 0 links\nHeadings: "Backup codes"\nLayout: body',
-  formValues: '',
+  renderedText: '',
 };
 
 const ENV = 'SUPERPOWERS_CHROME_ALLOW_CREDENTIAL_CAPTURE';
@@ -76,7 +77,10 @@ after(() => {
 
 // pages: the page state before the action and after it. `pageRef.current`
 // is flipped by the fake action so getHtml & friends report the new page.
-function setup({ before, after: afterPage = before }) {
+// revealOnScreenshot: { call, page } flips the page to `page` while the
+// call-th screenshot is being taken — a token revealed (e.g. by an XHR)
+// between the content check and the pixels.
+function setup({ before, after: afterPage = before, revealOnScreenshot = null }) {
   const pageRef = { current: before };
   const calls = { screenshot: 0, action: 0 };
   const ps = {
@@ -91,7 +95,8 @@ function setup({ before, after: afterPage = before }) {
       if (expr.includes('window.innerWidth')) {
         return { result: { value: { width: 800, height: 600, documentWidth: 800, documentHeight: 600 } } };
       }
-      if (expr.includes("querySelectorAll('input, textarea')")) return { result: { value: page.formValues } };
+      // Matches both the rendered-text script and its input-values-only predecessor.
+      if (expr.includes("querySelectorAll('input, textarea')")) return { result: { value: page.renderedText } };
       return { result: { value: null } };
     },
   };
@@ -100,7 +105,12 @@ function setup({ before, after: afterPage = before }) {
     state,
     getPageSession: async () => ps,
     getHtml: async () => pageRef.current.html,
-    screenshot: async (_tab, file) => { calls.screenshot++; fs.writeFileSync(file, 'PNG'); return file; },
+    screenshot: async (_tab, file) => {
+      calls.screenshot++;
+      if (revealOnScreenshot && revealOnScreenshot.call === calls.screenshot) pageRef.current = revealOnScreenshot.page;
+      fs.writeFileSync(file, 'PNG');
+      return file;
+    },
     actions: {
       click: async () => { calls.action++; pageRef.current = afterPage; return { clicked: true }; },
       evaluate: async () => { calls.action++; return 42; },
@@ -170,6 +180,18 @@ describe('capturePageArtifacts credential guard', () => {
     assert.ok(fs.readFileSync(result.files.html, 'utf8').includes(FAKE_TOKEN));
   });
 
+  it('leaves no files when a token appears while the screenshot is taken', async () => {
+    const { capturePageArtifacts, state } = setup({
+      before: CLEAN_PAGE,
+      revealOnScreenshot: { call: 1, page: TOKEN_PAGE },
+    });
+    const result = await capturePageArtifacts(0, 'click');
+
+    assert.equal(result.credentialSuppressed, true);
+    assert.deepEqual(sessionFiles(state), [], 'the PNG and every other artifact must be gone');
+    assertNoLeak(result);
+  });
+
   it('the *WithCapture wrappers pass the suppression through', async () => {
     const { clickWithCapture, evaluateWithCapture } = setup({ before: TOKEN_PAGE });
     const clicked = await clickWithCapture(0, '#reveal');
@@ -200,6 +222,21 @@ describe('captureActionWithDiff credential guard', () => {
       assert.deepEqual(sessionFiles(state), [], 'no before/after/diff/md/png files may remain');
       assert.deepEqual(result.capture.files, {});
       assert.equal(result.capture.diffSummary, '');
+      assertNoLeak(result);
+    });
+  }
+
+  for (const [name, call] of [['BEFORE', 1], ['AFTER', 2]]) {
+    it(`leaves no files when a token appears while the ${name} screenshot is taken`, async () => {
+      const { captureActionWithDiff, state, act } = setup({
+        before: CLEAN_PAGE,
+        after: CLEAN_PAGE,
+        revealOnScreenshot: { call, page: TOKEN_PAGE },
+      });
+      const result = await captureActionWithDiff(0, 'keypress', act, 0);
+
+      assert.equal(result.capture.credentialSuppressed, true);
+      assert.deepEqual(sessionFiles(state), [], 'no before/after/diff/md/png files may remain');
       assertNoLeak(result);
     });
   }
@@ -244,5 +281,41 @@ describe('pageContainsCredentialShaped', () => {
   it('is false for a normal page', async () => {
     const { pageContainsCredentialShaped } = setup({ before: CLEAN_PAGE });
     assert.equal(await pageContainsCredentialShaped(0), false);
+  });
+});
+
+describe('screenshotUnlessCredentialShaped', () => {
+  function shotPath() {
+    return path.join(process.env.XDG_CACHE_HOME, 'explicit.png');
+  }
+
+  it('saves a screenshot of a normal page', async () => {
+    const { screenshotUnlessCredentialShaped } = setup({ before: CLEAN_PAGE });
+    const saved = await screenshotUnlessCredentialShaped(0, shotPath());
+    assert.equal(saved, shotPath());
+    assert.ok(fs.existsSync(shotPath()));
+  });
+
+  it('takes no screenshot of a page that already shows a token', async () => {
+    const { screenshotUnlessCredentialShaped, calls } = setup({ before: TOKEN_IN_INPUT_VALUE_PAGE });
+    assert.equal(await screenshotUnlessCredentialShaped(0, shotPath()), null);
+    assert.equal(calls.screenshot, 0);
+    assert.equal(fs.existsSync(shotPath()), false);
+  });
+
+  it('deletes the screenshot when a token appears while it is taken', async () => {
+    const { screenshotUnlessCredentialShaped } = setup({
+      before: CLEAN_PAGE,
+      revealOnScreenshot: { call: 1, page: TOKEN_PAGE },
+    });
+    assert.equal(await screenshotUnlessCredentialShaped(0, shotPath()), null);
+    assert.equal(fs.existsSync(shotPath()), false);
+  });
+
+  it(`${ENV}=1 saves the screenshot regardless`, async () => {
+    process.env[ENV] = '1';
+    const { screenshotUnlessCredentialShaped } = setup({ before: TOKEN_PAGE });
+    assert.equal(await screenshotUnlessCredentialShaped(0, shotPath()), shotPath());
+    assert.ok(fs.existsSync(shotPath()));
   });
 });
