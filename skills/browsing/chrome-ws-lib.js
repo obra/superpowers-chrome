@@ -85,6 +85,7 @@ const PAGE_TARGET_SESSION_METHODS = new Set([
   'fillWithCapture',
   'selectOptionWithCapture',
   'evaluateWithCapture',
+  'screenshotUnlessCredentialShaped',
   // captureActionWithDiff is intentionally excluded: it is a meta-wrapper whose
   // second arg is an action-type string ('type', 'click', …), not a selector.
   // The inner actions it wraps (humanType, click, hover, etc.) are individually
@@ -280,6 +281,7 @@ function createSession({ host, port, _testFakes } = {}) {
     generateMarkdown,
     capturePageArtifacts,
     captureActionWithDiff,
+    screenshotUnlessCredentialShaped,
     clickWithCapture,
     fillWithCapture,
     selectOptionWithCapture,
@@ -426,6 +428,9 @@ function createSession({ host, port, _testFakes } = {}) {
     // DOM diff capture (before/after with diff)
     generateHtmlDiff,
     captureActionWithDiff,
+
+    // Credential-shaped content guard (see lib/credential-guard.js)
+    screenshotUnlessCredentialShaped,
 
     // Dynamic port allocation and per-profile meta.json
     getActivePort,

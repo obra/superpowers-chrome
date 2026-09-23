@@ -33,6 +33,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const require = createRequire(import.meta.url);
 const chromeLib = require(join(__dirname, "../../skills/browsing/chrome-ws-lib.js")).createSession();
+const credentialGuard = require(join(__dirname, "../../skills/browsing/lib/credential-guard.js"));
 const SERVER_VERSION = require(join(__dirname, "../package.json")).version;
 
 /**
@@ -219,17 +220,29 @@ function formatDialogRefusal(error: any): string {
 }
 
 /**
+ * Where an auto-capture's files went — or, when the page showed
+ * credential-shaped content, why there are none.
+ */
+function formatCaptureFiles(actionResult: any): string[] {
+  if (actionResult.credentialSuppressed) {
+    return [credentialGuard.CREDENTIAL_SUPPRESSED_NOTICE];
+  }
+  const prefix = actionResult.capturePrefix || '???';
+  return [
+    `Session dir: ${actionResult.sessionDir}`,
+    `Files: ${prefix}.html, ${prefix}.md, ${prefix}.png, ${prefix}-console.txt`
+  ];
+}
+
+/**
  * Format action response with capture information
  */
 function formatActionResponse(actionResult: any, actionDescription: string): string {
-  const prefix = actionResult.capturePrefix || '???';
-
   const response = [
     `${actionDescription}`,
     `Current URL: ${actionResult.url || 'unknown'}`,
     `Size: ${actionResult.pageSize?.width}×${actionResult.pageSize?.height}`,
-    `Session dir: ${actionResult.sessionDir}`,
-    `Files: ${prefix}.html, ${prefix}.md, ${prefix}.png, ${prefix}-console.txt`
+    ...formatCaptureFiles(actionResult)
   ];
 
   // Add console messages if any
@@ -268,6 +281,7 @@ function formatCaptureResponse(
     diffSummary: string;
     domSummary: string;
     pageSize: { width: number; height: number };
+    credentialSuppressed?: boolean;
   } | null,
   dialog?: any,
   artifacts?: any
@@ -278,6 +292,15 @@ function formatCaptureResponse(
     return `${action}: ${details}\n\nDialog is now open — page is waiting for user input.\n\n${dialogDesc}`;
   }
   const capture = captureOrNull;
+
+  if (capture.credentialSuppressed) {
+    return `${action}: ${details}
+
+${credentialGuard.CREDENTIAL_SUPPRESSED_NOTICE}
+
+📊 Page: ${capture.pageSize.width}×${capture.pageSize.height}
+${capture.domSummary}`;
+  }
 
   const fileList = Object.entries(capture.files)
     .map(([key, path]) => `  ${key}: ${path}`)
@@ -293,6 +316,17 @@ ${capture.domSummary}
 
 📝 DOM Changes:
 ${capture.diffSummary}`;
+}
+
+/**
+ * Last line of defense: every piece of text use_browser returns (results,
+ * errors, dialog refusals) has credential-shaped substrings replaced, so
+ * a token that reached the output by any path — extract, eval, a URL, an
+ * error message — never lands in the agent's transcript. Off when
+ * SUPERPOWERS_CHROME_ALLOW_CREDENTIAL_CAPTURE=1.
+ */
+function redactUnlessAllowed(text: string): string {
+  return credentialGuard.credentialCaptureAllowed() ? text : credentialGuard.redactCredentialShaped(text);
 }
 
 const RESTART_BANNER = '[Chrome auto-restarted; URL reset to about:blank. Re-navigate to continue.]';
@@ -318,13 +352,11 @@ async function executeBrowserAction(params: UseBrowserInput): Promise<string> {
 
       // Handle enhanced response
       if (typeof navResult === 'object' && navResult.url) {
-        const prefix = navResult.capturePrefix || '???';
         const response = [
           `Navigated to ${navResult.url}`,
           `Current URL: ${navResult.url}`,
           `Size: ${navResult.pageSize?.width}×${navResult.pageSize?.height}`,
-          `Session dir: ${navResult.sessionDir}`,
-          `Files: ${prefix}.html, ${prefix}.md, ${prefix}.png, ${prefix}-console.txt`
+          ...formatCaptureFiles(navResult)
         ];
 
         if (navResult.error) {
@@ -460,7 +492,13 @@ async function executeBrowserAction(params: UseBrowserInput): Promise<string> {
       }
       const fullpage = p.fullpage ?? false;
       const selectorForScreenshot = topSelector ?? (typeof p.selector === 'string' ? p.selector : undefined);
-      const savedPath = await chromeLib.screenshot(tabIndex, filepath, selectorForScreenshot, fullpage);
+      const savedPath = await chromeLib.screenshotUnlessCredentialShaped(tabIndex, filepath, selectorForScreenshot, fullpage);
+      if (!savedPath) {
+        throw new Error(
+          "screenshot refused: page shows credential-shaped content. " +
+          "Use the credential broker to capture values; use eval only for value-blind queries."
+        );
+      }
       return `Screenshot saved to ${savedPath}`;
     }
 
@@ -1104,6 +1142,9 @@ Every DOM action auto-captures to the session dir:
 Files use sequential prefixes: 001-navigate, 002-click, etc.
 Prefer reading these files to using 'extract' or 'screenshot' whenever possible.
 
+## Credential-Shaped Pages
+If a page shows credential-shaped content (Slack/GitHub/1Password tokens, otpauth:// seeds, or any element with a data-sen-secret attribute), the action writes no capture files and returns only metadata with a "⚠️ Page shows credential-shaped content" line. All output has such values replaced by [REDACTED credential-shaped]; screenshot refuses. Use a credential broker to capture secrets; use eval only for value-blind queries. SUPERPOWERS_CHROME_ALLOW_CREDENTIAL_CAPTURE=1 disables this.
+
 ## Selectors
 CSS: "button.submit", "#email", ".form input[name=password]"
 XPath: "//button[@type='submit']", "//input[@name='email']"
@@ -1131,7 +1172,7 @@ async function executeBrowserActionWithBanner(params: UseBrowserInput): Promise<
   const prependBanner = chromeWasRestarted;
   chromeWasRestarted = false;
 
-  const result = await executeBrowserAction(params);
+  const result = redactUnlessAllowed(await executeBrowserAction(params));
   if (prependBanner) {
     return `${RESTART_BANNER}\n\n${result}`;
   }
@@ -1159,6 +1200,7 @@ Every DOM action (navigate, click, type, select, eval) auto-captures to the sess
 - {prefix}-console.txt — browser console messages
 
 Prefer reading these files to using 'extract' or 'screenshot' whenever possible.
+Pages showing credential-shaped content (tokens, 2FA seeds) are never captured, and such values are redacted from all output.
 
 Schema: 4 parameters — action, selector (CSS/XPath or null), payload (string or object), timeout (ms).
 selector targets a DOM element (null/omit for navigation, eval, tab management, etc.).
@@ -1214,11 +1256,11 @@ Use action='help' for full per-action payload shapes.`,
         return {
           content: [{
             type: "text" as const,
-            text: formatDialogRefusal(error as any),
+            text: redactUnlessAllowed(formatDialogRefusal(error as any)),
           }],
         };
       }
-      const errorMessage = error instanceof Error ? error.message : String(error);
+      const errorMessage = redactUnlessAllowed(error instanceof Error ? error.message : String(error));
       return {
         content: [{
           type: "text" as const,

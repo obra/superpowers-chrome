@@ -21278,6 +21278,7 @@ var __filename = fileURLToPath(import.meta.url);
 var __dirname = dirname(__filename);
 var require2 = createRequire(import.meta.url);
 var chromeLib = require2(join(__dirname, "../../skills/browsing/chrome-ws-lib.js")).createSession();
+var credentialGuard = require2(join(__dirname, "../../skills/browsing/lib/credential-guard.js"));
 var SERVER_VERSION = require2(join(__dirname, "../package.json")).version;
 function hasDisplay() {
   const platform = process.platform;
@@ -21380,14 +21381,22 @@ function formatDialogRefusal(error2) {
   }
   return lines.join("\n");
 }
-function formatActionResponse(actionResult, actionDescription) {
+function formatCaptureFiles(actionResult) {
+  if (actionResult.credentialSuppressed) {
+    return [credentialGuard.CREDENTIAL_SUPPRESSED_NOTICE];
+  }
   const prefix = actionResult.capturePrefix || "???";
+  return [
+    `Session dir: ${actionResult.sessionDir}`,
+    `Files: ${prefix}.html, ${prefix}.md, ${prefix}.png, ${prefix}-console.txt`
+  ];
+}
+function formatActionResponse(actionResult, actionDescription) {
   const response = [
     `${actionDescription}`,
     `Current URL: ${actionResult.url || "unknown"}`,
     `Size: ${actionResult.pageSize?.width}\xD7${actionResult.pageSize?.height}`,
-    `Session dir: ${actionResult.sessionDir}`,
-    `Files: ${prefix}.html, ${prefix}.md, ${prefix}.png, ${prefix}-console.txt`
+    ...formatCaptureFiles(actionResult)
   ];
   if (actionResult.consoleLog && actionResult.consoleLog.length > 0) {
     response.push(`Console: ${actionResult.consoleLog.length} messages`);
@@ -21417,6 +21426,14 @@ Dialog is now open \u2014 page is waiting for user input.
 ${dialogDesc}`;
   }
   const capture = captureOrNull;
+  if (capture.credentialSuppressed) {
+    return `${action}: ${details}
+
+${credentialGuard.CREDENTIAL_SUPPRESSED_NOTICE}
+
+\u{1F4CA} Page: ${capture.pageSize.width}\xD7${capture.pageSize.height}
+${capture.domSummary}`;
+  }
   const fileList = Object.entries(capture.files).map(([key, path]) => `  ${key}: ${path}`).join("\n");
   return `${action}: ${details}
 
@@ -21428,6 +21445,9 @@ ${capture.domSummary}
 
 \u{1F4DD} DOM Changes:
 ${capture.diffSummary}`;
+}
+function redactUnlessAllowed(text) {
+  return credentialGuard.credentialCaptureAllowed() ? text : credentialGuard.redactCredentialShaped(text);
 }
 var RESTART_BANNER = "[Chrome auto-restarted; URL reset to about:blank. Re-navigate to continue.]";
 async function executeBrowserAction(params) {
@@ -21444,13 +21464,11 @@ async function executeBrowserAction(params) {
       }
       const navResult = await chromeLib.navigate(tabIndex, url, true);
       if (typeof navResult === "object" && navResult.url) {
-        const prefix = navResult.capturePrefix || "???";
         const response = [
           `Navigated to ${navResult.url}`,
           `Current URL: ${navResult.url}`,
           `Size: ${navResult.pageSize?.width}\xD7${navResult.pageSize?.height}`,
-          `Session dir: ${navResult.sessionDir}`,
-          `Files: ${prefix}.html, ${prefix}.md, ${prefix}.png, ${prefix}-console.txt`
+          ...formatCaptureFiles(navResult)
         ];
         if (navResult.error) {
           response.push(`\u26A0\uFE0F ${navResult.error}`);
@@ -21562,7 +21580,12 @@ async function executeBrowserAction(params) {
       }
       const fullpage = p.fullpage ?? false;
       const selectorForScreenshot = topSelector ?? (typeof p.selector === "string" ? p.selector : void 0);
-      const savedPath = await chromeLib.screenshot(tabIndex, filepath, selectorForScreenshot, fullpage);
+      const savedPath = await chromeLib.screenshotUnlessCredentialShaped(tabIndex, filepath, selectorForScreenshot, fullpage);
+      if (!savedPath) {
+        throw new Error(
+          "screenshot refused: page shows credential-shaped content. Use the credential broker to capture values; use eval only for value-blind queries."
+        );
+      }
       return `Screenshot saved to ${savedPath}`;
     }
     case "select" /* SELECT */: {
@@ -22083,6 +22106,9 @@ Every DOM action auto-captures to the session dir:
 Files use sequential prefixes: 001-navigate, 002-click, etc.
 Prefer reading these files to using 'extract' or 'screenshot' whenever possible.
 
+## Credential-Shaped Pages
+If a page shows credential-shaped content (Slack/GitHub/1Password tokens, otpauth:// seeds, or any element with a data-sen-secret attribute), the action writes no capture files and returns only metadata with a "\u26A0\uFE0F Page shows credential-shaped content" line. All output has such values replaced by [REDACTED credential-shaped]; screenshot refuses. Use a credential broker to capture secrets; use eval only for value-blind queries. SUPERPOWERS_CHROME_ALLOW_CREDENTIAL_CAPTURE=1 disables this.
+
 ## Selectors
 CSS: "button.submit", "#email", ".form input[name=password]"
 XPath: "//button[@type='submit']", "//input[@name='email']"
@@ -22101,7 +22127,7 @@ Login flow:
 async function executeBrowserActionWithBanner(params) {
   const prependBanner = chromeWasRestarted;
   chromeWasRestarted = false;
-  const result = await executeBrowserAction(params);
+  const result = redactUnlessAllowed(await executeBrowserAction(params));
   if (prependBanner) {
     return `${RESTART_BANNER}
 
@@ -22125,6 +22151,7 @@ Every DOM action (navigate, click, type, select, eval) auto-captures to the sess
 - {prefix}-console.txt \u2014 browser console messages
 
 Prefer reading these files to using 'extract' or 'screenshot' whenever possible.
+Pages showing credential-shaped content (tokens, 2FA seeds) are never captured, and such values are redacted from all output.
 
 Schema: 4 parameters \u2014 action, selector (CSS/XPath or null), payload (string or object), timeout (ms).
 selector targets a DOM element (null/omit for navigation, eval, tab management, etc.).
@@ -22170,11 +22197,11 @@ Use action='help' for full per-action payload shapes.`,
         return {
           content: [{
             type: "text",
-            text: formatDialogRefusal(error2)
+            text: redactUnlessAllowed(formatDialogRefusal(error2))
           }]
         };
       }
-      const errorMessage = error2 instanceof Error ? error2.message : String(error2);
+      const errorMessage = redactUnlessAllowed(error2 instanceof Error ? error2.message : String(error2));
       return {
         content: [{
           type: "text",
