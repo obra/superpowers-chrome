@@ -131,9 +131,16 @@ These use CDP Input.dispatchMouseEvent, bypassing synthetic event restrictions.
   - `payload`: Attribute name
   - Example: `{action: "attr", selector: "a.download", payload: "href"}`
 
+- **set_attr**: Write-only attribute setter, restricted to `data-*`/`aria-*` names (never `data-sen-secret`)
+  - `selector`: CSS or XPath selector
+  - `payload`: `{"name": "data-my-attr", "value": "..."}` (no bare-string form — needs both fields)
+  - Refuses if the target element itself carries `data-sen-secret`. Unlike every read action, it is NOT blocked by a `data-sen-secret` element existing elsewhere on the page — it can't read anything, so there's nothing for it to leak. Use this instead of `eval` to write onto a page that already has a captured secret (e.g. stamping a credential-broker nonce onto an unmarked digit-input box next to a just-captured TOTP seed).
+  - Example: `{action: "set_attr", selector: "#code-input-0", payload: {"name": "data-sen-nonce", "value": "opaque-nonce"}}`
+
 - **eval**: Execute JavaScript
   - `payload`: JavaScript code
   - Example: `{action: "eval", payload: "document.title"}`
+  - Refuses outright (no value-blind exception) while any element on the page carries `data-sen-secret` — see `set_attr` above for the write-only escape hatch.
 
 ### Export
 - **screenshot**: Capture screenshot of a specific element

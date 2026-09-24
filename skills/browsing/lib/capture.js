@@ -543,6 +543,40 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
     return run();
   }
 
+  // set_attr (obra#50 follow-up — see lib/set-attribute.js for the guard
+  // rationale): a write-only action, so its post-action capture is the
+  // same single post-capture click/select use, gated by the SAME
+  // credential-shape suppression as every other *WithCapture wrapper
+  // (mustSuppress inside capturePageArtifacts). It is deliberately NOT
+  // additionally gated behind the page-wide secret-marker check eval
+  // uses — actions.setAttribute (lib/set-attribute.js) already refuses on
+  // its own if the TARGET element is marked, which is the only read this
+  // action could possibly need to make.
+  async function setAttributeWithCapture(tabIndexOrWsUrl, selector, name, value) {
+    const ps = await getPageSession(tabIndexOrWsUrl);
+    const run = async () => {
+      await actions.setAttribute(tabIndexOrWsUrl, selector, name, value);
+      const pinnedTab = { id: ps.targetId };
+      const artifacts = await capturePageArtifacts(pinnedTab, 'set_attr');
+      return {
+        action: 'set_attr',
+        selector,
+        name,
+        pageSize: artifacts.pageSize,
+        capturePrefix: artifacts.capturePrefix,
+        sessionDir: artifacts.sessionDir,
+        files: artifacts.files,
+        domSummary: artifacts.domSummary,
+        credentialSuppressed: artifacts.credentialSuppressed,
+        consoleLog: [] // Placeholder
+      };
+    };
+    if (dialogs && dialogs.withDialogAwarenessForSession) {
+      return dialogs.withDialogAwarenessForSession('set_attr', ps, { selector }, run);
+    }
+    return run();
+  }
+
   async function fillWithCapture(tabIndexOrWsUrl, selector, value) {
     const ps = await getPageSession(tabIndexOrWsUrl);
     const pinnedTab = { id: ps.targetId };
@@ -663,6 +697,7 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
     selectOptionWithCapture,
     evaluateWithCapture,
     extractPageText,
+    setAttributeWithCapture,
   };
 }
 

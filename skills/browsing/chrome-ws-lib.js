@@ -34,6 +34,7 @@ const { attachBrowserBridge } = require('./lib/browser-bridge');
 const { attachFileUpload } = require('./lib/file-upload');
 const { attachConsoleLogging } = require('./lib/console-logging');
 const { attachSelectOption } = require('./lib/select-option');
+const { attachSetAttribute } = require('./lib/set-attribute');
 const { attachDialogs, DialogRefusedError } = require('./lib/dialogs');
 const { renderSyntheticArtifacts } = require('./lib/dialogs-render');
 const {
@@ -70,6 +71,7 @@ const PAGE_TARGET_SESSION_METHODS = new Set([
   'getHtml',
   'getSanitizedHtml',
   'getAttribute',
+  'setAttribute',
   'extractPageText',
   'waitForElement',
   'waitForText',
@@ -87,6 +89,7 @@ const PAGE_TARGET_SESSION_METHODS = new Set([
   'fillWithCapture',
   'selectOptionWithCapture',
   'evaluateWithCapture',
+  'setAttributeWithCapture',
   'screenshotUnlessCredentialShaped',
   // captureActionWithDiff is intentionally excluded: it is a meta-wrapper whose
   // second arg is an action-type string ('type', 'click', …), not a selector.
@@ -242,6 +245,8 @@ function createSession({ host, port, _testFakes } = {}) {
 
   const { selectOption } = attachSelectOption({ getPageSession });
 
+  const { setAttribute } = attachSetAttribute({ getPageSession });
+
   const { evaluate } = attachEvaluation({ getPageSession });
 
   // =============================================================================
@@ -289,12 +294,13 @@ function createSession({ host, port, _testFakes } = {}) {
     selectOptionWithCapture,
     evaluateWithCapture,
     extractPageText,
+    setAttributeWithCapture,
   } = attachCapture({
     state,
     getPageSession,
     getHtml,
     screenshot,
-    actions: { click, fill, selectOption, evaluate },
+    actions: { click, fill, selectOption, evaluate, setAttribute },
     dialogs,
   });
 
@@ -370,6 +376,7 @@ function createSession({ host, port, _testFakes } = {}) {
     getHtml,
     getSanitizedHtml,
     getAttribute,
+    setAttribute,
     waitForElement,
     waitForText,
     back,
@@ -429,6 +436,7 @@ function createSession({ host, port, _testFakes } = {}) {
     selectOptionWithCapture,
     evaluateWithCapture,
     extractPageText,
+    setAttributeWithCapture,
 
     // DOM diff capture (before/after with diff)
     generateHtmlDiff,

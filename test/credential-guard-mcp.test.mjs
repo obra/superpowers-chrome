@@ -65,6 +65,24 @@ const MARKER_INPUT_PAGE = dataUrl(
   `<input id="secret" data-sen-secret value="${BASE32_SEED}">` +
   `<input id="control" value="${CONTROL_VALUE}">`
 );
+
+// set_attr fixtures (obra#50 follow-up: split-digit TOTP nonce write).
+// PRIOR_NONCE stands in for whatever value a broker nonce field might
+// already carry (e.g. left over from an earlier, unrelated capture) —
+// the response must never echo it, same as it must never echo BASE32_SEED.
+const PRIOR_NONCE = 'stale-prior-nonce-should-never-leak';
+const SET_ATTR_PAGE = dataUrl(
+  '<title>Split box</title><h1>Backup codes</h1>' +
+  `<code id="secret" data-sen-secret>${BASE32_SEED}</code>` +
+  `<input id="box0" data-sen-nonce="${PRIOR_NONCE}">`
+);
+const DIGIT_COUNT = 6;
+const DIGITS = '123456';
+const SPLIT_DIGIT_BOX_PAGE = dataUrl(
+  '<title>Split-digit TOTP</title><h1>Enter your 2FA code</h1>' +
+  `<code id="secret" data-sen-secret>${BASE32_SEED}</code>` +
+  Array.from({ length: DIGIT_COUNT }, (_, i) => `<input id="box${i}" maxlength="1">`).join('')
+);
 // Pressing Enter reveals a token (drives the before/after diff capture path).
 const REVEAL_ON_ENTER_PAGE = dataUrl(
   '<title>Reveal page</title><h1>Create token</h1><div id="out"></div>' +
@@ -203,7 +221,44 @@ async function startServer(extraEnv = {}) {
     fs.rmSync(xdg, { recursive: true, force: true });
   }
 
-  return { call, capturedFiles, stop, xdg };
+  return { call, capturedFiles, stop, xdg, port };
+}
+
+/**
+ * Test-oracle-only direct CDP connection — completely bypasses use_browser
+ * (and therefore every guard under test) to read ground-truth live DOM
+ * state. This is NOT something the agent can do (its only channel is
+ * use_browser's guarded action set); it exists purely so the set_attr
+ * end-to-end test below can confirm the digit-box recipe actually worked
+ * without relying on the very eval path that's supposed to stay refused
+ * for the whole scenario.
+ */
+async function readLiveValueDirectly(port, expression) {
+  const listResp = await fetch(`http://127.0.0.1:${port}/json/list`);
+  const targets = await listResp.json();
+  const page = targets.find((t) => t.type === 'page');
+  if (!page) throw new Error('readLiveValueDirectly: no page target found');
+  const ws = new WebSocket(page.webSocketDebuggerUrl);
+  await new Promise((resolve, reject) => {
+    ws.addEventListener('open', () => resolve(), { once: true });
+    ws.addEventListener('error', (e) => reject(new Error(String(e))), { once: true });
+  });
+  try {
+    const id = 1;
+    const resultPromise = new Promise((resolve, reject) => {
+      ws.addEventListener('message', (ev) => {
+        const msg = JSON.parse(ev.data);
+        if (msg.id !== id) return;
+        if (msg.error) reject(new Error(JSON.stringify(msg.error)));
+        else resolve(msg.result);
+      });
+    });
+    ws.send(JSON.stringify({ id, method: 'Runtime.evaluate', params: { expression, returnByValue: true } }));
+    const result = await resultPromise;
+    return result.result.value;
+  } finally {
+    ws.close();
+  }
 }
 
 function assertNoLeak(text) {
@@ -512,3 +567,132 @@ describe(
     });
   }
 );
+
+// obra#50 follow-up, second round: set_attr is the write-only escape hatch
+// from eval's page-wide fail-closed refusal, added specifically so an
+// agent entering a split-digit one-time code can stamp a broker nonce
+// onto an unmarked digit-input box right after capturing a seed on the
+// same (now marked) page. See skills/browsing/lib/set-attribute.js for
+// the design.
+describe('set_attr (real Chrome)', { skip: !CHROME_AVAILABLE && 'Chrome not installed' }, () => {
+  let server;
+  before(async () => { server = await startServer(); });
+  after(async () => { await server?.stop(); });
+
+  it('(a) sets data-sen-nonce on an unmarked box while a marked seed is on the page, and eval is still refused there', async () => {
+    await server.call({ action: 'navigate', payload: SET_ATTR_PAGE });
+
+    const set = await server.call({
+      action: 'set_attr',
+      selector: '#box0',
+      payload: { name: 'data-sen-nonce', value: 'fresh-nonce-abc' },
+    });
+    assert.equal(set.isError, false, set.text);
+
+    const ev = await server.call({ action: 'eval', payload: "document.getElementById('box0').textContent" });
+    assert.equal(ev.isError, true, ev.text);
+    assert.match(ev.text, /eval refused.*data-sen-secret/i);
+  });
+
+  it('(a, necessity) the equivalent write via eval is refused, which is why set_attr exists', async () => {
+    const { text, isError } = await server.call({
+      action: 'eval',
+      payload: "document.getElementById('box0').setAttribute('data-sen-nonce', 'via-eval')",
+    });
+    assert.equal(isError, true, text);
+    assert.match(text, /eval refused.*data-sen-secret/i);
+  });
+
+  it('(b) set_attr on the marked element itself is refused', async () => {
+    const { text, isError } = await server.call({
+      action: 'set_attr',
+      selector: '#secret',
+      payload: { name: 'data-sen-nonce', value: 'x' },
+    });
+    assert.equal(isError, true, text);
+    assert.match(text, /set_attr refused.*data-sen-secret/i);
+  });
+
+  it('(c) name=data-sen-secret is refused (cannot strip or overwrite the marker)', async () => {
+    const { text, isError } = await server.call({
+      action: 'set_attr',
+      selector: '#box0',
+      payload: { name: 'data-sen-secret', value: 'x' },
+    });
+    assert.equal(isError, true, text);
+    assert.match(text, /set_attr refused.*not allowed/i);
+  });
+
+  it('(c) an on* attribute name is refused', async () => {
+    const { text, isError } = await server.call({
+      action: 'set_attr',
+      selector: '#box0',
+      payload: { name: 'onclick', value: 'x' },
+    });
+    assert.equal(isError, true, text);
+    assert.match(text, /set_attr refused.*not allowed/i);
+  });
+
+  it("(d) the response contains neither the seed nor the attribute's prior value", async () => {
+    // SET_ATTR_PAGE's #box0 already carries data-sen-nonce=PRIOR_NONCE.
+    const { text, isError } = await server.call({
+      action: 'set_attr',
+      selector: '#box0',
+      payload: { name: 'data-sen-nonce', value: 'brand-new-nonce-xyz' },
+    });
+    assert.equal(isError, false, text);
+    assert.ok(!text.includes(BASE32_SEED), text);
+    assert.ok(!text.includes(PRIOR_NONCE), text);
+    // Not even the just-written value is echoed back.
+    assert.ok(!text.includes('brand-new-nonce-xyz'), text);
+  });
+
+  it('(e) end-to-end split-digit recipe: set_attr the nonce, then type digits, with the seed never appearing in any response', async () => {
+    await server.call({ action: 'navigate', payload: SPLIT_DIGIT_BOX_PAGE });
+
+    // (e, necessity) attempting the recipe's first step via eval instead of
+    // set_attr fails, same as case (a) above — this is what set_attr fixes.
+    const evalAttempt = await server.call({
+      action: 'eval',
+      payload: "document.getElementById('box0').setAttribute('data-sen-nonce', 'via-eval')",
+    });
+    assert.equal(evalAttempt.isError, true, evalAttempt.text);
+    assert.match(evalAttempt.text, /eval refused.*data-sen-secret/i);
+
+    // The real recipe: set_attr instead of eval.
+    const setNonce = await server.call({
+      action: 'set_attr',
+      selector: '#box0',
+      payload: { name: 'data-sen-nonce', value: 'recipe-nonce-001' },
+    });
+    assert.equal(setNonce.isError, false, setNonce.text);
+    assert.ok(!setNonce.text.includes(BASE32_SEED), setNonce.text);
+
+    // Type one digit into each box.
+    const typeResponses = [];
+    for (let i = 0; i < DIGIT_COUNT; i++) {
+      const r = await server.call({ action: 'type', selector: `#box${i}`, payload: DIGITS[i] });
+      typeResponses.push(r);
+      assert.equal(r.isError, false, r.text);
+    }
+
+    // Ground truth check, via a direct CDP connection that bypasses
+    // use_browser entirely (see readLiveValueDirectly's doc comment) —
+    // the only way to confirm the recipe actually worked, since every
+    // use_browser read action is (correctly) still refusing or redacting
+    // on this page.
+    const joined = await readLiveValueDirectly(
+      server.port,
+      `Array.from({length:${DIGIT_COUNT}}, (_, i) => document.getElementById('box'+i).value).join('')`
+    );
+    assert.equal(joined, DIGITS);
+    const nonce = await readLiveValueDirectly(server.port, "document.getElementById('box0').getAttribute('data-sen-nonce')");
+    assert.equal(nonce, 'recipe-nonce-001');
+
+    // Nothing returned by any use_browser call along the way carried the
+    // seed.
+    for (const r of [evalAttempt, setNonce, ...typeResponses]) {
+      assert.ok(!r.text.includes(BASE32_SEED), r.text);
+    }
+  });
+});

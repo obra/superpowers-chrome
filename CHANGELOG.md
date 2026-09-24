@@ -2,6 +2,24 @@
 
 All notable changes to the superpowers-chrome MCP project.
 
+## [Unreleased]
+
+### Security
+- `eval`, `extract` and `attr` could return a `data-sen-secret`-marked element's value in full. The marker check in `credential-guard.js` only matches a `<... data-sen-secret` tag in serialized HTML, which auto-capture always has in hand but eval/extract/attr's plain-text/attribute results never do (the tag is long gone by then), and the token-format list doesn't recognize a bare base32 TOTP seed or any other secret with no distinctive shape — exactly what the marker exists for. Reported by a downstream user, verified on v3.0.6.
+  - New `skills/browsing/lib/secret-marker.js` queries the live DOM (read-only, recursing into open shadow roots) for any `[data-sen-secret]` element.
+  - `eval` now fails closed: it checks the live marker before running the caller's expression at all and refuses outright if present, page-wide, with no value-blind exception (verified against direct reads, `document.body.innerText`, and value-reconstructing expressions like `querySelectorAll('*').map(...).join('')` that never name the marked element by id or selector).
+  - `extract` (text/html/markdown, selector or whole-page) and `attr` now read off a detached clone with `[data-sen-secret]` descendants stripped, or refuse if the resolved element is itself the marked one; whole-page `extract` text mode refuses instead, since `innerText` needs live layout a clone doesn't have.
+  - `SUPERPOWERS_CHROME_ALLOW_CREDENTIAL_CAPTURE=1` disables all of the above, same as everywhere else.
+
+### Added
+- New `set_attr` action: a write-only attribute setter, added because the `eval` fail-closed fix above collaterally blocked a legitimate write — an agent entering a split-digit one-time code needs to stamp a credential-broker nonce onto an unmarked digit-input box right after capturing a seed on the same (now marked) page, and `eval`'s page-wide refusal caught that too.
+  - Takes no caller JavaScript: selector/name/value travel to the page as CDP `Runtime.callFunctionOn` arguments, never as text concatenated into a JS expression string, so a value can't become code.
+  - Attribute name is a default-deny allowlist: only `data-*`/`aria-*` names, excluding `data-sen-secret` itself. Everything else is refused, which covers `value`/`src`/`href`/`style`/`on*` (and anything else not yet enumerated) without having to name each one.
+  - Refuses if the target element itself carries `data-sen-secret` — it can never overwrite or strip the marker off a secret element.
+  - Is NOT gated by the page-wide secret-marker check `eval` uses: it has no read capability at all, so there is nothing for it to leak, and it runs fine on a page that has a marked element elsewhere.
+  - Returns only `ok` or a fixed error string (e.g. `no element matched`); never echoes page content or the attribute's prior value.
+  - Post-action auto-capture uses the same credential-shape suppression as every other action.
+
 ## [3.0.7] - 2026-09-25 - Native dialog text no longer copied to disk
 
 ### Security
