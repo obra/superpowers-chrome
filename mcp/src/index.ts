@@ -100,7 +100,7 @@ enum BrowserAction {
   EVAL = "eval",                // payload=JS source string, taken literally (never JSON-parsed, even if it looks like JSON e.g. "[1,2]")
   SELECT = "select",            // selector=CSS/XPath, payload=literal option value/text, or {selector,value} (value never JSON-parsed as a whole; a JSON array string is still accepted for multi-select)
   ATTR = "attr",                // selector=CSS/XPath, payload=bare attribute name string, or {selector,attr} (also accepted as a JSON-encoded string)
-  SET_ATTR = "set_attr",        // selector=CSS/XPath, payload={name,value} — write-only, name restricted to data-*/aria-* (excluding data-sen-secret); no bare-string form (needs both name and value)
+  SET_ATTR = "set_attr",        // selector=CSS/XPath, payload={name,value} — write-only, name must be EXACTLY 'data-sen-nonce' (see lib/set-attribute.js); no bare-string form (needs both name and value)
   AWAIT_ELEMENT = "await_element", // selector=CSS/XPath to wait for; payload={selector?,timeout?} also accepted as a JSON-encoded string
   AWAIT_TEXT = "await_text",    // payload=literal text to wait for (never JSON-parsed); timeout= top-level ms
   NEW_TAB = "new_tab",          // payload=URL string (optional; also accepted as a JSON-encoded {url} string)
@@ -1011,7 +1011,7 @@ file_upload: {"action": "file_upload", "selector": "#upload", "payload": {"files
 extract: {"action": "extract", "selector": ".price", "payload": {"format": "text"}}
 extract: {"action": "extract", "payload": {"format": "markdown"}} → whole page
 attr: {"action": "attr", "selector": "a", "payload": {"attr": "href"}}
-set_attr: {"action": "set_attr", "selector": "#code-input-0", "payload": {"name": "data-sen-nonce", "value": "opaque-nonce"}} → write-only; name must be data-*/aria-* (never data-sen-secret); works even while a data-sen-secret element is on the page (eval does not)
+set_attr: {"action": "set_attr", "selector": "#code-input-0", "payload": {"name": "data-sen-nonce", "value": "opaque-nonce"}} → write-only; name must be EXACTLY "data-sen-nonce" (nothing else, not even other data-*/aria-* names); works even while a data-sen-secret element is on the page (eval does not)
 screenshot: {"action": "screenshot", "payload": "filename.png"}
 screenshot: {"action": "screenshot", "payload": {"path": "file.png", "fullpage": true}}
 
@@ -1083,7 +1083,7 @@ Files use sequential prefixes: 001-navigate, 002-click, etc.
 Prefer reading these files to using 'extract' or 'screenshot' whenever possible.
 
 ## Credential-Shaped Pages
-If a page shows credential-shaped content (Slack/GitHub/1Password tokens, otpauth:// seeds, or any element with a data-sen-secret attribute), auto-capture writes no files and returns only metadata with a "⚠️ Page shows credential-shaped content" line; screenshot refuses; token-shaped substrings (not the data-sen-secret marker itself, which has no substring to redact) are replaced by [REDACTED credential-shaped] everywhere else. eval refuses outright — with no value-blind exception — while ANY element on the page carries data-sen-secret, checked live before the expression runs. extract and attr instead read off a copy with data-sen-secret content removed (or refuse if the element you named is itself the marked one). set_attr is a separate write-only action (see above) that is NOT gated by any of this — it can't read anything — except that it refuses to touch an element that is itself marked, and only accepts data-*/aria-* attribute names (never data-sen-secret): use it to write things like a broker nonce onto an unmarked sibling element on a page that already has a captured secret. Use a credential broker to capture secret values. SUPERPOWERS_CHROME_ALLOW_CREDENTIAL_CAPTURE=1 disables all of this.
+If a page shows credential-shaped content (Slack/GitHub/1Password tokens, otpauth:// seeds, or any element with a data-sen-secret attribute), auto-capture writes no files and returns only metadata with a "⚠️ Page shows credential-shaped content" line; screenshot refuses; token-shaped substrings (not the data-sen-secret marker itself, which has no substring to redact) are replaced by [REDACTED credential-shaped] everywhere else. eval refuses outright — with no value-blind exception — while ANY element on the page carries data-sen-secret, checked live before the expression runs. extract and attr instead read off a copy with data-sen-secret content removed (or refuse if the element you named is itself the marked one). set_attr is a separate write-only action (see above) that is NOT gated by any of this — it can't read anything — except that it refuses to touch an element that is itself marked, and its attribute name must be EXACTLY "data-sen-nonce" (no other data-*/aria-* name, and never data-sen-secret — arbitrary data-*/aria-* attributes are routinely wired to page behavior, e.g. data-action/aria-controls, so they are not assumed inert): use it to write a broker nonce onto an unmarked sibling element on a page that already has a captured secret. Use a credential broker to capture secret values. SUPERPOWERS_CHROME_ALLOW_CREDENTIAL_CAPTURE=1 disables all of this.
 
 ## Selectors
 CSS: "button.submit", "#email", ".form input[name=password]"
@@ -1140,7 +1140,7 @@ Every DOM action (navigate, click, type, select, eval) auto-captures to the sess
 - {prefix}-console.txt — browser console messages
 
 Prefer reading these files to using 'extract' or 'screenshot' whenever possible.
-Pages showing credential-shaped content (tokens, 2FA seeds, or any data-sen-secret element) are never captured, such values are redacted from all output, and eval refuses outright while any data-sen-secret element is on the page. 'set_attr' is a write-only, data-*/aria-*-only attribute setter that is exempt from that eval restriction (see 'help' for details) — use it, not eval, to write onto the page while a secret is present.
+Pages showing credential-shaped content (tokens, 2FA seeds, or any data-sen-secret element) are never captured, such values are redacted from all output, and eval refuses outright while any data-sen-secret element is on the page. 'set_attr' is a write-only setter for EXACTLY one attribute name, 'data-sen-nonce', that is exempt from that eval restriction (see 'help' for details) — use it, not eval, to write onto the page while a secret is present.
 
 Schema: 4 parameters — action, selector (CSS/XPath or null), payload (string or object), timeout (ms).
 selector targets a DOM element (null/omit for navigation, eval, tab management, etc.).

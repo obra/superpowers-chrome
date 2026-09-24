@@ -131,10 +131,11 @@ These use CDP Input.dispatchMouseEvent, bypassing synthetic event restrictions.
   - `payload`: Attribute name
   - Example: `{action: "attr", selector: "a.download", payload: "href"}`
 
-- **set_attr**: Write-only attribute setter, restricted to `data-*`/`aria-*` names (never `data-sen-secret`)
+- **set_attr**: Write-only attribute setter, restricted to EXACTLY the attribute name `data-sen-nonce` (nothing else — not `data-sen-secret`, not any other `data-*`/`aria-*` name; see `skills/browsing/lib/set-attribute.js`'s `ALLOWED_ATTRIBUTE_NAME` constant)
   - `selector`: CSS or XPath selector
-  - `payload`: `{"name": "data-my-attr", "value": "..."}` (no bare-string form — needs both fields)
+  - `payload`: `{"name": "data-sen-nonce", "value": "..."}` (no bare-string form — needs both fields)
   - Refuses if the target element itself carries `data-sen-secret`. Unlike every read action, it is NOT blocked by a `data-sen-secret` element existing elsewhere on the page — it can't read anything, so there's nothing for it to leak. Use this instead of `eval` to write onto a page that already has a captured secret (e.g. stamping a credential-broker nonce onto an unmarked digit-input box next to a just-captured TOTP seed).
+  - Why so narrow: page JS and frameworks routinely read arbitrary `data-*`/`aria-*` attributes and wire them to behavior (`data-action`, `data-href`, `aria-controls`, and more a hostile page could invent), so a prefix allowlist is not guaranteed inert. Widening past this one name is a deliberate, separate change.
   - Example: `{action: "set_attr", selector: "#code-input-0", payload: {"name": "data-sen-nonce", "value": "opaque-nonce"}}`
 
 - **eval**: Execute JavaScript

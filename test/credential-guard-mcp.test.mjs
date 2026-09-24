@@ -623,11 +623,37 @@ describe('set_attr (real Chrome)', { skip: !CHROME_AVAILABLE && 'Chrome not inst
     assert.match(text, /set_attr refused.*not allowed/i);
   });
 
-  it('(c) an on* attribute name is refused', async () => {
+  // The allowlist is a single exact name (data-sen-nonce), not a
+  // data-*/aria-* prefix: page JS and frameworks routinely wire arbitrary
+  // data-*/aria-* attributes to behavior (data-action, aria-controls, and
+  // more a hostile page could invent), so "any data-*/aria-* name" is not
+  // guaranteed inert. These three cover that narrowing explicitly, each
+  // under its own name, per review feedback.
+  it('(c) name=onclick is refused', async () => {
     const { text, isError } = await server.call({
       action: 'set_attr',
       selector: '#box0',
       payload: { name: 'onclick', value: 'x' },
+    });
+    assert.equal(isError, true, text);
+    assert.match(text, /set_attr refused.*not allowed/i);
+  });
+
+  it('(c) name=href is refused', async () => {
+    const { text, isError } = await server.call({
+      action: 'set_attr',
+      selector: '#box0',
+      payload: { name: 'href', value: 'javascript:alert(1)' },
+    });
+    assert.equal(isError, true, text);
+    assert.match(text, /set_attr refused.*not allowed/i);
+  });
+
+  it('(c) an arbitrary data-* name (data-foo) is refused, not just data-sen-secret', async () => {
+    const { text, isError } = await server.call({
+      action: 'set_attr',
+      selector: '#box0',
+      payload: { name: 'data-foo', value: 'x' },
     });
     assert.equal(isError, true, text);
     assert.match(text, /set_attr refused.*not allowed/i);

@@ -10,9 +10,9 @@
  * to stamp a broker nonce onto an *unmarked* sibling digit-input element
  * right after capturing and marking the TOTP seed displayed on that same
  * now-marked page. set_attr is scoped narrowly enough —
- * no read capability at all, restricted target element, restricted
- * attribute names — that it doesn't need the secret-marker/eval guard:
- * there is nothing here for it to leak.
+ * no read capability at all, restricted target element, exactly one
+ * writable attribute name — that it doesn't need the secret-marker/eval
+ * guard: there is nothing here for it to leak.
  *
  * NO caller-supplied JavaScript, unlike eval: selector/name/value travel
  * to the page as CDP Runtime.callFunctionOn `arguments` (CallArgument
@@ -24,16 +24,16 @@
  * and never built per call.
  *
  * Guards, defense in depth:
- *   - Attribute NAME: a default-deny ALLOWLIST (see isAllowedAttributeName),
- *     checked in Node before any CDP call at all — a disallowed name
- *     refuses without ever touching the page.
+ *   - Attribute NAME: a single-value allowlist (see ALLOWED_ATTRIBUTE_NAME
+ *     below), checked in Node before any CDP call at all — a disallowed
+ *     name refuses without ever touching the page.
  *   - Target ELEMENT: the fixed page-side function refuses if the resolved
  *     element itself carries data-sen-secret, so this can never overwrite
- *     (or — since the marker name itself is on the deny list — strip) the
- *     marker off a secret element. This check is NOT gated behind the
- *     page-wide secret-marker check eval uses: set_attr can run freely on
- *     a page that has a marked element elsewhere, which is the entire
- *     point (see above).
+ *     (or — since the marker name itself is disallowed) strip the marker
+ *     off a secret element. This check is NOT gated behind the page-wide
+ *     secret-marker check eval uses: set_attr can run freely on a page
+ *     that has a marked element elsewhere, which is the entire point (see
+ *     above).
  *   - Response shape: the page-side function returns only
  *     `{ ok: true }` or `{ ok: false, error }`, and the error strings are
  *     fixed literals we wrote (never page content, never the attribute's
@@ -41,24 +41,21 @@
  */
 const { throwIfExceptionDetails } = require('./cdp-utils');
 
-// Allowlist, not a denylist: only data-* (excluding the data-sen-secret
-// marker itself) and aria-* names are writable. Both are pure metadata —
-// never a URL the browser fetches, never executed, never wired to an
-// event — which is what lets set_attr skip the secret-marker/eval guard
-// entirely regardless of what value is written. Everything else is
-// refused by default. That default-deny stance is deliberately what
-// covers value/src/href/style/on* (and anything else not enumerated,
-// including future HTML attributes nobody has thought to deny yet) — an
-// allowlist only has to name what's safe, not chase every dangerous
-// attribute there is or ever will be.
-const DATA_ATTR = /^data-/i;
-const ARIA_ATTR = /^aria-/i;
+// Exactly one writable attribute name — the only known legitimate need
+// (stamping a credential-broker nonce during a split-digit one-time-code
+// entry flow, while the TOTP seed captured earlier is still marked on the
+// page) — not a data-*/aria-* prefix allowlist. Page JS and frameworks routinely
+// read arbitrary data-*/aria-* attributes and wire them to behavior
+// (data-action, data-href, aria-controls, and many more a hostile page
+// could invent), so "any data-*/aria-* name" is NOT guaranteed inert the
+// way it first looked — widening this is a deliberate, separate change,
+// not a regex tweak. Single constant, so it stays easy to find and to
+// audit if that widening is ever proposed.
+const ALLOWED_ATTRIBUTE_NAME = 'data-sen-nonce';
 const MARKER_ATTR = 'data-sen-secret';
 
 function isAllowedAttributeName(name) {
-  if (typeof name !== 'string' || name === '') return false;
-  if (name.toLowerCase() === MARKER_ATTR) return false;
-  return DATA_ATTR.test(name) || ARIA_ATTR.test(name);
+  return typeof name === 'string' && name.toLowerCase() === ALLOWED_ATTRIBUTE_NAME;
 }
 
 // Fixed page-side function body. selector/name/value are NEVER spliced
@@ -81,7 +78,7 @@ function attachSetAttribute({ getPageSession }) {
     if (!isAllowedAttributeName(name)) {
       throw new Error(
         `set_attr refused: attribute name ${JSON.stringify(name)} is not allowed ` +
-        '(only data-* and aria-* names, excluding data-sen-secret itself)'
+        `(only ${ALLOWED_ATTRIBUTE_NAME} is writable)`
       );
     }
 
@@ -116,4 +113,4 @@ function attachSetAttribute({ getPageSession }) {
   return { setAttribute };
 }
 
-module.exports = { attachSetAttribute, isAllowedAttributeName, MARKER_ATTR };
+module.exports = { attachSetAttribute, isAllowedAttributeName, ALLOWED_ATTRIBUTE_NAME, MARKER_ATTR };
