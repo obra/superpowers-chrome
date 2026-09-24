@@ -47,6 +47,24 @@ const TOKEN_PAGE = dataUrl(
   '<button id="b">Done</button>'
 );
 const CLEAN_PAGE = dataUrl('<title>Clean page</title><h1>Plain welcome</h1><button id="b">Go</button>');
+
+// obra#50 follow-up: a bare base32 TOTP seed matches none of the
+// TOKEN_PATTERNS in credential-guard.js (no xoxb/ghp/ops_/otpauth prefix),
+// so the only thing that can catch it is the data-sen-secret marker
+// checked LIVE — by the time eval/extract/attr hand back a plain-text or
+// attribute result, the marker tag itself is long gone.
+const BASE32_SEED = 'JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP';
+const CONTROL_VALUE = 'not-a-secret-control-value';
+const MARKER_TEXT_PAGE = dataUrl(
+  '<title>Marker page</title><h1>Backup codes</h1>' +
+  `<div id="wrap"><code id="secret" data-sen-secret>${BASE32_SEED}</code>` +
+  `<code id="control">${CONTROL_VALUE}</code></div>`
+);
+const MARKER_INPUT_PAGE = dataUrl(
+  '<title>Marker input page</title><h1>Backup codes</h1>' +
+  `<input id="secret" data-sen-secret value="${BASE32_SEED}">` +
+  `<input id="control" value="${CONTROL_VALUE}">`
+);
 // Pressing Enter reveals a token (drives the before/after diff capture path).
 const REVEAL_ON_ENTER_PAGE = dataUrl(
   '<title>Reveal page</title><h1>Create token</h1><div id="out"></div>' +
@@ -340,3 +358,123 @@ describe('SUPERPOWERS_CHROME_ALLOW_CREDENTIAL_CAPTURE=1 (real Chrome)', { skip: 
     assert.ok(extracted.text.includes(FAKE_TOKEN), extracted.text);
   });
 });
+
+// obra#50 follow-up: the data-sen-secret marker with content that matches
+// no TOKEN_PATTERNS (a bare base32 seed). Screenshot/capture already
+// refused correctly per #49/#50; this covers eval, extract and attr, which
+// didn't.
+describe('data-sen-secret marker with no token-shaped content (real Chrome)', { skip: !CHROME_AVAILABLE && 'Chrome not installed' }, () => {
+  let server;
+  before(async () => { server = await startServer(); });
+  after(async () => { await server?.stop(); });
+
+  it('eval on the marked element refuses and never returns the seed', async () => {
+    await server.call({ action: 'navigate', payload: MARKER_TEXT_PAGE });
+    const { text, isError } = await server.call({
+      action: 'eval',
+      payload: "document.getElementById('secret').textContent",
+    });
+    assert.equal(isError, true, text);
+    assert.match(text, /eval refused.*data-sen-secret/i);
+    assert.ok(!text.includes(BASE32_SEED), text);
+  });
+
+  it('eval on an unmarked control element on the same page ALSO refuses (fail closed page-wide)', async () => {
+    // Intentional: eval has no way to know in advance whether an
+    // expression is value-blind, so the marker's mere presence anywhere on
+    // the page blocks eval outright, not just reads of the marked element.
+    const { text, isError } = await server.call({
+      action: 'eval',
+      payload: "document.getElementById('control').textContent",
+    });
+    assert.equal(isError, true, text);
+    assert.match(text, /eval refused.*data-sen-secret/i);
+  });
+
+  it('extract text with no selector (whole page) refuses rather than gluing the seed to other text', async () => {
+    const { text, isError } = await server.call({ action: 'extract', payload: 'text' });
+    assert.equal(isError, true, text);
+    assert.match(text, /extract refused.*data-sen-secret/i);
+    assert.ok(!text.includes(BASE32_SEED), text);
+  });
+
+  it('extract text with a selector on the marked element refuses', async () => {
+    const { text, isError } = await server.call({ action: 'extract', selector: '#secret', payload: 'text' });
+    assert.equal(isError, true, text);
+    assert.match(text, /extract refused.*data-sen-secret/i);
+  });
+
+  it('extract text with a selector on the unmarked control element still works', async () => {
+    const { text, isError } = await server.call({ action: 'extract', selector: '#control', payload: 'text' });
+    assert.equal(isError, false, text);
+    assert.equal(text, CONTROL_VALUE);
+  });
+
+  it('extract text on a wrapper containing both elements strips only the marked one', async () => {
+    const { text, isError } = await server.call({ action: 'extract', selector: '#wrap', payload: 'text' });
+    assert.equal(isError, false, text);
+    assert.ok(!text.includes(BASE32_SEED), text);
+    assert.ok(text.includes(CONTROL_VALUE), text);
+  });
+
+  it('extract html strips the marked element and keeps the control element, whole-page and selector forms', async () => {
+    const wrap = await server.call({ action: 'extract', selector: '#wrap', payload: 'html' });
+    assert.equal(wrap.isError, false, wrap.text);
+    assert.ok(!wrap.text.includes(BASE32_SEED), wrap.text);
+    assert.ok(!wrap.text.includes('data-sen-secret'), wrap.text);
+    assert.ok(wrap.text.includes(CONTROL_VALUE), wrap.text);
+
+    const whole = await server.call({ action: 'extract', payload: 'html' });
+    assert.equal(whole.isError, false, whole.text);
+    assert.ok(!whole.text.includes(BASE32_SEED), whole.text);
+    assert.ok(whole.text.includes(CONTROL_VALUE), whole.text);
+  });
+
+  it('extract markdown strips the marked element and keeps the control element', async () => {
+    const { text, isError } = await server.call({ action: 'extract', payload: 'markdown' });
+    assert.equal(isError, false, text);
+    assert.ok(!text.includes(BASE32_SEED), text);
+    assert.ok(text.includes(CONTROL_VALUE), text);
+  });
+
+  it('attr on the marked element refuses, even for an attribute that is not the marker itself', async () => {
+    await server.call({ action: 'navigate', payload: MARKER_INPUT_PAGE });
+    const { text, isError } = await server.call({ action: 'attr', selector: '#secret', payload: 'value' });
+    assert.equal(isError, true, text);
+    assert.match(text, /attr refused.*data-sen-secret/i);
+    assert.ok(!text.includes(BASE32_SEED), text);
+  });
+
+  it('attr on the unmarked control element still works', async () => {
+    const { text, isError } = await server.call({ action: 'attr', selector: '#control', payload: 'value' });
+    assert.equal(isError, false, text);
+    assert.equal(text, CONTROL_VALUE);
+  });
+});
+
+describe(
+  'SUPERPOWERS_CHROME_ALLOW_CREDENTIAL_CAPTURE=1 restores eval/extract/attr on a data-sen-secret page (real Chrome)',
+  { skip: !CHROME_AVAILABLE && 'Chrome not installed' },
+  () => {
+    let server;
+    before(async () => { server = await startServer({ SUPERPOWERS_CHROME_ALLOW_CREDENTIAL_CAPTURE: '1' }); });
+    after(async () => { await server?.stop(); });
+
+    it('eval, extract and attr all return the marked value unredacted', async () => {
+      await server.call({ action: 'navigate', payload: MARKER_TEXT_PAGE });
+
+      const ev = await server.call({ action: 'eval', payload: "document.getElementById('secret').textContent" });
+      assert.equal(ev.isError, false, ev.text);
+      assert.ok(ev.text.includes(BASE32_SEED), ev.text);
+
+      const ext = await server.call({ action: 'extract', payload: 'text' });
+      assert.equal(ext.isError, false, ext.text);
+      assert.ok(ext.text.includes(BASE32_SEED), ext.text);
+
+      await server.call({ action: 'navigate', payload: MARKER_INPUT_PAGE });
+      const attr = await server.call({ action: 'attr', selector: '#secret', payload: 'value' });
+      assert.equal(attr.isError, false, attr.text);
+      assert.equal(attr.text, BASE32_SEED);
+    });
+  }
+);

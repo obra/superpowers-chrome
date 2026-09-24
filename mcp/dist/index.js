@@ -21550,7 +21550,7 @@ async function executeBrowserAction(params) {
         if (format === "text") {
           extracted = await chromeLib.extractText(tabIndex, selector);
         } else if (format === "html") {
-          extracted = await chromeLib.getHtml(tabIndex, selector);
+          extracted = await chromeLib.getSanitizedHtml(tabIndex, selector);
         } else {
           throw new Error("selector-based extraction only supports 'text' or 'html' format");
         }
@@ -21560,12 +21560,18 @@ async function executeBrowserAction(params) {
         return extracted;
       } else {
         if (format === "text") {
-          return await chromeLib.evaluate(tabIndex, "document.body.innerText");
+          return await chromeLib.extractPageText(tabIndex);
         } else if (format === "html") {
-          return await chromeLib.getHtml(tabIndex);
+          return await chromeLib.getSanitizedHtml(tabIndex);
         } else if (format === "markdown") {
+          const credentialCaptureAllowed = credentialGuard.credentialCaptureAllowed();
+          const root = credentialCaptureAllowed ? "document.body" : `(() => {
+                const clone = document.body ? document.body.cloneNode(true) : document.createElement('body');
+                clone.querySelectorAll('[data-sen-secret]').forEach(el => el.remove());
+                return clone;
+              })()`;
           return await chromeLib.evaluate(tabIndex, `
-            Array.from(document.querySelectorAll('h1, h2, h3, h4, h5, h6, p, a, li, pre, code'))
+            Array.from((${root}).querySelectorAll('h1, h2, h3, h4, h5, h6, p, a, li, pre, code'))
               .map(el => {
                 const tag = el.tagName.toLowerCase();
                 const text = el.textContent.trim();

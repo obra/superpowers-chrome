@@ -68,7 +68,9 @@ const PAGE_TARGET_SESSION_METHODS = new Set([
   'evaluate',
   'extractText',
   'getHtml',
+  'getSanitizedHtml',
   'getAttribute',
+  'extractPageText',
   'waitForElement',
   'waitForText',
   'screenshot',
@@ -244,7 +246,7 @@ function createSession({ host, port, _testFakes } = {}) {
 
   // =============================================================================
 
-  const { extractText, getHtml, getAttribute } = attachExtraction({ getPageSession });
+  const { extractText, getHtml, getSanitizedHtml, getAttribute } = attachExtraction({ getPageSession });
 
 
   // getSessionDir is a lazy thunk: capture.js populates state.sessionDir via
@@ -286,6 +288,7 @@ function createSession({ host, port, _testFakes } = {}) {
     fillWithCapture,
     selectOptionWithCapture,
     evaluateWithCapture,
+    extractPageText,
   } = attachCapture({
     state,
     getPageSession,
@@ -365,6 +368,7 @@ function createSession({ host, port, _testFakes } = {}) {
     evaluate,
     extractText,
     getHtml,
+    getSanitizedHtml,
     getAttribute,
     waitForElement,
     waitForText,
@@ -424,6 +428,7 @@ function createSession({ host, port, _testFakes } = {}) {
     fillWithCapture,
     selectOptionWithCapture,
     evaluateWithCapture,
+    extractPageText,
 
     // DOM diff capture (before/after with diff)
     generateHtmlDiff,

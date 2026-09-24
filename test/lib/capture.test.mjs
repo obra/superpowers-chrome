@@ -6,21 +6,27 @@ import * as path from 'node:path';
 import { after, describe, it } from 'node:test';
 import { makePageSessionFake as makePageSessionFakeWithTargetId } from './_helpers.mjs';
 
+const require = createRequire(import.meta.url);
+const { attachCapture } = require('../../skills/browsing/lib/capture.js');
+const { HAS_SECRET_MARKER_SCRIPT } = require('../../skills/browsing/lib/secret-marker.js');
+
 function makePageSessionFake(sessionId = 'fake-session-id') {
   const calls = [];
   const ps = {
     sessionId,
     send: async (method, params) => {
       calls.push({ method, params });
+      // False: none of these generic capture.js tests exercise a
+      // data-sen-secret page, so the live marker check (obra#50 follow-up)
+      // must say "absent" or evaluateWithCapture refuses before running
+      // anything, same as it would on a real marked page.
+      if (params.expression === HAS_SECRET_MARKER_SCRIPT) return { result: { value: false } };
       return { result: { value: 'fake' } };
     },
   };
   ps.calls = calls;
   return ps;
 }
-
-const require = createRequire(import.meta.url);
-const { attachCapture } = require('../../skills/browsing/lib/capture.js');
 
 describe('capture', () => {
   // Use a process-scoped temp dir so we don't touch ~/.cache

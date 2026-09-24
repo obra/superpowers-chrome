@@ -72,10 +72,27 @@ const CREDENTIAL_SUPPRESSED_NOTICE =
   '⚠️ Page shows credential-shaped content; auto-capture and DOM output suppressed. ' +
   'Use the credential broker to capture values; use eval only for value-blind queries.';
 
+// eval and extract/attr cannot tell whether their result would carry a
+// data-sen-secret element's value forward — by the time either produces
+// plain text or an attribute string, the marker (a live-DOM-only signal;
+// see lib/secret-marker.js) is gone. So both fail closed on the marker's
+// mere presence rather than trying to inspect the result after the fact.
+// Unlike CREDENTIAL_SUPPRESSED_NOTICE, there is no "value-blind queries are
+// fine" carve-out: a marker means the page has no reliable value shape to
+// scope a carve-out around.
+function secretMarkerRefusal(action) {
+  return (
+    `${action} refused: page has an element marked data-sen-secret. ` +
+    'Use the credential broker to capture its value; ' +
+    'SUPERPOWERS_CHROME_ALLOW_CREDENTIAL_CAPTURE=1 disables this.'
+  );
+}
+
 module.exports = {
   containsCredentialShaped,
   redactCredentialShaped,
   credentialCaptureAllowed,
   CREDENTIAL_SUPPRESSED_NOTICE,
+  secretMarkerRefusal,
   REDACTION,
 };

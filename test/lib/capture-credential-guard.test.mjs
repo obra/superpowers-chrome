@@ -13,6 +13,7 @@ const require = createRequire(import.meta.url);
 const { attachCapture } = require('../../skills/browsing/lib/capture.js');
 const markdownScript = require('../../skills/browsing/lib/page-scripts/markdown.js');
 const domSummaryScript = require('../../skills/browsing/lib/page-scripts/dom-summary.js');
+const { HAS_SECRET_MARKER_SCRIPT } = require('../../skills/browsing/lib/secret-marker.js');
 
 // Fake tokens are assembled from prefix + body at runtime so no complete
 // token-shaped literal sits in the source (GitHub push protection rejects
@@ -111,6 +112,7 @@ function setup({
   revealOnScreenshot = null,
   dialog = null,
   dialogAfterAction = dialog,
+  secretMarkerLive = false,
 }) {
   const pageRef = { current: before };
   const dialogRef = { current: dialog };
@@ -122,8 +124,10 @@ function setup({
       if (method !== 'Runtime.evaluate') return {};
       const expr = params.expression;
       const page = pageRef.current;
+      if (expr === HAS_SECRET_MARKER_SCRIPT) return { result: { value: secretMarkerLive } };
       if (expr === markdownScript) return { result: { value: page.markdown } };
       if (expr === domSummaryScript) return { result: { value: page.domSummary } };
+      if (expr === 'document.body.innerText') return { result: { value: page.renderedText } };
       if (expr.includes('window.innerWidth')) {
         return { result: { value: { width: 800, height: 600, documentWidth: 800, documentHeight: 600 } } };
       }
@@ -146,7 +150,7 @@ function setup({
     },
     actions: {
       click: async () => { calls.action++; pageRef.current = afterPage; dialogRef.current = dialogAfterAction; return { clicked: true }; },
-      evaluate: async () => { calls.action++; return 42; },
+      evaluate: async (_tab, expression) => { calls.action++; return expression === 'document.body.innerText' ? pageRef.current.renderedText : 42; },
     },
     dialogs,
   });
@@ -236,6 +240,63 @@ describe('capturePageArtifacts credential guard', () => {
     const evaluated = await evaluateWithCapture(0, '21+21');
     assert.equal(evaluated.credentialSuppressed, true);
     assert.equal(evaluated.result, 42, 'eval still returns its (non-secret) value');
+  });
+});
+
+// obra#50 follow-up: the data-sen-secret marker (unlike a token-shaped
+// value) has no shape a returned result can be checked against after the
+// fact, so eval and the whole-page extract('text') path fail closed on the
+// marker's live presence, checked BEFORE running anything — unlike the
+// TOKEN_PAGE case above, where eval still runs and only the capture
+// metadata is suppressed.
+describe('evaluateWithCapture fails closed on a live data-sen-secret marker', () => {
+  it('refuses without running the expression when the marker is present', async () => {
+    const { evaluateWithCapture, calls } = setup({ before: CLEAN_PAGE, secretMarkerLive: true });
+    await assert.rejects(
+      () => evaluateWithCapture(0, 'document.getElementById("secret").textContent'),
+      /eval refused.*data-sen-secret/
+    );
+    assert.equal(calls.action, 0, 'the expression must never run');
+  });
+
+  it('runs normally when no marker is present', async () => {
+    const { evaluateWithCapture, calls } = setup({ before: CLEAN_PAGE, secretMarkerLive: false });
+    const result = await evaluateWithCapture(0, '21+21');
+    assert.equal(result.result, 42);
+    assert.equal(calls.action, 1);
+  });
+
+  it(`${ENV}=1 skips the marker check and runs the expression`, async () => {
+    process.env[ENV] = '1';
+    const { evaluateWithCapture, calls } = setup({ before: CLEAN_PAGE, secretMarkerLive: true });
+    const result = await evaluateWithCapture(0, '21+21');
+    assert.equal(result.result, 42);
+    assert.equal(calls.action, 1);
+  });
+});
+
+describe("extractPageText fails closed on a live data-sen-secret marker (extract action's whole-page text mode)", () => {
+  it('refuses when the marker is present, without reading innerText', async () => {
+    const page = { ...CLEAN_PAGE, renderedText: 'should never be read' };
+    const { extractPageText, calls } = setup({ before: page, secretMarkerLive: true });
+    await assert.rejects(
+      () => extractPageText(0),
+      /extract refused.*data-sen-secret/
+    );
+    assert.equal(calls.action, 0, 'innerText must never be read');
+  });
+
+  it('returns the rendered text normally when no marker is present', async () => {
+    const page = { ...CLEAN_PAGE, renderedText: 'Welcome to the page' };
+    const { extractPageText } = setup({ before: page, secretMarkerLive: false });
+    assert.equal(await extractPageText(0), 'Welcome to the page');
+  });
+
+  it(`${ENV}=1 skips the marker check and returns the text`, async () => {
+    process.env[ENV] = '1';
+    const page = { ...MARKER_PAGE, renderedText: '1234 5678' };
+    const { extractPageText } = setup({ before: page, secretMarkerLive: true });
+    assert.equal(await extractPageText(0), '1234 5678');
   });
 });
 

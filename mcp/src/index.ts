@@ -332,7 +332,11 @@ async function executeBrowserAction(params: UseBrowserInput): Promise<string> {
         if (format === 'text') {
           extracted = await chromeLib.extractText(tabIndex, selector);
         } else if (format === 'html') {
-          extracted = await chromeLib.getHtml(tabIndex, selector);
+          // getSanitizedHtml, not getHtml: getHtml is the raw, unstripped
+          // form capture.js's credential guard relies on internally (see
+          // lib/extraction.js's module doc) and must not have
+          // data-sen-secret content removed from it.
+          extracted = await chromeLib.getSanitizedHtml(tabIndex, selector);
         } else {
           throw new Error("selector-based extraction only supports 'text' or 'html' format");
         }
@@ -343,13 +347,27 @@ async function executeBrowserAction(params: UseBrowserInput): Promise<string> {
       } else {
         // Extract whole page
         if (format === 'text') {
-          return await chromeLib.evaluate(tabIndex, 'document.body.innerText');
+          // extractPageText, not a raw innerText evaluate: innerText needs
+          // page layout, which a detached clone doesn't have, so this
+          // refuses outright on a data-sen-secret marker instead of trying
+          // to strip it (see lib/capture.js).
+          return await chromeLib.extractPageText(tabIndex);
         } else if (format === 'html') {
-          return await chromeLib.getHtml(tabIndex);
+          return await chromeLib.getSanitizedHtml(tabIndex);
         } else if (format === 'markdown') {
-          // Generate markdown-like output
+          // Generate markdown-like output. textContent (unlike innerText)
+          // doesn't need layout, so — unlike the 'text' branch above — this
+          // can run against a detached, stripped clone rather than refusing.
+          const credentialCaptureAllowed = credentialGuard.credentialCaptureAllowed();
+          const root = credentialCaptureAllowed
+            ? 'document.body'
+            : `(() => {
+                const clone = document.body ? document.body.cloneNode(true) : document.createElement('body');
+                clone.querySelectorAll('[data-sen-secret]').forEach(el => el.remove());
+                return clone;
+              })()`;
           return await chromeLib.evaluate(tabIndex, `
-            Array.from(document.querySelectorAll('h1, h2, h3, h4, h5, h6, p, a, li, pre, code'))
+            Array.from((${root}).querySelectorAll('h1, h2, h3, h4, h5, h6, p, a, li, pre, code'))
               .map(el => {
                 const tag = el.tagName.toLowerCase();
                 const text = el.textContent.trim();

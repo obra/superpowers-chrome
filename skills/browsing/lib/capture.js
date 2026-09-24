@@ -6,7 +6,8 @@ const { throwIfExceptionDetails } = require('./cdp-utils');
 const markdownScript = require('./page-scripts/markdown');
 const domSummaryScript = require('./page-scripts/dom-summary');
 const renderedTextScript = require('./page-scripts/rendered-text');
-const { containsCredentialShaped, credentialCaptureAllowed } = require('./credential-guard');
+const { containsCredentialShaped, credentialCaptureAllowed, secretMarkerRefusal } = require('./credential-guard');
+const { pageHasSecretMarker } = require('./secret-marker');
 
 // Only these DOM-summary lines are returned for a suppressed capture: they
 // are element counts and landmark structure. The title and headings lines
@@ -592,10 +593,24 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
     return run();
   }
 
+  // eval runs arbitrary caller JS against the live page and hands back
+  // whatever it returns, verbatim — there is no result shape to inspect
+  // and redact after the fact the way a plain-text extraction can be
+  // scanned. So this checks BEFORE running the expression at all and
+  // refuses outright when the marker is present, rather than trying to
+  // run the expression and filter its result: a value-blind expression
+  // (`.textContent.length`) is fine for a token-shaped secret (whose shape
+  // lets the final redaction pass confirm nothing leaked) but not for a
+  // data-sen-secret page, which by definition has no shape to verify
+  // against. Refusing is also what keeps this from ever mutating the live
+  // DOM to get a safe answer: the expression simply never runs.
   async function evaluateWithCapture(tabIndexOrWsUrl, expression) {
     const ps = await getPageSession(tabIndexOrWsUrl);
     const pinnedTab = { id: ps.targetId };
     const run = async () => {
+      if (!credentialCaptureAllowed() && await pageHasSecretMarker(ps)) {
+        throw new Error(secretMarkerRefusal('eval'));
+      }
       const result = await actions.evaluate(tabIndexOrWsUrl, expression);
       const artifacts = await capturePageArtifacts(pinnedTab, 'eval');
       return {
@@ -617,6 +632,21 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
     return run();
   }
 
+  // Whole-page rendered text for extract's format='text' with no selector.
+  // Uses innerText (see page-scripts/rendered-text.js on why: it collapses
+  // display:none, joins inline runs the way a screenshot would show them),
+  // which only reads right off the live, laid-out DOM — unlike extractText
+  // and getSanitizedHtml (lib/extraction.js), there is no detached-clone
+  // trick available here, since a clone has no layout for innerText to
+  // read. So this refuses outright on a marker instead, the same as eval.
+  async function extractPageText(tabIndexOrWsUrl) {
+    const ps = await getPageSession(tabIndexOrWsUrl);
+    if (!credentialCaptureAllowed() && await pageHasSecretMarker(ps)) {
+      throw new Error(secretMarkerRefusal('extract'));
+    }
+    return actions.evaluate(tabIndexOrWsUrl, 'document.body.innerText');
+  }
+
   return {
     initializeSession,
     cleanupSession,
@@ -632,6 +662,7 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
     fillWithCapture,
     selectOptionWithCapture,
     evaluateWithCapture,
+    extractPageText,
   };
 }
 
