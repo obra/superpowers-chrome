@@ -391,6 +391,40 @@ describe('data-sen-secret marker with no token-shaped content (real Chrome)', { 
     assert.match(text, /eval refused.*data-sen-secret/i);
   });
 
+  // Two explicit cases requested in review (obra#50 follow-up): a caller
+  // doesn't have to name the marked element to pull its value out of the page.
+  // eval's guard checks for the marker's presence, not for whether the
+  // expression happens to name `#secret` by id, so both must refuse
+  // identically to the direct-reference case above.
+  it("eval of document.body.innerText refuses and the seed appears nowhere in the response", async () => {
+    const { text, isError } = await server.call({ action: 'eval', payload: 'document.body.innerText' });
+    assert.equal(isError, true, text);
+    assert.match(text, /eval refused.*data-sen-secret/i);
+    assert.ok(!text.includes(BASE32_SEED), text);
+  });
+
+  for (const [name, expression] of [
+    [
+      'querySelectorAll("*") + map + join, naming no element by id or marker',
+      "[...document.querySelectorAll('*')].map(e => e.textContent).join('')",
+    ],
+    [
+      'querySelector("[data-sen-secret]") read via split/join instead of a bare .textContent',
+      "document.querySelector('[data-sen-secret]').textContent.split('').join('')",
+    ],
+    [
+      'reassembled via string concatenation from character-indexed reads',
+      "(() => { const s = document.querySelector('[data-sen-secret]').textContent; let out = ''; for (let i = 0; i < s.length; i++) out = out + s[i]; return out; })()",
+    ],
+  ]) {
+    it(`eval of an expression that builds the value without naming the marked element directly refuses (${name})`, async () => {
+      const { text, isError } = await server.call({ action: 'eval', payload: expression });
+      assert.equal(isError, true, text);
+      assert.match(text, /eval refused.*data-sen-secret/i);
+      assert.ok(!text.includes(BASE32_SEED), text);
+    });
+  }
+
   it('extract text with no selector (whole page) refuses rather than gluing the seed to other text', async () => {
     const { text, isError } = await server.call({ action: 'extract', payload: 'text' });
     assert.equal(isError, true, text);
