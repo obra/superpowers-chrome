@@ -1,0 +1,155 @@
+/**
+ * Formatting helpers for use_browser tool responses: turning an action
+ * result (capture info, an open dialog, or an error) into the string the
+ * agent sees.
+ *
+ * Pure string formatting plus the credential-guard module (itself
+ * side-effect-free) — no chrome-ws, no MCP transport, no `main()`. Unlike
+ * mcp/src/index.ts (which auto-starts Chrome and connects an MCP stdio
+ * transport as an unconditional side effect of being imported), this module
+ * can be imported directly by tests. Mirrors mcp/src/payload.ts, which was
+ * split out for the same reason.
+ */
+
+import { join, dirname } from "path";
+import { fileURLToPath } from "url";
+import { createRequire } from "module";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+const require = createRequire(import.meta.url);
+const credentialGuard = require(join(__dirname, "../../skills/browsing/lib/credential-guard.js"));
+
+/**
+ * Format a DialogRefusedError into a human-readable tool response string.
+ * Uses duck typing (error.refused && error.artifacts) rather than instanceof
+ * because class identity can be unreliable across CommonJS require boundaries.
+ */
+export function formatDialogRefusal(error: any): string {
+  const lines: string[] = [error.message || 'Page is behind a dialog.'];
+  if (error.artifacts?.markdown) {
+    lines.push('');
+    lines.push(error.artifacts.markdown);
+  }
+  return lines.join('\n');
+}
+
+/**
+ * Where an auto-capture's files went — or, when the page showed
+ * credential-shaped content, why there are none.
+ */
+export function formatCaptureFiles(actionResult: any): string[] {
+  if (actionResult.credentialSuppressed) {
+    return [credentialGuard.CREDENTIAL_SUPPRESSED_NOTICE];
+  }
+  const prefix = actionResult.capturePrefix || '???';
+  return [
+    `Session dir: ${actionResult.sessionDir}`,
+    `Files: ${prefix}.html, ${prefix}.md, ${prefix}.png, ${prefix}-console.txt`
+  ];
+}
+
+/**
+ * Format action response with capture information
+ */
+export function formatActionResponse(actionResult: any, actionDescription: string): string {
+  const response = [
+    `${actionDescription}`,
+    `Current URL: ${actionResult.url || 'unknown'}`,
+    `Size: ${actionResult.pageSize?.width}×${actionResult.pageSize?.height}`,
+    ...formatCaptureFiles(actionResult)
+  ];
+
+  // Add console messages if any
+  if (actionResult.consoleLog && actionResult.consoleLog.length > 0) {
+    response.push(`Console: ${actionResult.consoleLog.length} messages`);
+    actionResult.consoleLog.slice(0, 3).forEach((msg: any) => {
+      response.push(`  ${msg.level}: ${msg.text}`);
+    });
+    if (actionResult.consoleLog.length > 3) {
+      response.push(`  ... +${actionResult.consoleLog.length - 3} more`);
+    }
+  }
+
+  // Compact DOM summary
+  if (actionResult.domSummary) {
+    const lines = actionResult.domSummary.split('\n').slice(0, 8);
+    response.push('DOM:', ...lines.map((l: string) => `  ${l}`));
+    if (actionResult.domSummary.split('\n').length > 8) {
+      response.push('  ...');
+    }
+  }
+
+  return response.join('\n');
+}
+
+/**
+ * Format capture response with DOM diff information.
+ * When capture is null (action opened a dialog), returns dialog info instead.
+ */
+export function formatCaptureResponse(
+  action: string,
+  details: string,
+  captureOrNull: {
+    sessionDir: string;
+    files: Record<string, string>;
+    diffSummary: string;
+    domSummary: string;
+    pageSize: { width: number; height: number };
+    credentialSuppressed?: boolean;
+  } | null,
+  dialog?: any,
+  artifacts?: any,
+  credentialSuppressed?: boolean
+): string {
+  if (!captureOrNull) {
+    // Action succeeded but opened a dialog — show dialog info. When the
+    // action's dialog was suppressed (its message was credential-shaped),
+    // capture.js still hands back the (unredacted-at-this-layer) `artifacts`
+    // and `dialog` — only the disk write was skipped there — so show the
+    // redacted response, the ⚠️ notice, and the dialog::accept/dismiss
+    // instructions together rather than dropping them. The final
+    // redactUnlessAllowed() pass on the whole tool response blanks any
+    // credential-shaped substring still in `dialogDesc` before it reaches
+    // the agent.
+    const dialogDesc = artifacts?.markdown || (dialog ? `Dialog opened: ${dialog.kind}` : 'Dialog opened');
+    const suppressedNotice = credentialSuppressed ? `\n\n${credentialGuard.CREDENTIAL_SUPPRESSED_NOTICE}` : '';
+    return `${action}: ${details}\n\nDialog is now open — page is waiting for user input.${suppressedNotice}\n\n${dialogDesc}`;
+  }
+  const capture = captureOrNull;
+
+  if (capture.credentialSuppressed) {
+    return `${action}: ${details}
+
+${credentialGuard.CREDENTIAL_SUPPRESSED_NOTICE}
+
+📊 Page: ${capture.pageSize.width}×${capture.pageSize.height}
+${capture.domSummary}`;
+  }
+
+  const fileList = Object.entries(capture.files)
+    .map(([key, path]) => `  ${key}: ${path}`)
+    .join('\n');
+
+  return `${action}: ${details}
+
+📁 Capture saved to: ${capture.sessionDir}
+${fileList}
+
+📊 Page: ${capture.pageSize.width}×${capture.pageSize.height}
+${capture.domSummary}
+
+📝 DOM Changes:
+${capture.diffSummary}`;
+}
+
+/**
+ * Last line of defense: every piece of text use_browser returns (results,
+ * errors, dialog refusals) has credential-shaped substrings replaced, so
+ * a token that reached the output by any path — extract, eval, a URL, an
+ * error message — never lands in the agent's transcript. Off when
+ * SUPERPOWERS_CHROME_ALLOW_CREDENTIAL_CAPTURE=1.
+ */
+export function redactUnlessAllowed(text: string): string {
+  return credentialGuard.credentialCaptureAllowed() ? text : credentialGuard.redactCredentialShaped(text);
+}

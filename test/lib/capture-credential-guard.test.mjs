@@ -341,7 +341,7 @@ describe('capturePageArtifacts dialog short-circuit credential guard', () => {
 });
 
 describe('captureActionWithDiff after-dialog short-circuit credential guard', () => {
-  it('writes no files and reports credentialSuppressed when the action opens a dialog with a token in its message', async () => {
+  it('writes no files, but still returns the redacted-response artifacts and dialog kind, when the action opens a dialog with a token in its message', async () => {
     const { captureActionWithDiff, state, act } = setup({
       before: CLEAN_PAGE,
       dialog: null,
@@ -351,12 +351,19 @@ describe('captureActionWithDiff after-dialog short-circuit credential guard', ()
 
     assert.equal(result.actionResult, 'acted', 'the action itself still runs');
     assert.equal(result.capture, null, 'same no-capture shape as any other dialog-opened result');
-    assert.equal(result.credentialSuppressed, true);
-    assert.deepEqual(result.dialog, { kind: 'alert' }, 'only the dialog kind survives, never its payload');
-    assert.equal(result.artifacts, undefined, 'the raw dialog artifacts must not be returned');
+    assert.equal(result.credentialSuppressed, true, 'the disk write is suppressed');
+    assert.deepEqual(result.dialog, { kind: 'alert' }, 'only the dialog kind survives, never its raw payload');
+    // Only the disk write is suppressed. The synthetic artifacts (including
+    // the dialog::accept/dismiss instructions) still come back so the MCP
+    // layer's formatCaptureResponse + redactUnlessAllowed can build the
+    // redacted response + notice, instead of losing the instructions.
+    assert.ok(result.artifacts, 'the synthetic dialog artifacts must still be returned');
+    assert.ok(result.artifacts.markdown.includes('dialog::accept'),
+      'the accept/dismiss instructions must survive suppression');
+    assert.ok(result.artifacts.markdown.includes(FAKE_TOKEN),
+      'the raw (unredacted-at-this-layer) message survives here; redaction happens in mcp/src/index.ts');
     assert.deepEqual(sessionFiles(state), ['001-click-before.png'],
-      'only the clean BEFORE screenshot may remain; no after-dialog artifacts');
-    assertNoLeak(result);
+      'only the clean BEFORE screenshot may remain; no after-dialog artifacts written to disk');
   });
 
   it('captures a benign after-dialog normally', async () => {

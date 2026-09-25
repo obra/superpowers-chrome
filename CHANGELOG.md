@@ -2,6 +2,16 @@
 
 All notable changes to the superpowers-chrome MCP project.
 
+## [3.0.7] - 2026-09-25 - Dialog credential-guard suppression kept the agent's own accept/dismiss instructions
+
+### Fixed
+- The dialog credential-shape guard (3.0.6) suppressed too much: when a native dialog's message (alert/confirm/prompt/beforeunload) was credential-shaped, the AFTER-action short-circuit dropped `artifacts` entirely, so `formatCaptureResponse` fell back to a bare `Dialog opened: alert` — losing both the `dialog::accept`/`dialog::dismiss` handling instructions and the `⚠️ … suppressed` notice (`credentialSuppressed` lived on the discarded `capture` object and was never read when `capture` is null). The guard now suppresses only the disk write; the redacted response, the notice, and the accept/dismiss instructions all still reach the agent, same as before 3.0.6 introduced the regression.
+
+### Tests
+- `test/lib/capture-credential-guard.test.mjs`: the after-dialog short-circuit test now asserts `artifacts` (with the `dialog::accept` instructions) is still returned and no files land on disk, instead of asserting the artifacts were dropped.
+- `test/response-format-dialog-guard.test.mjs` (new): `formatCaptureResponse`'s suppressed-dialog branch returns the `⚠️` notice, the accept/dismiss instructions, and the message text together, never regresses to the bare `Dialog opened: <kind>` fallback when artifacts are present, and omits the notice for a benign dialog.
+- `mcp/src/response-format.ts` (new): the response-formatting helpers (`formatCaptureResponse`, `formatActionResponse`, `redactUnlessAllowed`, etc.) were split out of `mcp/src/index.ts`, mirroring `payload.ts`, so they're importable by tests without booting Chrome or an MCP server.
+
 ## [3.0.6] - 2026-09-23 - Auto-capture no longer copies secrets to disk or into the agent's transcript
 
 ### Security

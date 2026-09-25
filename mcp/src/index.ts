@@ -21,19 +21,27 @@ import {
   describeUnusableScrollPayload,
   resolveConsoleSince,
 } from "./payload.js";
+import {
+  formatDialogRefusal,
+  formatCaptureFiles,
+  formatActionResponse,
+  formatCaptureResponse,
+  redactUnlessAllowed,
+} from "./response-format.js";
 
-// Re-exported for tests (mcp/src/payload.ts has no side effects and is
-// also importable directly from mcp/dist/payload.js — this re-export just
-// makes the normalization helpers reachable from the bundled entry point
-// too, without requiring tests to boot a browser or an MCP server).
+// Re-exported for tests (mcp/src/payload.ts and mcp/src/response-format.ts
+// have no side effects and are also importable directly from
+// mcp/dist/payload.js / mcp/dist/response-format.js — this re-export just
+// makes the helpers reachable from the bundled entry point too, without
+// requiring tests to boot a browser or an MCP server).
 export { parsePayload, resolveStrictStructuredPayload, tryParseJsonObject, tryParseCoords, describeUnusableScrollPayload, resolveConsoleSince, tryParseIntegerValue, PAYLOAD_SPECS } from "./payload.js";
+export { formatDialogRefusal, formatCaptureFiles, formatActionResponse, formatCaptureResponse, redactUnlessAllowed } from "./response-format.js";
 
 // Get the directory and import chrome-ws-lib
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const require = createRequire(import.meta.url);
 const chromeLib = require(join(__dirname, "../../skills/browsing/chrome-ws-lib.js")).createSession();
-const credentialGuard = require(join(__dirname, "../../skills/browsing/lib/credential-guard.js"));
 const SERVER_VERSION = require(join(__dirname, "../package.json")).version;
 
 /**
@@ -205,130 +213,6 @@ async function ensureChromeRunning(): Promise<void> {
   }
 }
 
-/**
- * Format a DialogRefusedError into a human-readable tool response string.
- * Uses duck typing (error.refused && error.artifacts) rather than instanceof
- * because class identity can be unreliable across CommonJS require boundaries.
- */
-function formatDialogRefusal(error: any): string {
-  const lines: string[] = [error.message || 'Page is behind a dialog.'];
-  if (error.artifacts?.markdown) {
-    lines.push('');
-    lines.push(error.artifacts.markdown);
-  }
-  return lines.join('\n');
-}
-
-/**
- * Where an auto-capture's files went — or, when the page showed
- * credential-shaped content, why there are none.
- */
-function formatCaptureFiles(actionResult: any): string[] {
-  if (actionResult.credentialSuppressed) {
-    return [credentialGuard.CREDENTIAL_SUPPRESSED_NOTICE];
-  }
-  const prefix = actionResult.capturePrefix || '???';
-  return [
-    `Session dir: ${actionResult.sessionDir}`,
-    `Files: ${prefix}.html, ${prefix}.md, ${prefix}.png, ${prefix}-console.txt`
-  ];
-}
-
-/**
- * Format action response with capture information
- */
-function formatActionResponse(actionResult: any, actionDescription: string): string {
-  const response = [
-    `${actionDescription}`,
-    `Current URL: ${actionResult.url || 'unknown'}`,
-    `Size: ${actionResult.pageSize?.width}×${actionResult.pageSize?.height}`,
-    ...formatCaptureFiles(actionResult)
-  ];
-
-  // Add console messages if any
-  if (actionResult.consoleLog && actionResult.consoleLog.length > 0) {
-    response.push(`Console: ${actionResult.consoleLog.length} messages`);
-    actionResult.consoleLog.slice(0, 3).forEach((msg: any) => {
-      response.push(`  ${msg.level}: ${msg.text}`);
-    });
-    if (actionResult.consoleLog.length > 3) {
-      response.push(`  ... +${actionResult.consoleLog.length - 3} more`);
-    }
-  }
-
-  // Compact DOM summary
-  if (actionResult.domSummary) {
-    const lines = actionResult.domSummary.split('\n').slice(0, 8);
-    response.push('DOM:', ...lines.map((l: string) => `  ${l}`));
-    if (actionResult.domSummary.split('\n').length > 8) {
-      response.push('  ...');
-    }
-  }
-
-  return response.join('\n');
-}
-
-/**
- * Format capture response with DOM diff information.
- * When capture is null (action opened a dialog), returns dialog info instead.
- */
-function formatCaptureResponse(
-  action: string,
-  details: string,
-  captureOrNull: {
-    sessionDir: string;
-    files: Record<string, string>;
-    diffSummary: string;
-    domSummary: string;
-    pageSize: { width: number; height: number };
-    credentialSuppressed?: boolean;
-  } | null,
-  dialog?: any,
-  artifacts?: any
-): string {
-  if (!captureOrNull) {
-    // Action succeeded but opened a dialog — show dialog info
-    const dialogDesc = artifacts?.markdown || (dialog ? `Dialog opened: ${dialog.kind}` : 'Dialog opened');
-    return `${action}: ${details}\n\nDialog is now open — page is waiting for user input.\n\n${dialogDesc}`;
-  }
-  const capture = captureOrNull;
-
-  if (capture.credentialSuppressed) {
-    return `${action}: ${details}
-
-${credentialGuard.CREDENTIAL_SUPPRESSED_NOTICE}
-
-📊 Page: ${capture.pageSize.width}×${capture.pageSize.height}
-${capture.domSummary}`;
-  }
-
-  const fileList = Object.entries(capture.files)
-    .map(([key, path]) => `  ${key}: ${path}`)
-    .join('\n');
-
-  return `${action}: ${details}
-
-📁 Capture saved to: ${capture.sessionDir}
-${fileList}
-
-📊 Page: ${capture.pageSize.width}×${capture.pageSize.height}
-${capture.domSummary}
-
-📝 DOM Changes:
-${capture.diffSummary}`;
-}
-
-/**
- * Last line of defense: every piece of text use_browser returns (results,
- * errors, dialog refusals) has credential-shaped substrings replaced, so
- * a token that reached the output by any path — extract, eval, a URL, an
- * error message — never lands in the agent's transcript. Off when
- * SUPERPOWERS_CHROME_ALLOW_CREDENTIAL_CAPTURE=1.
- */
-function redactUnlessAllowed(text: string): string {
-  return credentialGuard.credentialCaptureAllowed() ? text : credentialGuard.redactCredentialShaped(text);
-}
-
 const RESTART_BANNER = '[Chrome auto-restarted; URL reset to about:blank. Re-navigate to continue.]';
 
 /**
@@ -421,7 +305,7 @@ async function executeBrowserAction(params: UseBrowserInput): Promise<string> {
       // When a dialog is open, captureActionWithDiff skips AFTER-capture
       if (!typeResult.capture) {
         const target = selector ? `into ${selector}` : 'into current focus';
-        return formatCaptureResponse('Typed', target, null, typeResult.dialog, typeResult.artifacts);
+        return formatCaptureResponse('Typed', target, null, typeResult.dialog, typeResult.artifacts, typeResult.credentialSuppressed);
       }
       return formatCaptureResponse(
         'Typed',
@@ -650,7 +534,7 @@ async function executeBrowserAction(params: UseBrowserInput): Promise<string> {
         'hover',
         () => chromeLib.hover(tabIndex, selector)
       );
-      return formatCaptureResponse('Hovered', selector, hoverResult.capture, hoverResult.dialog, hoverResult.artifacts);
+      return formatCaptureResponse('Hovered', selector, hoverResult.capture, hoverResult.dialog, hoverResult.artifacts, hoverResult.credentialSuppressed);
     }
 
     case BrowserAction.DRAG_DROP: {
@@ -722,7 +606,7 @@ async function executeBrowserAction(params: UseBrowserInput): Promise<string> {
       const targetDesc = typeof dragTarget === 'object'
         ? `(${dragTarget.x}, ${dragTarget.y})`
         : dragTarget;
-      return formatCaptureResponse('Dragged', `${source} → ${targetDesc}`, dragResult.capture, dragResult.dialog, dragResult.artifacts);
+      return formatCaptureResponse('Dragged', `${source} → ${targetDesc}`, dragResult.capture, dragResult.dialog, dragResult.artifacts, dragResult.credentialSuppressed);
     }
 
     case BrowserAction.MOUSE_MOVE: {
@@ -815,7 +699,7 @@ async function executeBrowserAction(params: UseBrowserInput): Promise<string> {
         'dblclick',
         () => chromeLib.doubleClick(tabIndex, selector)
       );
-      return formatCaptureResponse('Double-clicked', selector, dblClickResult.capture, dblClickResult.dialog, dblClickResult.artifacts);
+      return formatCaptureResponse('Double-clicked', selector, dblClickResult.capture, dblClickResult.dialog, dblClickResult.artifacts, dblClickResult.credentialSuppressed);
     }
 
     case BrowserAction.RIGHT_CLICK: {
@@ -828,7 +712,7 @@ async function executeBrowserAction(params: UseBrowserInput): Promise<string> {
         'rightclick',
         () => chromeLib.rightClick(tabIndex, selector)
       );
-      return formatCaptureResponse('Right-clicked', selector, rightClickResult.capture, rightClickResult.dialog, rightClickResult.artifacts);
+      return formatCaptureResponse('Right-clicked', selector, rightClickResult.capture, rightClickResult.dialog, rightClickResult.artifacts, rightClickResult.credentialSuppressed);
     }
 
     case BrowserAction.FILE_UPLOAD: {
@@ -859,7 +743,8 @@ async function executeBrowserAction(params: UseBrowserInput): Promise<string> {
         `${filePaths.length} file(s) to ${selector}`,
         uploadResult.capture,
         uploadResult.dialog,
-        uploadResult.artifacts
+        uploadResult.artifacts,
+        uploadResult.credentialSuppressed
       );
     }
 
@@ -884,7 +769,8 @@ async function executeBrowserAction(params: UseBrowserInput): Promise<string> {
         modStr ? `${modStr}+${key}` : key,
         keyResult.capture,
         keyResult.dialog,
-        keyResult.artifacts
+        keyResult.artifacts,
+        keyResult.credentialSuppressed
       );
     }
 

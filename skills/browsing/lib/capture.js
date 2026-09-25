@@ -405,16 +405,20 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
         const dir = state.sessionDir;
         // Same guard as capturePageArtifacts's dialog short-circuit above: the
         // dialog's message is page/JS-controlled and can carry a
-        // credential-shaped string. Suppress the files, withhold the raw
-        // artifacts (formatCaptureResponse falls back to `Dialog opened:
-        // ${dialog.kind}` when artifacts is absent), and strip the payload
-        // from the returned dialog descriptor — openAfter itself carries the
-        // message, so only its `kind` survives.
+        // credential-shaped string. Only the disk write is suppressed here —
+        // `artifacts` (with its dialog::accept/dismiss instructions) and the
+        // dialog's `kind` still go back to the caller, because the top-level
+        // redactUnlessAllowed pass in mcp/src/index.ts already blanks any
+        // credential-shaped substring in the final response text before it
+        // reaches the agent. `credentialSuppressed: true` tells that layer to
+        // add the ⚠️ notice alongside the (redacted) artifacts, instead of
+        // dropping them.
         if (mustSuppress(artifacts.markdown, artifacts.html, artifacts.consoleSnapshot)) {
           return {
             actionResult,
             capture: null,
             dialog: { kind: openAfter.kind },
+            artifacts,
             credentialSuppressed: true,
           };
         }
