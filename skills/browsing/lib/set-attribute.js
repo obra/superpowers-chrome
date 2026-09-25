@@ -3,71 +3,101 @@
  *
  * Why this exists (obra#50 follow-up): the eval fail-closed guard added in
  * capture.js's evaluateWithCapture refuses EVERY eval call once a page has
- * any data-sen-secret element, because eval can read anything — there is
+ * any data-sen-secret element, because eval can read anything - there is
  * no way to tell a value-blind expression from one that would leak the
  * secret. That is correct for eval, but it collaterally blocked a
  * legitimate write: an agent entering a split-digit one-time code needs
  * to stamp a broker nonce onto an *unmarked* sibling digit-input element
  * right after capturing and marking the TOTP seed displayed on that same
- * now-marked page. set_attr is scoped narrowly enough —
- * no read capability at all, restricted target element, exactly one
- * writable attribute name — that it doesn't need the secret-marker/eval
- * guard: there is nothing here for it to leak.
+ * now-marked page. set_attr is scoped narrowly enough -
+ * no read capability at all, restricted target element, a two-name
+ * allowlist - that it doesn't need the secret-marker/eval guard: there is
+ * nothing here for it to leak.
+ *
+ * PRI-3256 / obra#52 follow-up: sen-core-v2 has no path to WRITE the
+ * data-sen-secret marker itself, so the guard #52 hardens never engages -
+ * nothing ever marks the seed in the first place. set_attr is the only
+ * write surface an agent has on a marked-or-about-to-be-marked page, so it
+ * is now also allowed to set exactly `data-sen-secret` (see MARKER_ATTR),
+ * in addition to the pre-existing `data-sen-nonce`. This is deliberately
+ * the smallest change that closes that gap:
+ *   - Marking only ever TIGHTENS what eval/extract/attr will refuse; it
+ *     can never loosen anything, so it needs none of the read-side
+ *     guard's care.
+ *   - set_attr never reads (see below), so letting it write one more
+ *     boolean-ish attribute name adds no new read capability.
+ *   - It reuses the existing name-allowlist and "target already marked"
+ *     mechanics instead of adding a second action with its own surface
+ *     (a dedicated mark-secret action was the alternative; see the
+ *     sen-core-v2 PR this shipped with for why it lost).
+ *   - The "target already marked" refusal below is skipped specifically
+ *     for name === MARKER_ATTR: marking an already-marked element is a
+ *     no-op, not a bypass, and refusing it would just make the caller
+ *     retry-with-a-different-approach for no security benefit.
  *
  * NO caller-supplied JavaScript, unlike eval: selector/name/value travel
  * to the page as CDP Runtime.callFunctionOn `arguments` (CallArgument
  * values), never as text concatenated into a JS expression string. A
  * value like `"); fetch('https://evil'` cannot become code, because it is
- * never textually inserted into the function source — it only ever
+ * never textually inserted into the function source - it only ever
  * arrives as a runtime string handed to setAttribute(). FUNCTION_DECLARATION
- * below is the entire, fixed, page-side source; it is written once here
- * and never built per call.
+ * below is the entire, fixed, page-side source, built once here (from
+ * fixed Node-side constants, never from caller input) and never rebuilt
+ * per call.
  *
  * Guards, defense in depth:
- *   - Attribute NAME: a single-value allowlist (see ALLOWED_ATTRIBUTE_NAME
- *     below), checked in Node before any CDP call at all — a disallowed
+ *   - Attribute NAME: a two-value allowlist (see ALLOWED_ATTRIBUTE_NAMES
+ *     below), checked in Node before any CDP call at all - a disallowed
  *     name refuses without ever touching the page.
  *   - Target ELEMENT: the fixed page-side function refuses if the resolved
- *     element itself carries data-sen-secret, so this can never overwrite
- *     (or — since the marker name itself is disallowed) strip the marker
- *     off a secret element. This check is NOT gated behind the page-wide
- *     secret-marker check eval uses: set_attr can run freely on a page
- *     that has a marked element elsewhere, which is the entire point (see
- *     above).
+ *     element itself already carries data-sen-secret and the write isn't
+ *     itself a (re-)marking, so this can never overwrite a secret
+ *     element's other attributes. This check is NOT gated behind the
+ *     page-wide secret-marker check eval uses: set_attr can run freely on
+ *     a page that has a marked element elsewhere, which is the entire
+ *     point (see above).
  *   - Response shape: the page-side function returns only
  *     `{ ok: true }` or `{ ok: false, error }`, and the error strings are
  *     fixed literals we wrote (never page content, never the attribute's
  *     prior value, never the value just set).
  */
 const { throwIfExceptionDetails } = require('./cdp-utils');
+const { MARKER_ATTR } = require('./credential-guard');
 
-// Exactly one writable attribute name — the only known legitimate need
-// (stamping a credential-broker nonce during a split-digit one-time-code
-// entry flow, while the TOTP seed captured earlier is still marked on the
-// page) — not a data-*/aria-* prefix allowlist. Page JS and frameworks routinely
-// read arbitrary data-*/aria-* attributes and wire them to behavior
-// (data-action, data-href, aria-controls, and many more a hostile page
-// could invent), so "any data-*/aria-* name" is NOT guaranteed inert the
-// way it first looked — widening this is a deliberate, separate change,
-// not a regex tweak. Single constant, so it stays easy to find and to
-// audit if that widening is ever proposed.
-const ALLOWED_ATTRIBUTE_NAME = 'data-sen-nonce';
-const MARKER_ATTR = 'data-sen-secret';
+// The pre-existing writable name (stamping a credential-broker nonce
+// during a split-digit one-time-code entry flow, while the TOTP seed
+// captured earlier is still marked on the page) plus, as of PRI-3256,
+// MARKER_ATTR itself - not a data-*/aria-* prefix allowlist. Page JS and
+// frameworks routinely read arbitrary data-*/aria-* attributes and wire
+// them to behavior (data-action, data-href, aria-controls, and many more a
+// hostile page could invent), so "any data-*/aria-* name" is NOT
+// guaranteed inert the way it first looked - widening this to a third name
+// is a deliberate, separate change, not a regex tweak. Single constant, so
+// it stays easy to find and to audit if that widening is ever proposed.
+const NONCE_ATTRIBUTE_NAME = 'data-sen-nonce';
+const ALLOWED_ATTRIBUTE_NAMES = new Set([NONCE_ATTRIBUTE_NAME, MARKER_ATTR]);
+// Back-compat alias: existing callers/imports expect a single "the nonce
+// name" constant.
+const ALLOWED_ATTRIBUTE_NAME = NONCE_ATTRIBUTE_NAME;
 
 function isAllowedAttributeName(name) {
-  return typeof name === 'string' && name.toLowerCase() === ALLOWED_ATTRIBUTE_NAME;
+  return typeof name === 'string' && ALLOWED_ATTRIBUTE_NAMES.has(name.toLowerCase());
 }
 
 // Fixed page-side function body. selector/name/value are NEVER spliced
-// into this string — see the module doc above — they arrive as
-// Runtime.callFunctionOn `arguments` at call time.
+// into this string - see the module doc above - they arrive as
+// Runtime.callFunctionOn `arguments` at call time. MARKER_ATTR IS spliced
+// in (via JSON.stringify, at module-load time, from a fixed Node-side
+// constant, not from any call's arguments), so the page-side and Node-side
+// notions of "the marker attribute" can never drift apart.
 const FUNCTION_DECLARATION = `function (selector, name, value) {
   var el = selector.charAt(0) === '/'
     ? document.evaluate(selector, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue
     : document.querySelector(selector);
   if (!el) return { ok: false, error: 'no element matched' };
-  if (el.hasAttribute('data-sen-secret')) {
-    return { ok: false, error: 'refused: target element is marked data-sen-secret' };
+  var MARKER = ${JSON.stringify(MARKER_ATTR)};
+  if (name !== MARKER && el.hasAttribute(MARKER)) {
+    return { ok: false, error: 'refused: target element is marked ' + MARKER };
   }
   el.setAttribute(name, value);
   return { ok: true };
@@ -78,7 +108,7 @@ function attachSetAttribute({ getPageSession }) {
     if (!isAllowedAttributeName(name)) {
       throw new Error(
         `set_attr refused: attribute name ${JSON.stringify(name)} is not allowed ` +
-        `(only ${ALLOWED_ATTRIBUTE_NAME} is writable)`
+        `(only ${[...ALLOWED_ATTRIBUTE_NAMES].join(' or ')} are writable)`
       );
     }
 
@@ -113,4 +143,11 @@ function attachSetAttribute({ getPageSession }) {
   return { setAttribute };
 }
 
-module.exports = { attachSetAttribute, isAllowedAttributeName, ALLOWED_ATTRIBUTE_NAME, MARKER_ATTR };
+module.exports = {
+  attachSetAttribute,
+  isAllowedAttributeName,
+  ALLOWED_ATTRIBUTE_NAME,
+  ALLOWED_ATTRIBUTE_NAMES,
+  NONCE_ATTRIBUTE_NAME,
+  MARKER_ATTR,
+};
