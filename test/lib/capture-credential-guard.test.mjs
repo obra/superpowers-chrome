@@ -275,6 +275,58 @@ describe('evaluateWithCapture fails closed on a live data-sen-secret marker', ()
   });
 });
 
+// obra#52 review finding 2: actions.evaluate awaits the expression's own
+// promise (Runtime.evaluate with awaitPromise: true), so a caller
+// expression can run arbitrary async code between the pre-check above and
+// the value coming back. jc's PoC: `(async()=>{btn.click(); await
+// sleep(50); return document.querySelector('[data-sen-secret]')
+// .textContent})()` -- the page is clean when the pre-check runs, the
+// click reveals/marks the secret, and only THEN does the expression read
+// it. This uses a minimal, purpose-built ps/actions pair (not the shared
+// setup() above, which can't flip secretMarkerLive mid-call) so the
+// marker can change state between the pre-check and the post-check.
+describe('evaluateWithCapture: async marker race (obra#52 review finding 2)', () => {
+  function setupRace() {
+    let markerLive = false;
+    const ps = {
+      sessionId: 'S1',
+      targetId: 'T1',
+      send: async (method, params) => {
+        if (method === 'Runtime.evaluate' && params.expression === HAS_SECRET_MARKER_SCRIPT) {
+          return { result: { value: markerLive } };
+        }
+        return { result: { value: null } };
+      },
+    };
+    const state = { sessionDir: null, captureCounter: 0 };
+    const api = attachCapture({
+      state,
+      getPageSession: async () => ps,
+      getHtml: async () => '<html></html>',
+      screenshot: async (_t, f) => { fs.writeFileSync(f, 'PNG'); return f; },
+      actions: {
+        click: async () => ({ clicked: true }),
+        // Simulates the awaited expression's own side effect: the marker
+        // appears only DURING evaluation, after the pre-check already
+        // read markerLive === false.
+        evaluate: async (_tab, _expression) => {
+          markerLive = true;
+          return 'THE-SECRET-SEED-VALUE';
+        },
+      },
+    });
+    return api;
+  }
+
+  it('refuses and discards the result when the marker appears only during the awaited expression', async () => {
+    const api = setupRace();
+    await assert.rejects(
+      () => api.evaluateWithCapture(0, '(async () => { /* reveal */ ; return secret; })()'),
+      /eval refused.*data-sen-secret/
+    );
+  });
+});
+
 describe("extractPageText fails closed on a live data-sen-secret marker (extract action's whole-page text mode)", () => {
   it('refuses when the marker is present, without reading innerText', async () => {
     const page = { ...CLEAN_PAGE, renderedText: 'should never be read' };
@@ -470,6 +522,27 @@ describe('pageContainsCredentialShaped', () => {
     const { pageContainsCredentialShaped } = setup({ before: CLEAN_PAGE });
     assert.equal(await pageContainsCredentialShaped(0), false);
   });
+
+  // obra#52 review finding 4: this used to be just
+  // containsCredentialShaped(html) || containsCredentialShaped(renderedText)
+  // -- an HTML-string regex requiring the marker's tag to be in the
+  // serialized top-document outerHTML. A marker inside an open shadow root
+  // or a same-origin iframe never appears there, so a page with the
+  // marker ONLY in one of those was reported clean even though the live
+  // marker check (secret-marker.js, the same one eval/extract/attr use)
+  // would say otherwise. secretMarkerLive here stands in for exactly that
+  // case: a page whose HTML/renderedText are clean by the regex, but
+  // whose live-DOM marker check reports true.
+  it('is true when the page is clean by the HTML/text regex but the live marker check reports a marker (shadow root / same-origin iframe)', async () => {
+    const { pageContainsCredentialShaped } = setup({ before: CLEAN_PAGE, secretMarkerLive: true });
+    assert.equal(await pageContainsCredentialShaped(0), true);
+  });
+
+  it(`${ENV}=1 skips the live marker check too`, async () => {
+    process.env[ENV] = '1';
+    const { pageContainsCredentialShaped } = setup({ before: CLEAN_PAGE, secretMarkerLive: true });
+    assert.equal(await pageContainsCredentialShaped(0), false);
+  });
 });
 
 describe('screenshotUnlessCredentialShaped', () => {
@@ -505,5 +578,16 @@ describe('screenshotUnlessCredentialShaped', () => {
     const { screenshotUnlessCredentialShaped } = setup({ before: TOKEN_PAGE });
     assert.equal(await screenshotUnlessCredentialShaped(0, shotPath()), shotPath());
     assert.ok(fs.existsSync(shotPath()));
+  });
+
+  // obra#52 review finding 4: screenshots must do the LIVE marker check,
+  // not only the stale HTML-string regex -- a marker in a shadow root or
+  // same-origin iframe is invisible to the regex but the seed would still
+  // be legible in the PNG.
+  it('takes no screenshot when the live marker check reports a marker, even though HTML/text are clean by the regex', async () => {
+    const { screenshotUnlessCredentialShaped, calls } = setup({ before: CLEAN_PAGE, secretMarkerLive: true });
+    assert.equal(await screenshotUnlessCredentialShaped(0, shotPath()), null);
+    assert.equal(calls.screenshot, 0);
+    assert.equal(fs.existsSync(shotPath()), false);
   });
 });

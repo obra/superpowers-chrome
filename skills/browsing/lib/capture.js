@@ -162,11 +162,21 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
   }
 
   async function pageContainsCredentialShaped(tabIndexOrWsUrl) {
-    const [html, renderedText] = await Promise.all([
+    const [html, renderedText, ps] = await Promise.all([
       getHtml(tabIndexOrWsUrl),
-      getRenderedText(tabIndexOrWsUrl)
+      getRenderedText(tabIndexOrWsUrl),
+      getPageSession(tabIndexOrWsUrl),
     ]);
-    return containsCredentialShaped(html) || containsCredentialShaped(renderedText);
+    // obra#52 review finding 4: screenshots and auto-capture used only the
+    // HTML-string regex check (containsCredentialShaped), which requires
+    // the marker's tag to be in the serialized top-document outerHTML. A
+    // marker inside an open shadow root or a same-origin iframe is
+    // invisible there, so a screenshot of that page still legibly showed
+    // the seed. OR in the live-DOM check (secret-marker.js) instead - the
+    // same one eval/extract/attr use - which recurses into both.
+    return containsCredentialShaped(html)
+      || containsCredentialShaped(renderedText)
+      || (!credentialCaptureAllowed() && await pageHasSecretMarker(ps));
   }
 
   // A screenshot that never leaves an image of a credential-shaped page on
@@ -646,6 +656,16 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
         throw new Error(secretMarkerRefusal('eval'));
       }
       const result = await actions.evaluate(tabIndexOrWsUrl, expression);
+      // obra#52 review finding 2: actions.evaluate awaits the expression's
+      // own promise, so an expression can run arbitrary async code between
+      // the pre-check above and this point, including code that adds the
+      // marker mid-flight (click a reveal button, await a timer, then read
+      // the now-present marker) after the page was clean at the top of
+      // this function. Re-check right before the value is allowed near
+      // the return path so that case still gets refused and discarded.
+      if (!credentialCaptureAllowed() && await pageHasSecretMarker(ps)) {
+        throw new Error(secretMarkerRefusal('eval'));
+      }
       const artifacts = await capturePageArtifacts(pinnedTab, 'eval');
       return {
         action: 'eval',
