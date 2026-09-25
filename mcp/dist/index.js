@@ -21367,6 +21367,7 @@ var __dirname2 = dirname2(__filename2);
 var require3 = createRequire2(import.meta.url);
 var chromeLib = require3(join2(__dirname2, "../../skills/browsing/chrome-ws-lib.js")).createSession();
 var credentialGuard2 = require3(join2(__dirname2, "../../skills/browsing/lib/credential-guard.js"));
+var secretMarker = require3(join2(__dirname2, "../../skills/browsing/lib/secret-marker.js"));
 var SERVER_VERSION = require3(join2(__dirname2, "../package.json")).version;
 function hasDisplay() {
   const platform = process.platform;
@@ -21567,25 +21568,39 @@ async function executeBrowserAction(params) {
           return await chromeLib.getSanitizedHtml(tabIndex);
         } else if (format === "markdown") {
           const credentialCaptureAllowed = credentialGuard2.credentialCaptureAllowed();
+          const markerSelector = JSON.stringify(`[${credentialGuard2.MARKER_ATTR}]`);
           const root = credentialCaptureAllowed ? "document.body" : `(() => {
-                const clone = document.body ? document.body.cloneNode(true) : document.createElement('body');
-                clone.querySelectorAll('[data-sen-secret]').forEach(el => el.remove());
+                ${secretMarker.ANCESTOR_MARKED_FN_SRC}
+                ${secretMarker.INERT_CLONE_FN_SRC}
+                const src = document.body;
+                if (!src) return __senInertClone(document.createElement('body'));
+                if (__senAncestorMarked(src)) return { __secretMarked: true };
+                const clone = __senInertClone(src);
+                clone.querySelectorAll(${markerSelector}).forEach(el => el.remove());
                 return clone;
               })()`;
-          return await chromeLib.evaluate(tabIndex, `
-            Array.from((${root}).querySelectorAll('h1, h2, h3, h4, h5, h6, p, a, li, pre, code'))
-              .map(el => {
-                const tag = el.tagName.toLowerCase();
-                const text = el.textContent.trim();
-                if (tag.startsWith('h')) return '#'.repeat(parseInt(tag[1])) + ' ' + text;
-                if (tag === 'a') return '[' + text + '](' + el.href + ')';
-                if (tag === 'li') return '- ' + text;
-                if (tag === 'pre' || tag === 'code') return '\\\`\\\`\\\`\\n' + text + '\\n\\\`\\\`\\\`';
-                return text;
-              })
-              .filter(x => x)
-              .join('\\n\\n')
+          const result = await chromeLib.evaluate(tabIndex, `
+            (() => {
+              const root = (${root});
+              if (root && root.__secretMarked) return { __secretMarked: true };
+              return Array.from(root.querySelectorAll('h1, h2, h3, h4, h5, h6, p, a, li, pre, code'))
+                .map(el => {
+                  const tag = el.tagName.toLowerCase();
+                  const text = el.textContent.trim();
+                  if (tag.startsWith('h')) return '#'.repeat(parseInt(tag[1])) + ' ' + text;
+                  if (tag === 'a') return '[' + text + '](' + el.href + ')';
+                  if (tag === 'li') return '- ' + text;
+                  if (tag === 'pre' || tag === 'code') return '\\\`\\\`\\\`\\n' + text + '\\n\\\`\\\`\\\`';
+                  return text;
+                })
+                .filter(x => x)
+                .join('\\n\\n');
+            })()
           `.replace(/\s+/g, " ").trim());
+          if (result && typeof result === "object" && result.__secretMarked) {
+            throw new Error(credentialGuard2.secretMarkerRefusal("extract") + " (whole page)");
+          }
+          return result;
         } else {
           throw new Error("extract format must be 'text', 'html', or 'markdown'");
         }
@@ -22077,7 +22092,7 @@ file_upload: {"action": "file_upload", "selector": "#upload", "payload": {"files
 extract: {"action": "extract", "selector": ".price", "payload": {"format": "text"}}
 extract: {"action": "extract", "payload": {"format": "markdown"}} \u2192 whole page
 attr: {"action": "attr", "selector": "a", "payload": {"attr": "href"}}
-set_attr: {"action": "set_attr", "selector": "#code-input-0", "payload": {"name": "data-sen-nonce", "value": "opaque-nonce"}} \u2192 write-only; name must be EXACTLY "data-sen-nonce" (nothing else, not even other data-*/aria-* names); works even while a data-sen-secret element is on the page (eval does not)
+set_attr: {"action": "set_attr", "selector": "#code-input-0", "payload": {"name": "data-sen-nonce", "value": "opaque-nonce"}} \u2192 write-only; name must be exactly "data-sen-nonce" or "data-sen-secret" (nothing else, not even other data-*/aria-* names); works even while a data-sen-secret element is on the page (eval does not). Use name="data-sen-secret" to MARK a secret element before reading anything from the page \u2014 do this first, on TOTP/2FA seeds and other secrets with no distinctive shape, before eval/extract/attr ever touch the page.
 screenshot: {"action": "screenshot", "payload": "filename.png"}
 screenshot: {"action": "screenshot", "payload": {"path": "file.png", "fullpage": true}}
 
@@ -22149,7 +22164,7 @@ Files use sequential prefixes: 001-navigate, 002-click, etc.
 Prefer reading these files to using 'extract' or 'screenshot' whenever possible.
 
 ## Credential-Shaped Pages
-If a page shows credential-shaped content (Slack/GitHub/1Password tokens, otpauth:// seeds, or any element with a data-sen-secret attribute), auto-capture writes no files and returns only metadata with a "\u26A0\uFE0F Page shows credential-shaped content" line; screenshot refuses; token-shaped substrings (not the data-sen-secret marker itself, which has no substring to redact) are replaced by [REDACTED credential-shaped] everywhere else. eval refuses outright \u2014 with no value-blind exception \u2014 while ANY element on the page carries data-sen-secret, checked live before the expression runs. extract and attr instead read off a copy with data-sen-secret content removed (or refuse if the element you named is itself the marked one). set_attr is a separate write-only action (see above) that is NOT gated by any of this \u2014 it can't read anything \u2014 except that it refuses to touch an element that is itself marked, and its attribute name must be EXACTLY "data-sen-nonce" (no other data-*/aria-* name, and never data-sen-secret \u2014 arbitrary data-*/aria-* attributes are routinely wired to page behavior, e.g. data-action/aria-controls, so they are not assumed inert): use it to write a broker nonce onto an unmarked sibling element on a page that already has a captured secret. Use a credential broker to capture secret values. SUPERPOWERS_CHROME_ALLOW_CREDENTIAL_CAPTURE=1 disables all of this.
+If a page shows credential-shaped content (Slack/GitHub/1Password tokens, otpauth:// seeds, or any element with a data-sen-secret attribute), auto-capture writes no files and returns only metadata with a "\u26A0\uFE0F Page shows credential-shaped content" line; screenshot refuses; token-shaped substrings (not the data-sen-secret marker itself, which has no substring to redact) are replaced by [REDACTED credential-shaped] everywhere else. eval refuses outright \u2014 with no value-blind exception \u2014 while ANY element on the page carries data-sen-secret, checked live before the expression runs. extract and attr instead read off a copy with data-sen-secret content removed (or refuse if the element you named is itself the marked one). set_attr is a separate write-only action (see above) that is NOT gated by any of this \u2014 it can't read anything \u2014 except that it refuses to touch an element already marked data-sen-secret unless the write IS the (re-)marking itself. Its attribute name must be exactly "data-sen-nonce" or "data-sen-secret" (no other data-*/aria-* name \u2014 arbitrary data-*/aria-* attributes are routinely wired to page behavior, e.g. data-action/aria-controls, so they are not assumed inert): use "data-sen-nonce" to write a broker nonce onto an unmarked sibling element on a page that already has a captured secret, and "data-sen-secret" to mark a secret element yourself before reading it \u2014 marking only ever tightens what eval/extract/attr will refuse, never loosens it. Use a credential broker to capture secret values. SUPERPOWERS_CHROME_ALLOW_CREDENTIAL_CAPTURE=1 disables all of this.
 
 ## Selectors
 CSS: "button.submit", "#email", ".form input[name=password]"
@@ -22193,7 +22208,7 @@ Every DOM action (navigate, click, type, select, eval) auto-captures to the sess
 - {prefix}-console.txt \u2014 browser console messages
 
 Prefer reading these files to using 'extract' or 'screenshot' whenever possible.
-Pages showing credential-shaped content (tokens, 2FA seeds, or any data-sen-secret element) are never captured, such values are redacted from all output, and eval refuses outright while any data-sen-secret element is on the page. 'set_attr' is a write-only setter for EXACTLY one attribute name, 'data-sen-nonce', that is exempt from that eval restriction (see 'help' for details) \u2014 use it, not eval, to write onto the page while a secret is present.
+Pages showing credential-shaped content (tokens, 2FA seeds, or any data-sen-secret element) are never captured, such values are redacted from all output, and eval refuses outright while any data-sen-secret element is on the page. 'set_attr' is a write-only setter for exactly 'data-sen-nonce' or 'data-sen-secret' that is exempt from that eval restriction (see 'help' for details) \u2014 use it, not eval, to write onto the page while a secret is present, or to mark a secret element yourself before reading anything else off the page.
 
 Schema: 4 parameters \u2014 action, selector (CSS/XPath or null), payload (string or object), timeout (ms).
 selector targets a DOM element (null/omit for navigation, eval, tab management, etc.).
