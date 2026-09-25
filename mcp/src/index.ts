@@ -42,6 +42,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const require = createRequire(import.meta.url);
 const chromeLib = require(join(__dirname, "../../skills/browsing/chrome-ws-lib.js")).createSession();
+const credentialGuard = require(join(__dirname, "../../skills/browsing/lib/credential-guard.js"));
 const SERVER_VERSION = require(join(__dirname, "../package.json")).version;
 
 /**

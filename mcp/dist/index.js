@@ -21366,6 +21366,7 @@ var __filename2 = fileURLToPath2(import.meta.url);
 var __dirname2 = dirname2(__filename2);
 var require3 = createRequire2(import.meta.url);
 var chromeLib = require3(join2(__dirname2, "../../skills/browsing/chrome-ws-lib.js")).createSession();
+var credentialGuard2 = require3(join2(__dirname2, "../../skills/browsing/lib/credential-guard.js"));
 var SERVER_VERSION = require3(join2(__dirname2, "../package.json")).version;
 function hasDisplay() {
   const platform = process.platform;
@@ -21565,7 +21566,7 @@ async function executeBrowserAction(params) {
         } else if (format === "html") {
           return await chromeLib.getSanitizedHtml(tabIndex);
         } else if (format === "markdown") {
-          const credentialCaptureAllowed = credentialGuard.credentialCaptureAllowed();
+          const credentialCaptureAllowed = credentialGuard2.credentialCaptureAllowed();
           const root = credentialCaptureAllowed ? "document.body" : `(() => {
                 const clone = document.body ? document.body.cloneNode(true) : document.createElement('body');
                 clone.querySelectorAll('[data-sen-secret]').forEach(el => el.remove());
