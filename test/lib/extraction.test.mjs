@@ -1,6 +1,7 @@
 import { afterEach, describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
 import { createRequire } from 'node:module';
+import { JSDOM } from 'jsdom';
 import { makePageSessionFake } from './_helpers.mjs';
 
 const require = createRequire(import.meta.url);
@@ -12,6 +13,22 @@ function setup(handlers = {}) {
   const ps = makePageSessionFake(handlers);
   const getPageSession = async () => ps;
   return { ...attachExtraction({ getPageSession }), ps };
+}
+
+// Real-DOM setup (jsdom): evaluates the actual generated expression string
+// against a real document, the same pattern test/lib/select-option.test.mjs
+// uses, instead of stubbing Runtime.evaluate's reply. Needed to prove the
+// ancestor-walk (obra#52 review finding 1) actually works against real DOM
+// ancestry/shadow hosts, not just that extraction.js sends *some*
+// data-sen-secret-shaped expression string.
+function setupJsdom(html) {
+  const dom = new JSDOM(html, { runScripts: 'dangerously' });
+  const { window } = dom;
+  const ps = makePageSessionFake({
+    'Runtime.evaluate': (params) => ({ result: { value: window.eval(params.expression) } }),
+  });
+  const getPageSession = async () => ps;
+  return attachExtraction({ getPageSession });
 }
 
 describe('extraction', () => {
@@ -162,7 +179,13 @@ describe('extractText / getAttribute / getSanitizedHtml: data-sen-secret guard',
     await getSanitizedHtml(0);
     const call = ps.calls.find(c => c.method === 'Runtime.evaluate');
     assert.match(call.params.expression, /const el = document\.documentElement/);
-    assert.match(call.params.expression, /clone\.cloneNode|el\.cloneNode/);
+    // obra#52 review regression fix: clone via __senInertClone (imports into
+    // document.implementation.createHTMLDocument), not el.cloneNode(true) in
+    // the live document — a live-document clone still fires onload/onerror
+    // on any cloned <img>, since that algorithm keys off the clone's
+    // ownerDocument being "fully active," not whether it's attached.
+    assert.match(call.params.expression, /__senInertClone\(el\)/);
+    assert.doesNotMatch(call.params.expression, /el\.cloneNode/);
     assert.match(call.params.expression, /clone\.outerHTML/);
   });
 
@@ -186,5 +209,51 @@ describe('extractText / getAttribute / getSanitizedHtml: data-sen-secret guard',
     for (const call of ps.calls) {
       assert.doesNotMatch(call.params.expression, /data-sen-secret/, call.params.expression);
     }
+  });
+});
+
+describe('extractText / getAttribute / getSanitizedHtml: marker on an ANCESTOR (real DOM)', () => {
+  afterEach(() => { delete process.env[ENV]; });
+
+  const WRAPPED = '<div data-sen-secret><span id="val">the-seed</span></div><span id="control">not secret</span>';
+
+  it('extractText refuses when an ancestor (not the element itself) is marked', async () => {
+    const { extractText } = setupJsdom(WRAPPED);
+    await assert.rejects(() => extractText(0, '#val'), /extract refused.*data-sen-secret/);
+  });
+
+  it('extractText still works on an unmarked sibling with no marked ancestor', async () => {
+    const { extractText } = setupJsdom(WRAPPED);
+    assert.equal(await extractText(0, '#control'), 'not secret');
+  });
+
+  it('getAttribute refuses when an ancestor is marked, even for an unrelated attribute', async () => {
+    const html = '<div data-sen-secret><input id="val" value="the-seed" title="unrelated"></div>';
+    const { getAttribute } = setupJsdom(html);
+    await assert.rejects(() => getAttribute(0, '#val', 'title'), /attr refused.*data-sen-secret/);
+  });
+
+  it('getAttribute still works on an unmarked element', async () => {
+    const html = '<input id="control" value="not secret">';
+    const { getAttribute } = setupJsdom(html);
+    assert.equal(await getAttribute(0, '#control', 'value'), 'not secret');
+  });
+
+  it('getSanitizedHtml (selector form) refuses when an ancestor of the selected element is marked', async () => {
+    const { getSanitizedHtml } = setupJsdom(WRAPPED);
+    await assert.rejects(() => getSanitizedHtml(0, '#val'), /extract refused.*data-sen-secret/);
+  });
+
+  it('getSanitizedHtml (whole page) strips a marked descendant of documentElement rather than refusing', async () => {
+    const { getSanitizedHtml } = setupJsdom(WRAPPED);
+    const html = await getSanitizedHtml(0);
+    assert.ok(!html.includes('the-seed'), `seed leaked into whole-page HTML: ${html}`);
+    assert.ok(html.includes('not secret'));
+  });
+
+  it('extractText on the marked element itself still refuses (self case, not regressed by the ancestor-walk change)', async () => {
+    const html = '<div id="wrap" data-sen-secret><span>the-seed</span></div>';
+    const { extractText } = setupJsdom(html);
+    await assert.rejects(() => extractText(0, '#wrap'), /extract refused.*data-sen-secret/);
   });
 });

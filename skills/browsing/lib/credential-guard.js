@@ -45,8 +45,12 @@ const TOKEN_PATTERNS = [
   'otpauth://[^\\s"\'<>]*[?&;]secret=[A-Za-z0-9=]{16,}',
 ];
 
-// Page marker: an element attribute named exactly data-sen-secret.
-const MARKER_PATTERN = /<[^>]*\sdata-sen-secret(?=[\s=/>])/i;
+// Page marker: an element attribute named exactly data-sen-secret. Single
+// source of truth for the literal — secret-marker.js, extraction.js,
+// set-attribute.js, capture.js and mcp/src/index.ts all import this rather
+// than each spelling the attribute name out themselves.
+const MARKER_ATTR = 'data-sen-secret';
+const MARKER_PATTERN = new RegExp(`<[^>]*\\s${MARKER_ATTR}(?=[\\s=/>])`, 'i');
 
 const REDACTION = '[REDACTED credential-shaped]';
 
@@ -89,6 +93,7 @@ function secretMarkerRefusal(action) {
 }
 
 module.exports = {
+  MARKER_ATTR,
   containsCredentialShaped,
   redactCredentialShaped,
   credentialCaptureAllowed,
