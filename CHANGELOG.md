@@ -2,15 +2,20 @@
 
 All notable changes to the superpowers-chrome MCP project.
 
-## [3.0.7] - 2026-09-25 - Dialog credential-guard suppression kept the agent's own accept/dismiss instructions
+## [3.0.7] - 2026-09-25 - Native dialog text no longer copied to disk
 
-### Fixed
-- The dialog credential-shape guard (3.0.6) suppressed too much: when a native dialog's message (alert/confirm/prompt/beforeunload) was credential-shaped, the AFTER-action short-circuit dropped `artifacts` entirely, so `formatCaptureResponse` fell back to a bare `Dialog opened: alert` — losing both the `dialog::accept`/`dialog::dismiss` handling instructions and the `⚠️ … suppressed` notice (`credentialSuppressed` lived on the discarded `capture` object and was never read when `capture` is null). The guard now suppresses only the disk write; the redacted response, the notice, and the accept/dismiss instructions all still reach the agent, same as before 3.0.6 introduced the regression.
+### Security
+- Native dialog text leaked to disk. In 3.0.6 and earlier, the message of an `alert`/`confirm`/`prompt`/`beforeunload` dialog (and a `prompt`'s default value) was written unredacted to the `.md`, `.html` and `-console.txt` capture files whenever an action ran while a dialog was open or opened one. Page JavaScript controls that text, so a page could put a token there and bypass the 3.0.6 credential-shape guard (#50).
+- Both dialog short-circuits in `capture.js` (a dialog already open during a capture, and an action that opens one) now apply the same credential-shape check as the rest of auto-capture. On a match no dialog files are written. The agent still gets the dialog text with credential-shaped substrings replaced by `[REDACTED credential-shaped]`, the `dialog::accept`/`dialog::dismiss` instructions, and the `⚠️ … suppressed` notice. `SUPERPOWERS_CHROME_ALLOW_CREDENTIAL_CAPTURE=1` restores the old behavior.
+- Session dirs are normally removed when the server exits, but one left behind by a crash may still hold dialog text captured by 3.0.6 or earlier. Delete old session dirs under `superpowers/browser/` in the cache dir (`$XDG_CACHE_HOME`, else `~/.cache` on Linux, `~/Library/Caches` on macOS, `%LOCALAPPDATA%` on Windows).
+
+### Changed
+- The use_browser response-formatting helpers (`formatCaptureResponse`, `formatActionResponse`, `redactUnlessAllowed`, etc.) moved from `mcp/src/index.ts` to the new `mcp/src/response-format.ts`, mirroring `payload.ts`, so tests can import them without booting Chrome or an MCP server.
 
 ### Tests
-- `test/lib/capture-credential-guard.test.mjs`: the after-dialog short-circuit test now asserts `artifacts` (with the `dialog::accept` instructions) is still returned and no files land on disk, instead of asserting the artifacts were dropped.
-- `test/response-format-dialog-guard.test.mjs` (new): `formatCaptureResponse`'s suppressed-dialog branch returns the `⚠️` notice, the accept/dismiss instructions, and the message text together, never regresses to the bare `Dialog opened: <kind>` fallback when artifacts are present, and omits the notice for a benign dialog.
-- `mcp/src/response-format.ts` (new): the response-formatting helpers (`formatCaptureResponse`, `formatActionResponse`, `redactUnlessAllowed`, etc.) were split out of `mcp/src/index.ts`, mirroring `payload.ts`, so they're importable by tests without booting Chrome or an MCP server.
+- `test/lib/capture-credential-guard.test.mjs`: both dialog short-circuits write no dialog files for a credential-shaped message, a benign dialog still captures normally, and the opt-out restores capture. The after-dialog branch still returns the dialog artifacts, including the accept/dismiss instructions.
+- `test/response-format-dialog-guard.test.mjs` (new): `formatCaptureResponse` returns the notice, the accept/dismiss instructions and the dialog text together for a suppressed dialog, and omits the notice for a benign one.
+- `test/credential-guard-mcp.test.mjs`: the bundled MCP server on real headless Chrome, typing into a field that opens an `alert` carrying a token, returns the notice, `dialog::accept` and `[REDACTED credential-shaped]`, never the raw token, and writes no dialog files.
 
 ## [3.0.6] - 2026-09-23 - Auto-capture no longer copies secrets to disk or into the agent's transcript
 
