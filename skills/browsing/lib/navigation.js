@@ -1,6 +1,7 @@
 const { getElementSelector } = require('./element-selector');
 const { DialogRefusedError } = require('./dialogs');
 const { renderSyntheticArtifacts } = require('./dialogs-render');
+const { resetSecretLatchForNavigation, ensureSecretSeenSentinel } = require('./secret-marker');
 
 // Hard cap on the navigate() wait — covers slow servers and pages that
 // never fire Page.loadEventFired.
@@ -38,6 +39,13 @@ function attachNavigation({ state, getPageSession, capturePageArtifacts, evaluat
     // here — two writers for the same Runtime.consoleAPICalled event is the
     // root cause of the double-entry bug (Bug 1 / fix G follow-up).
     state.consoleMessages.set(sid, []);
+
+    // Secret-seen latch (obra#52 review round 2, finding 1): a same-origin
+    // navigation keeps the tab latched (the destination can still reach the
+    // secret via fetch/storage even after routing away from what showed it);
+    // a cross-origin (or opaque, e.g. data:) navigation starts fresh. See
+    // lib/secret-marker.js for the full reset-rule writeup.
+    resetSecretLatchForNavigation(state, sid, url);
 
     await ps.enableDomain('Page');
     if (autoCapture) {
@@ -178,6 +186,18 @@ function attachNavigation({ state, getPageSession, capturePageArtifacts, evaluat
       unsubConsole();
       unsubFrameNav();
       throw err;
+    }
+
+    // Install (or, on a same-origin navigation that never got a fresh
+    // document in practice — e.g. this call raced a redirect — re-arm) the
+    // secret-seen sentinel on the document that just loaded, and let it run
+    // its initial scan immediately: a marker present in the page's initial
+    // HTML must latch right away, not wait for the first guarded action.
+    try {
+      await ensureSecretSeenSentinel(ps);
+    } catch (_err) {
+      // Best-effort: a page that blocks Runtime.evaluate this early is rare
+      // and every other guarded path still fails closed independently.
     }
 
     // Linger to catch trailing console output emitted during load event handlers.

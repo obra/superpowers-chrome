@@ -1,18 +1,46 @@
 import { strict as assert } from 'node:assert';
 import { createRequire } from 'node:module';
-import { describe, it } from 'node:test';
+import { after, describe, it } from 'node:test';
 import { makePageSessionFake } from './_helpers.mjs';
 
 const require = createRequire(import.meta.url);
 const { attachConsoleLogging } = require('../../skills/browsing/lib/console-logging.js');
+const { HAS_SECRET_MARKER_SCRIPT, SECRET_SEEN_SENTINEL_SCRIPT } = require('../../skills/browsing/lib/secret-marker.js');
+const { CREDENTIAL_SUPPRESSED_NOTICE } = require('../../skills/browsing/lib/credential-guard.js');
+
+const ENV = 'SUPERPOWERS_CHROME_ALLOW_CREDENTIAL_CAPTURE';
+const origAllow = process.env[ENV];
+after(() => {
+  if (origAllow === undefined) delete process.env[ENV];
+  else process.env[ENV] = origAllow;
+});
 
 describe('console-logging', () => {
+  // markerRef.current is the LIVE marker's current state; sentinelSeen is
+  // the sticky, one-way flag a real MutationObserver would already have
+  // set the instant the marker appeared, independent of when Node next
+  // happens to call Runtime.evaluate (see secret-marker.test.mjs for proof
+  // the real sentinel behaves this way). setMarker(true) sets both, the
+  // same as reality; setMarker(false) (simulating removeAttribute) only
+  // clears the live flag, never the sticky one.
   function setup(sessionId = 'S-test') {
-    const ps = makePageSessionFake({}, { sessionId });
-    const state = { consoleMessages: new Map() };
+    const markerRef = { current: false };
+    let sentinelSeen = false;
+    function setMarker(value) {
+      markerRef.current = value;
+      if (value) sentinelSeen = true;
+    }
+    const ps = makePageSessionFake({
+      'Runtime.evaluate': (params) => {
+        if (params.expression === HAS_SECRET_MARKER_SCRIPT) return { result: { value: markerRef.current } };
+        if (params.expression === SECRET_SEEN_SENTINEL_SCRIPT) return { result: { value: sentinelSeen } };
+        return { result: { value: null } };
+      },
+    }, { sessionId });
+    const state = { consoleMessages: new Map(), secretLatch: new Map() };
     const getPageSession = async () => ps;
     const api = attachConsoleLogging({ state, getPageSession });
-    return { ps, state, ...api };
+    return { ps, state, markerRef, setMarker, ...api };
   }
 
   it('enableConsoleLogging enables Runtime domain and registers event handler', async () => {
@@ -111,8 +139,12 @@ describe('console-logging', () => {
   });
 
   it('getConsoleMessages with sinceTime filters older messages', async () => {
-    const state = { consoleMessages: new Map() };
-    const ps2 = makePageSessionFake({}, { sessionId: 'S-time' });
+    const state = { consoleMessages: new Map(), secretLatch: new Map() };
+    // Explicit Runtime.evaluate handler (not the bare {} default): the
+    // secret-seen latch check every getConsoleMessages call now makes
+    // needs a well-formed { result: { value } } response, same as every
+    // other guarded read path.
+    const ps2 = makePageSessionFake({ 'Runtime.evaluate': () => ({ result: { value: false } }) }, { sessionId: 'S-time' });
     const getPageSession2 = async () => ps2;
     const { enableConsoleLogging: enable2, getConsoleMessages: get2 } =
       attachConsoleLogging({ state, getPageSession: getPageSession2 });
@@ -216,5 +248,69 @@ describe('console-logging', () => {
     const singleMsgs = await get2(0);
     assert.equal(singleMsgs.length, 3, 'single writer: 3 events → exactly 3 buffer entries');
     assert.deepEqual(singleMsgs.map(m => m.text), ['one', 'two', 'three']);
+  });
+
+  // obra#52 review round 2, finding 1: console.log(secret) is one of the
+  // channels a page can use to get a data-sen-secret value out without it
+  // ever appearing in an action's return value. get_console_messages
+  // (backed by getConsoleMessages) had no credential guard of any kind.
+  describe('secret-seen latch gates console output (obra#52 review round 2, finding 1)', () => {
+    it('exfiltration route: console.log(secret) is redacted once the tab has shown a marker', async () => {
+      const { ps, setMarker, enableConsoleLogging, getConsoleMessages } = setup('S-console-exfil');
+      await enableConsoleLogging(0);
+
+      // Logged BEFORE the tab is ever latched.
+      ps.injectEvent({ method: 'Runtime.consoleAPICalled', params: { type: 'log', args: [{ type: 'string', value: 'before-mark' }] } });
+
+      // The page marks (and, in the real flow, reveals) the secret, then
+      // logs it — the exfiltration attempt.
+      setMarker(true);
+      ps.injectEvent({ method: 'Runtime.consoleAPICalled', params: { type: 'log', args: [{ type: 'string', value: 'THE-SECRET-SEED-VALUE' }] } });
+
+      // Once latched, the guard redacts the WHOLE buffer for this tab, not
+      // just messages logged after the marker appeared (see the module doc
+      // in console-logging.js for why: the latch is only checked when read,
+      // not continuously, so "before"/"after" isn't a safe distinction to
+      // rely on at this granularity).
+      const messages = await getConsoleMessages(0);
+      assert.equal(messages.length, 2);
+      assert.equal(messages[0].text, CREDENTIAL_SUPPRESSED_NOTICE);
+      assert.equal(messages[1].text, CREDENTIAL_SUPPRESSED_NOTICE);
+      assert.ok(!messages.some((m) => m.text.includes('THE-SECRET-SEED-VALUE')), JSON.stringify(messages));
+    });
+
+    it('exfiltration route: stays redacted after removeAttribute clears the live marker (sentinel is sticky)', async () => {
+      const { ps, setMarker, enableConsoleLogging, getConsoleMessages } = setup('S-console-remove-attr');
+      await enableConsoleLogging(0);
+
+      setMarker(true); // mark + reveal
+      ps.injectEvent({ method: 'Runtime.consoleAPICalled', params: { type: 'log', args: [{ type: 'string', value: 'leaked-secret' }] } });
+      setMarker(false); // page calls removeAttribute on the marker
+
+      const messages = await getConsoleMessages(0);
+      assert.equal(messages.length, 1);
+      assert.equal(messages[0].text, CREDENTIAL_SUPPRESSED_NOTICE);
+    });
+
+    it('never redacts a tab that has genuinely never shown a marker', async () => {
+      const { ps, enableConsoleLogging, getConsoleMessages } = setup('S-console-clean');
+      await enableConsoleLogging(0);
+      ps.injectEvent({ method: 'Runtime.consoleAPICalled', params: { type: 'log', args: [{ type: 'string', value: 'just some debug output' }] } });
+
+      const messages = await getConsoleMessages(0);
+      assert.equal(messages.length, 1);
+      assert.equal(messages[0].text, 'just some debug output');
+    });
+
+    it(`${ENV}=1 disables the redaction`, async () => {
+      process.env[ENV] = '1';
+      const { ps, setMarker, enableConsoleLogging, getConsoleMessages } = setup('S-console-allow');
+      await enableConsoleLogging(0);
+      setMarker(true);
+      ps.injectEvent({ method: 'Runtime.consoleAPICalled', params: { type: 'log', args: [{ type: 'string', value: 'THE-SECRET-SEED-VALUE' }] } });
+
+      const messages = await getConsoleMessages(0);
+      assert.equal(messages[0].text, 'THE-SECRET-SEED-VALUE');
+    });
   });
 });

@@ -13,7 +13,7 @@ const require = createRequire(import.meta.url);
 const { attachCapture } = require('../../skills/browsing/lib/capture.js');
 const markdownScript = require('../../skills/browsing/lib/page-scripts/markdown.js');
 const domSummaryScript = require('../../skills/browsing/lib/page-scripts/dom-summary.js');
-const { HAS_SECRET_MARKER_SCRIPT } = require('../../skills/browsing/lib/secret-marker.js');
+const { HAS_SECRET_MARKER_SCRIPT, SECRET_SEEN_SENTINEL_SCRIPT } = require('../../skills/browsing/lib/secret-marker.js');
 
 // Fake tokens are assembled from prefix + body at runtime so no complete
 // token-shaped literal sits in the source (GitHub push protection rejects
@@ -327,6 +327,97 @@ describe('evaluateWithCapture: async marker race (obra#52 review finding 2)', ()
   });
 });
 
+// obra#52 review round 2, finding 1: a post-hoc "is the marker present now"
+// recheck (the fix directly above) only ever guarded the RETURN path. A
+// page can get the value out through a DIFFERENT channel instead:
+//   - throw new Error(secret) instead of returning it.
+//   - removeAttribute the marker as the expression's own last synchronous
+//     step, so by the time anything rechecks the LIVE DOM, there's nothing
+//     there to refuse on.
+// The fix is the sticky secret-seen latch (lib/secret-marker.js): once
+// observed, by ANY means, it stays latched for the rest of this check,
+// regardless of what the live DOM looks like afterward.
+describe('evaluateWithCapture: latch closes the throw and removeAttribute routes (obra#52 review round 2, finding 1)', () => {
+  // sentinelSeen is sticky (never reset to false) once markerLive has been
+  // true at any point — the same guarantee the real page-side
+  // MutationObserver sentinel provides (see secret-marker.test.mjs), just
+  // simulated directly here since this suite mocks actions.evaluate rather
+  // than running real page JS.
+  function setupSticky() {
+    let markerLive = false;
+    let sentinelSeen = false;
+    const ps = {
+      sessionId: 'S1',
+      targetId: 'T1',
+      send: async (method, params) => {
+        if (method !== 'Runtime.evaluate') return { result: { value: null } };
+        if (markerLive) sentinelSeen = true;
+        if (params.expression === HAS_SECRET_MARKER_SCRIPT) return { result: { value: markerLive } };
+        if (params.expression === SECRET_SEEN_SENTINEL_SCRIPT) return { result: { value: sentinelSeen } };
+        return { result: { value: null } };
+      },
+    };
+    const state = { sessionDir: null, captureCounter: 0 };
+    let evaluateImpl;
+    const api = attachCapture({
+      state,
+      getPageSession: async () => ps,
+      getHtml: async () => '<html></html>',
+      screenshot: async (_t, f) => { fs.writeFileSync(f, 'PNG'); return f; },
+      actions: {
+        click: async () => ({ clicked: true }),
+        evaluate: async (tab, expression) => evaluateImpl(tab, expression),
+      },
+    });
+    return {
+      ...api,
+      setMarkerLive: (v) => { markerLive = v; if (v) sentinelSeen = true; },
+      setEvaluateImpl: (fn) => { evaluateImpl = fn; },
+    };
+  }
+
+  it('exfiltration route: throw new Error(secret) is refused and discarded, not surfaced as the original error', async () => {
+    const api = setupSticky();
+    api.setEvaluateImpl(async () => {
+      api.setMarkerLive(true); // reveal + mark, mid-expression
+      throw new Error('THE-SECRET-SEED-VALUE');
+    });
+
+    await assert.rejects(
+      () => api.evaluateWithCapture(0, '(async () => { /* reveal */ throw new Error(secret); })()'),
+      (err) => {
+        assert.match(err.message, /eval refused.*data-sen-secret/);
+        assert.ok(!err.message.includes('THE-SECRET-SEED-VALUE'), err.message);
+        return true;
+      }
+    );
+  });
+
+  it('a normal (non-secret) thrown error still propagates unchanged when the tab was never latched', async () => {
+    const api = setupSticky();
+    api.setEvaluateImpl(async () => { throw new Error('ReferenceError: undefinedThing is not defined'); });
+
+    await assert.rejects(
+      () => api.evaluateWithCapture(0, 'undefinedThing'),
+      /ReferenceError: undefinedThing is not defined/
+    );
+  });
+
+  it("exfiltration route: mark then removeAttribute as the expression's own last step still refuses and discards the return value", async () => {
+    const api = setupSticky();
+    api.setEvaluateImpl(async () => {
+      api.setMarkerLive(true); // reveal + mark
+      api.setMarkerLive(false); // removeAttribute, before returning — live DOM now shows no marker
+      return 'THE-SECRET-SEED-VALUE';
+    });
+
+    await assert.rejects(
+      () => api.evaluateWithCapture(0, '(async () => { /* reveal */ el.removeAttribute(MARKER); return secret; })()'),
+      /eval refused.*data-sen-secret/
+    );
+  });
+});
+
 describe("extractPageText fails closed on a live data-sen-secret marker (extract action's whole-page text mode)", () => {
   it('refuses when the marker is present, without reading innerText', async () => {
     const page = { ...CLEAN_PAGE, renderedText: 'should never be read' };
@@ -589,5 +680,77 @@ describe('screenshotUnlessCredentialShaped', () => {
     assert.equal(await screenshotUnlessCredentialShaped(0, shotPath()), null);
     assert.equal(calls.screenshot, 0);
     assert.equal(fs.existsSync(shotPath()), false);
+  });
+});
+
+// obra#52 review round 2, finding 2: "capture writes the seed to disk
+// before anything can mark it." The two screenshotUnlessCredentialShaped
+// point-in-time checks (before and after the shot) both include the live
+// marker check (round-1 fix), but mustSuppress(html, markdown, domSummary,
+// renderedText) — the SEPARATE check gating the .html/.md file writes — was
+// regex-only and could never see a marker living in a shadow root or
+// same-origin iframe, REGARDLESS of timing, because outerHTML never
+// serializes either. If that marker becomes observable strictly after both
+// screenshot-time checks already passed (clean at the time), the old code
+// wrote the .html/.md files anyway. mustSuppressPageState below closes
+// this by re-checking the live marker on the SAME tab reference right
+// before deciding to write, not trusting the earlier screenshot-time
+// verdict.
+describe('capturePageArtifacts refuses to persist a page state a later marker-check would catch (obra#52 review round 2, finding 2)', () => {
+  // markerQueries counts HAS_SECRET_MARKER_SCRIPT evaluations. The two
+  // screenshotUnlessCredentialShaped checks (pre-shot, post-shot) are
+  // queries 1 and 2 and must see NO marker (so the shot succeeds and
+  // `!shot` alone can't explain any suppression this test observes); the
+  // 3rd query is capturePageArtifacts's own mustSuppressPageState check on
+  // the html/markdown snapshot, and is where the marker becomes visible —
+  // simulating one that lives in a shadow root, so getHtml's returned
+  // string is (and stays) clean by regex no matter when it's read.
+  function setupExactStateRace({ failOnQuery = null } = {}) {
+    let markerQueries = 0;
+    const ps = {
+      sessionId: 'S1',
+      targetId: 'T1',
+      send: async (method, params) => {
+        if (method !== 'Runtime.evaluate') return { result: { value: null } };
+        if (params.expression === HAS_SECRET_MARKER_SCRIPT) {
+          markerQueries++;
+          if (failOnQuery !== null && markerQueries === failOnQuery) throw new Error('CDP: session closed mid-check');
+          return { result: { value: markerQueries > 2 } };
+        }
+        if (params.expression === SECRET_SEEN_SENTINEL_SCRIPT) return { result: { value: markerQueries > 2 } };
+        return { result: { value: null } };
+      },
+    };
+    const state = { sessionDir: null, captureCounter: 0 };
+    const api = attachCapture({
+      state,
+      getPageSession: async () => ps,
+      // Never contains the marker tag, at any point — the shadow-root case:
+      // outerHTML structurally can't show it, so no amount of regex
+      // checking on this string alone could ever catch it.
+      getHtml: async () => '<html><body><div id="host"></div></body></html>',
+      screenshot: async (_t, f) => { fs.writeFileSync(f, 'PNG'); return f; },
+      actions: { evaluate: async () => null },
+    });
+    return { ...api, state };
+  }
+
+  it('exfiltration route: writes no files when a shadow-root marker only becomes observable after both screenshot-time checks already passed clean', async () => {
+    const { capturePageArtifacts, state } = setupExactStateRace();
+    const result = await capturePageArtifacts(0, 'navigate');
+
+    assert.equal(result.credentialSuppressed, true, result);
+    assert.equal(sessionFiles(state).length, 0, 'no .html/.md/.png may survive');
+  });
+
+  it('fails closed — writes no files — when the live-marker check itself cannot complete', async () => {
+    // Fails on query 3: the two screenshot-time checks succeed (clean), so
+    // this isolates the failure to capturePageArtifacts's own check, not an
+    // earlier screenshot-path failure.
+    const { capturePageArtifacts, state } = setupExactStateRace({ failOnQuery: 3 });
+    const result = await capturePageArtifacts(0, 'navigate');
+
+    assert.equal(result.credentialSuppressed, true, 'a check that cannot complete must be treated as "must suppress", never as "clean"');
+    assert.equal(sessionFiles(state).length, 0, 'no .html/.md/.png may survive an incomplete check');
   });
 });
