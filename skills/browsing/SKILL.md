@@ -36,10 +36,6 @@ Files are saved to the session directory with sequential prefixes (001-navigate,
 
 **Credential-shaped pages:** when a page shows a token or secret (Slack `xoxb-`/`xapp-`, GitHub `ghp_`/`github_pat_`, 1Password `ops_`/`A3-` keys, `otpauth://` seeds, or any element marked `data-sen-secret`), no files are written for that action and the response says `⚠️ Page shows credential-shaped content; auto-capture and DOM output suppressed.` with only metadata. `extract`/`eval` output has such values replaced by `[REDACTED credential-shaped]`, and `screenshot` refuses. Capture secrets with a credential broker; use `eval` only for value-blind queries (e.g. "is the token field present?"). The check sees the HTML, rendered text and open shadow roots, but not closed shadow roots or iframes. `SUPERPOWERS_CHROME_ALLOW_CREDENTIAL_CAPTURE=1` turns this off.
 
-**Secret-seen latch:** once a tab has shown a `data-sen-secret` marker — seen live, or ever recorded by a page-side sentinel that survives `removeAttribute` — the tab stays "latched" for the rest of that browsing context. While latched: `eval`'s result and any thrown error are both refused (not just the return path); `get_console_messages` redacts the whole buffer; native dialog text (`alert`/`confirm`/`prompt`) is redacted too, including a bare secret with no recognizable shape (e.g. a raw TOTP seed) that the credential-shape regex alone would miss. The latch resets on navigation to a different origin, but survives same-origin navigation/reload and a `data:`/opaque-URL page always starts unlatched.
-
-**Design limit, stated honestly:** this is defense in depth against ACCIDENTAL exposure (auto-capture, a careless `eval`, a dialog), not a hard security boundary. It cannot stop a page from exfiltrating a secret via its own `fetch()`/XHR to an attacker's server, and it only ever gates what THIS tool's actions return — a copy the secret makes into `window.__someGlobal` or another element's `data-clipboard-text` before marking is outside what any of this can see. Marking a page late (after `eval`/`extract` already ran) protects nothing retroactively.
-
 ## The use_browser Tool
 
 Single MCP tool with action-based interface. Chrome auto-starts on first use.
@@ -135,19 +131,17 @@ These use CDP Input.dispatchMouseEvent, bypassing synthetic event restrictions.
   - `payload`: Attribute name
   - Example: `{action: "attr", selector: "a.download", payload: "href"}`
 
-- **set_attr**: Write-only attribute setter, restricted to exactly two attribute names: `data-sen-nonce`, and `data-sen-secret` itself (the marking path — nothing else; see `skills/browsing/lib/set-attribute.js`'s `ALLOWED_ATTRIBUTE_NAMES` constant)
+- **set_attr**: Write-only attribute setter, restricted to EXACTLY the attribute name `data-sen-nonce` (nothing else — not `data-sen-secret`, not any other `data-*`/`aria-*` name; see `skills/browsing/lib/set-attribute.js`'s `ALLOWED_ATTRIBUTE_NAME` constant)
   - `selector`: CSS or XPath selector
   - `payload`: `{"name": "data-sen-nonce", "value": "..."}` (no bare-string form — needs both fields)
-  - Resolves the selector the same way `click`/`type`/`extract` do — prefers the one VISIBLE match over a hidden duplicate earlier in the DOM — and refuses if more than one match is visible, since visibility can't disambiguate two elements that are both on screen.
-  - Refuses if the target element itself carries `data-sen-secret` and the write isn't itself a (re-)marking. Unlike every read action, it is NOT blocked by a `data-sen-secret` element existing elsewhere on the page — it can't read anything, so there's nothing for it to leak. Use this instead of `eval` to write onto a page that already has a captured secret (e.g. stamping a credential-broker nonce onto an unmarked digit-input box next to a just-captured TOTP seed).
-  - Why so narrow: page JS and frameworks routinely read arbitrary `data-*`/`aria-*` attributes and wire them to behavior (`data-action`, `data-href`, `aria-controls`, and more a hostile page could invent), so a prefix allowlist is not guaranteed inert. Widening past these two names is a deliberate, separate change.
+  - Refuses if the target element itself carries `data-sen-secret`. Unlike every read action, it is NOT blocked by a `data-sen-secret` element existing elsewhere on the page — it can't read anything, so there's nothing for it to leak. Use this instead of `eval` to write onto a page that already has a captured secret (e.g. stamping a credential-broker nonce onto an unmarked digit-input box next to a just-captured TOTP seed).
+  - Why so narrow: page JS and frameworks routinely read arbitrary `data-*`/`aria-*` attributes and wire them to behavior (`data-action`, `data-href`, `aria-controls`, and more a hostile page could invent), so a prefix allowlist is not guaranteed inert. Widening past this one name is a deliberate, separate change.
   - Example: `{action: "set_attr", selector: "#code-input-0", payload: {"name": "data-sen-nonce", "value": "opaque-nonce"}}`
 
 - **eval**: Execute JavaScript
   - `payload`: JavaScript code
   - Example: `{action: "eval", payload: "document.title"}`
-  - Refuses outright (no value-blind exception) while any element on the page carries `data-sen-secret`, OR while the tab's secret-seen latch is set — see "Secret-seen latch" below — see `set_attr` above for the write-only escape hatch.
-  - If the expression runs anyway (marker/latch clean at the start) and it throws, marks, or reveals a secret mid-flight, both the return value AND the thrown error are discarded and replaced with a generic refusal once the latch fires — `throw`, `console.log`, and `removeAttribute` are not separate escape hatches from the marker check.
+  - Refuses outright (no value-blind exception) while any element on the page carries `data-sen-secret` — see `set_attr` above for the write-only escape hatch.
 
 ### Export
 - **screenshot**: Capture screenshot of a specific element

@@ -8,7 +8,7 @@ import { makePageSessionFake as makePageSessionFakeWithTargetId } from './_helpe
 
 const require = createRequire(import.meta.url);
 const { attachCapture } = require('../../skills/browsing/lib/capture.js');
-const { HAS_SECRET_MARKER_SCRIPT, SECRET_SEEN_SENTINEL_SCRIPT } = require('../../skills/browsing/lib/secret-marker.js');
+const { HAS_SECRET_MARKER_SCRIPT } = require('../../skills/browsing/lib/secret-marker.js');
 
 function makePageSessionFake(sessionId = 'fake-session-id') {
   const calls = [];
@@ -18,11 +18,9 @@ function makePageSessionFake(sessionId = 'fake-session-id') {
       calls.push({ method, params });
       // False: none of these generic capture.js tests exercise a
       // data-sen-secret page, so the live marker check (obra#50 follow-up)
-      // and the secret-seen latch's sentinel (obra#52 review round 2,
-      // finding 1) must both say "absent", or evaluateWithCapture refuses
-      // before running anything, same as it would on a real marked page.
+      // must say "absent" or evaluateWithCapture refuses before running
+      // anything, same as it would on a real marked page.
       if (params.expression === HAS_SECRET_MARKER_SCRIPT) return { result: { value: false } };
-      if (params.expression === SECRET_SEEN_SENTINEL_SCRIPT) return { result: { value: false } };
       return { result: { value: 'fake' } };
     },
   };

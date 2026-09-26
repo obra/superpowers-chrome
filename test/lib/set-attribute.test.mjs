@@ -1,4 +1,4 @@
-// set_attr: name allowlist (data-sen-nonce, and now also
+// set_attr: name allowlist (data-sen-nonce, and, as of PRI-3256,
 // data-sen-secret) and the page-side refusal logic. Real-DOM (jsdom) for
 // the page-side function, the same pattern as test/lib/select-option.test.mjs.
 import { describe, it } from 'node:test';
@@ -21,7 +21,7 @@ describe('isAllowedAttributeName', () => {
     assert.equal(isAllowedAttributeName('data-sen-nonce'), true);
   });
 
-  // set_attr is now also the write path for marking a secret
+  // PRI-3256: set_attr is now also the write path for marking a secret
   // element, since #52's guard never engages unless something writes
   // data-sen-secret in the first place.
   it('allows data-sen-secret', () => {
@@ -87,7 +87,7 @@ describe('setAttribute (real DOM)', () => {
     );
   });
 
-  // Marking is the whole point of allowing this name, so writing
+  // PRI-3256: marking is the whole point of allowing this name, so writing
   // data-sen-secret must work even on an element that is ALREADY marked
   // (idempotent re-marking is not a bypass -- it's a no-op) and must not
   // require the caller to check first.
@@ -120,44 +120,5 @@ describe('setAttribute (real DOM)', () => {
   it('rejects a disallowed attribute name before ever touching the page', async () => {
     const { setAttribute } = setupJsdom('<input id="box0">');
     await assert.rejects(() => setAttribute(0, '#box0', 'value', 'evil'), /not allowed/);
-  });
-
-  // obra#52 review round 2, finding 3: plain document.querySelector(selector)
-  // returns the FIRST DOM match, not the one actually visible on screen. A
-  // page can put a hidden duplicate of a real, visible field earlier in the
-  // DOM (offscreen, display:none, zero-size) so that set_attr silently
-  // marks/writes the WRONG element while the one an agent (or a human
-  // looking at a screenshot) would call "the" field goes untouched — for
-  // marking specifically, that means the REAL, visible secret never gets
-  // marked at all, leaving it fully readable by eval/extract/attr.
-  it('exfiltration route: set_attr on a hidden duplicate resolves to the VISIBLE match, not the first DOM match', async () => {
-    const { setAttribute, window } = setupJsdom(
-      '<code id="decoy" class="secret-box" style="display:none">JBSWY3DPDECOY</code>' +
-      '<code id="real" class="secret-box">JBSWY3DPREAL</code>'
-    );
-    // jsdom reports all-zero bounding rects by default; give the real one a
-    // non-zero rect the same way test/element-selector.test.mjs does, and
-    // leave the decoy's rect at jsdom's zero default (i.e. hidden).
-    window.document.getElementById('real').getBoundingClientRect = () => (
-      { x: 0, y: 0, width: 100, height: 20, top: 0, left: 0, right: 100, bottom: 20 }
-    );
-
-    await setAttribute(0, '.secret-box', 'data-sen-secret', '');
-
-    assert.equal(window.document.getElementById('real').hasAttribute('data-sen-secret'), true, 'the visible element must be marked');
-    assert.equal(window.document.getElementById('decoy').hasAttribute('data-sen-secret'), false, 'the hidden decoy must be left alone');
-  });
-
-  it('refuses when the selector matches more than one VISIBLE element, rather than silently picking one', async () => {
-    const { setAttribute, window } = setupJsdom(
-      '<input id="a" class="box"><input id="b" class="box">'
-    );
-    const rect = { x: 0, y: 0, width: 50, height: 20, top: 0, left: 0, right: 50, bottom: 20 };
-    window.document.getElementById('a').getBoundingClientRect = () => rect;
-    window.document.getElementById('b').getBoundingClientRect = () => rect;
-
-    await assert.rejects(() => setAttribute(0, '.box', 'data-sen-nonce', 'x'), /refused.*ambiguous/i);
-    assert.equal(window.document.getElementById('a').hasAttribute('data-sen-nonce'), false);
-    assert.equal(window.document.getElementById('b').hasAttribute('data-sen-nonce'), false);
   });
 });

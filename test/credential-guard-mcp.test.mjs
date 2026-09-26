@@ -66,20 +66,6 @@ const MARKER_INPUT_PAGE = dataUrl(
   `<input id="control" value="${CONTROL_VALUE}">`
 );
 
-// obra#52 review round 2, finding 1 (alert() route): the marked seed is
-// read off the LIVE element and shown via a deferred alert (same reliable
-// timing trick as ALERT_ON_INPUT_PAGE below — the dialog opens during
-// type's post-keystroke delay, after the CDP call for the keystroke has
-// already returned). BASE32_SEED matches none of credential-guard.js's
-// TOKEN_PATTERNS, so only the secret-seen latch — not the shape-based
-// regex — can catch this.
-const MARKER_ALERT_PAGE = dataUrl(
-  '<title>Marker alert page</title><h1>Backup codes</h1>' +
-  `<code id="secret" data-sen-secret>${BASE32_SEED}</code><input id="f">` +
-  `<script>document.getElementById('f').addEventListener('input', () => ` +
-  `setTimeout(() => alert(document.getElementById('secret').textContent), 0), { once: true });</script>`
-);
-
 // set_attr fixtures (obra#50 follow-up: split-digit TOTP nonce write).
 // PRIOR_NONCE stands in for whatever value a broker nonce field might
 // already carry (e.g. left over from an earlier, unrelated capture) —
@@ -88,11 +74,7 @@ const PRIOR_NONCE = 'stale-prior-nonce-should-never-leak';
 const SET_ATTR_PAGE = dataUrl(
   '<title>Split box</title><h1>Backup codes</h1>' +
   `<code id="secret" data-sen-secret>${BASE32_SEED}</code>` +
-  `<input id="box0" data-sen-nonce="${PRIOR_NONCE}">` +
-  // Untouched by any nonce test below — dedicated to the marking-path
-  // tests so they don't leave a mark on #box0 and break the tests after
-  // them that expect #box0 to still be plain data-sen-nonce.
-  `<input id="fresh">`
+  `<input id="box0" data-sen-nonce="${PRIOR_NONCE}">`
 );
 const DIGIT_COUNT = 6;
 const DIGITS = '123456';
@@ -557,39 +539,6 @@ describe('data-sen-secret marker with no token-shaped content (real Chrome)', { 
     assert.equal(isError, false, text);
     assert.equal(text, CONTROL_VALUE);
   });
-
-  // obra#52 review round 2, finding 1: alert()ing a marked value is one of
-  // the channels the async-eval-only fix couldn't stop — a native dialog's
-  // message is JS-controlled text with its own render/capture path,
-  // untouched by eval's marker recheck. BASE32_SEED has no recognizable
-  // token shape, so the pre-existing dialog credential-shape check (#51)
-  // cannot catch it either; only the secret-seen latch can.
-  it('exfiltration route: alert() showing the marked value is redacted, even though the value has no recognizable token shape', async () => {
-    await server.call({ action: 'navigate', payload: MARKER_ALERT_PAGE });
-    const filesBefore = new Set(server.capturedFiles());
-
-    const { text } = await server.call({ action: 'type', selector: '#f', payload: 'x' });
-
-    assert.ok(text.includes('dialog::accept'), text);
-    // Scoped to the quoted message line specifically: for a data: URL test
-    // fixture the "Tab origin" field is the whole encoded page source (an
-    // artifact of how data: URLs work, not a real leak channel — a real
-    // page's URL doesn't embed its own DOM), so asserting over the full
-    // response text would trip on that unrelated field instead of proving
-    // anything about the dialog MESSAGE this test targets.
-    const quotedLine = text.split('\n').find((line) => line.startsWith('> '));
-    assert.ok(quotedLine, text);
-    assert.ok(!quotedLine.includes(BASE32_SEED), text);
-    const newFiles = server.capturedFiles().filter((f) => !filesBefore.has(f));
-    // Unlike ALERT_ON_INPUT_PAGE (clean until the dialog reveals a token),
-    // this fixture's marker is present from page load, so even the BEFORE
-    // screenshot is already refused — correctly, zero new files, not the
-    // single surviving before-screenshot the token fixture leaves.
-    assert.deepEqual(newFiles, []);
-
-    const accepted = await server.call({ action: 'click', selector: 'dialog::accept' });
-    assert.equal(accepted.isError, false, accepted.text);
-  });
 });
 
 describe(
@@ -664,43 +613,14 @@ describe('set_attr (real Chrome)', { skip: !CHROME_AVAILABLE && 'Chrome not inst
     assert.match(text, /set_attr refused.*data-sen-secret/i);
   });
 
-  // obra#52 review round 2, finding 4 ("test (c) is still red"): this used
-  // to assert name=data-sen-secret was refused outright — true before the
-  // set_attr allowlist widened to include MARKER_ATTR (see
-  // skills/browsing/lib/set-attribute.js's module doc), false since. The
-  // node-side allowlist check now lets this name through by design —
-  // set_attr marking an unmarked element IS the write path the marker
-  // otherwise has none of — so the test must assert the marking succeeds,
-  // not that it's refused. It targets #fresh, never #box0, so it can't
-  // interfere with the nonce-write tests around it.
-  it('(c) name=data-sen-secret on a previously-unmarked element marks it (the write side of the marking path)', async () => {
+  it('(c) name=data-sen-secret is refused (cannot strip or overwrite the marker)', async () => {
     const { text, isError } = await server.call({
       action: 'set_attr',
-      selector: '#fresh',
+      selector: '#box0',
       payload: { name: 'data-sen-secret', value: 'x' },
     });
-    assert.equal(isError, false, text);
-
-    // Prove the mark actually took: #fresh is now a marked element, so
-    // set_attr refuses to write data-sen-nonce onto it, the same as any
-    // other already-marked target (case (b) above).
-    const after = await server.call({
-      action: 'set_attr',
-      selector: '#fresh',
-      payload: { name: 'data-sen-nonce', value: 'y' },
-    });
-    assert.equal(after.isError, true, after.text);
-    assert.match(after.text, /set_attr refused.*data-sen-secret/i);
-  });
-
-  it('(c) name=data-sen-secret on an already-marked element is a no-op, not a refusal', async () => {
-    const { text, isError } = await server.call({
-      action: 'set_attr',
-      selector: '#secret',
-      payload: { name: 'data-sen-secret', value: 'still-marked' },
-    });
-    assert.equal(isError, false, text);
-    assert.ok(!text.includes(BASE32_SEED), text);
+    assert.equal(isError, true, text);
+    assert.match(text, /set_attr refused.*not allowed/i);
   });
 
   // The allowlist is a single exact name (data-sen-nonce), not a

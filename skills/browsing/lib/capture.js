@@ -6,8 +6,8 @@ const { throwIfExceptionDetails } = require('./cdp-utils');
 const markdownScript = require('./page-scripts/markdown');
 const domSummaryScript = require('./page-scripts/dom-summary');
 const renderedTextScript = require('./page-scripts/rendered-text');
-const { containsCredentialShaped, credentialCaptureAllowed, secretMarkerRefusal, CREDENTIAL_SUPPRESSED_NOTICE } = require('./credential-guard');
-const { pageHasSecretMarker, refreshSecretLatch, isSecretLatched } = require('./secret-marker');
+const { containsCredentialShaped, credentialCaptureAllowed, secretMarkerRefusal } = require('./credential-guard');
+const { pageHasSecretMarker } = require('./secret-marker');
 
 // Only these DOM-summary lines are returned for a suppressed capture: they
 // are element counts and landmark structure. The title and headings lines
@@ -155,87 +155,10 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
     return result.result.value;
   }
 
-  // obra#52 review round 2, finding 2: mustSuppress above only regexes
-  // already-serialized text (outerHTML, rendered text, markdown, dom
-  // summary) for either a token shape or a `<... data-sen-secret` tag in
-  // markup. That misses a marker living in a shadow root or a same-origin
-  // iframe (never serialized into outerHTML) AND it can never see a marker
-  // that was present but has since been removeAttribute'd — both real gaps
-  // for auto-capture specifically, since auto-capture is what writes a
-  // page's FIRST, not-yet-marked appearance to disk, before any later
-  // action gets a chance to mark it.
-  //
-  // This is the single gate every disk-writing capture path must call,
-  // checked against the SAME tab reference the content about to be written
-  // came from ("that exact state", not an earlier point-in-time check from
-  // before the content was fetched): it ORs the regex check with a fresh
-  // live-marker scan AND the tab's sticky secret-seen latch (so a page that
-  // was marked at any point stays suppressed even if the marker is gone by
-  // the time this specific capture runs). If the live check itself cannot
-  // complete (a thrown error — CDP failure, timeout, closed session), this
-  // fails closed: the check "can't complete" counts as "must suppress",
-  // never as "clean", so nothing gets written.
-  async function mustSuppressPageState(tabIndexOrWsUrl, ...pageTexts) {
-    if (credentialCaptureAllowed()) return false;
-    // Compute BOTH signals unconditionally, never short-circuiting past the
-    // live check just because the regex already proves suppression: this
-    // is also the only place some callers ever refresh the secret-seen
-    // latch, and a marker whose serialized tag happens to ALSO match the
-    // regex (a plain, non-shadow-root marker) must still get latched here,
-    // or a later dialog/console/eval check on this same tab would find no
-    // recorded latch to consult.
-    const shapeMatch = pageTexts.some(containsCredentialShaped);
-    let latched;
-    try {
-      const ps = await getPageSession(tabIndexOrWsUrl);
-      latched = await refreshSecretLatch(state, ps);
-    } catch (_err) {
-      latched = true;
-    }
-    return shapeMatch || latched;
-  }
-
-  // Dialog-specific variant of the check above, used where the caller (see
-  // captureActionWithDiff's after-dialog branch) keeps returning the
-  // rendered artifacts even when suppressed, relying on the top-level
-  // redactUnlessAllowed regex pass (mcp/src/index.ts) to blank a
-  // credential-SHAPED substring from the dialog message before it reaches
-  // the agent. That works for a token-shaped secret but not for a marker-
-  // latched one: a bare TOTP seed alert()'d from a data-sen-secret element
-  // (obra#52 review round 2, finding 1) has no shape for that regex to
-  // find. Returns which signal fired, not just whether to suppress, so the
-  // caller can tell them apart: shape-only suppression keeps returning the
-  // raw artifacts (existing behavior, still redacted later by shape); a
-  // latched tab must not, because there is nothing later that can redact a
-  // shapeless value — the caller must swap the message text out itself.
-  //
-  // Deliberately does NOT call refreshSecretLatch (a live Runtime.evaluate
-  // round trip) here: this runs while a native dialog is OPEN, and the
-  // renderer's JS thread is paused for as long as it is, so a fresh CDP
-  // evaluate against this same page can hang until the CDP send timeout
-  // fires — turning every dialog action into a many-second stall, and
-  // (once it times out) fail-closed would then latch every dialog
-  // regardless of shape, not just marker-latched ones, which regressed a
-  // passing token-shape test the first time this was tried. Instead this
-  // reads the CACHED verdict only (isSecretLatched — a plain map lookup,
-  // no CDP call): whatever an earlier action or navigate() already
-  // recorded before the dialog opened. That is always available for the
-  // cases this guards, since the marker (if any) had to already be on the
-  // page, and get scanned by ensureSecretSeenSentinel/pageHasSecretMarker
-  // in some prior guarded call, before this dialog could read and alert()
-  // its value in the first place.
-  async function dialogSuppressionInfo(tabIndexOrWsUrl, ...pageTexts) {
-    if (credentialCaptureAllowed()) return { suppress: false, latched: false };
-    const shapeMatch = pageTexts.some(containsCredentialShaped);
-    let latched = false;
-    try {
-      const ps = await getPageSession(tabIndexOrWsUrl);
-      latched = isSecretLatched(state, ps.sessionId);
-    } catch (_err) {
-      // Can't even resolve the page session: nothing to look up, and no
-      // live check was attempted, so this is not itself a fail-closed case.
-    }
-    return { suppress: shapeMatch || latched, latched };
+  // True when auto-capture must not copy this page's content anywhere.
+  // Always false when SUPERPOWERS_CHROME_ALLOW_CREDENTIAL_CAPTURE=1.
+  function mustSuppress(...pageTexts) {
+    return !credentialCaptureAllowed() && pageTexts.some(containsCredentialShaped);
   }
 
   async function pageContainsCredentialShaped(tabIndexOrWsUrl) {
@@ -302,12 +225,7 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
         // like the on-page path below: no files, a credentialSuppressed
         // marker, no payload — `open` itself carries the message, so only
         // its `kind` (the one field a caller actually reads) survives.
-        // Cached-only check (dialogSuppressionInfo), not a live CDP call:
-        // this branch is explicitly "no CDP calls while a dialog is open"
-        // (see above); a fresh Runtime.evaluate against a page whose JS
-        // thread is paused for a native dialog can hang until timeout.
-        const { suppress } = await dialogSuppressionInfo(tabIndexOrWsUrl, artifacts.markdown, artifacts.html, artifacts.consoleSnapshot);
-        if (suppress) {
+        if (mustSuppress(artifacts.markdown, artifacts.html, artifacts.consoleSnapshot)) {
           return {
             capturePrefix: prefix,
             sessionDir: dir,
@@ -357,13 +275,7 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
       getRenderedText(tabIndexOrWsUrl)
     ]);
 
-    // Always run mustSuppressPageState (which also refreshes the secret-
-    // seen latch) even when `!shot` already decided to suppress on its
-    // own — `||` short-circuiting must never skip the latch refresh, or a
-    // marker this call is the FIRST to observe would never get latched
-    // for later actions/dialogs on this tab to check against.
-    const stateSuppressed = await mustSuppressPageState(tabIndexOrWsUrl, html, markdown, domSummary, renderedText);
-    if (!shot || stateSuppressed) {
+    if (!shot || mustSuppress(html, markdown, domSummary, renderedText)) {
       fs.rmSync(screenshotPath, { force: true });
       return {
         capturePrefix: prefix,
@@ -488,11 +400,7 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
       getHtml(pinnedTab),
       getRenderedText(pinnedTab)
     ]);
-    // See the comment on the equivalent line in capturePageArtifacts:
-    // this must run unconditionally, not after a short-circuiting `||`,
-    // so the secret-seen latch always gets refreshed.
-    const beforeStateSuppressed = await mustSuppressPageState(pinnedTab, beforeHtml, beforeRenderedText);
-    const beforeSuppressed = !beforeShot || beforeStateSuppressed;
+    const beforeSuppressed = !beforeShot || mustSuppress(beforeHtml, beforeRenderedText);
 
     const actionResult = await actionFn();
 
@@ -508,32 +416,20 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
         const dir = state.sessionDir;
         // Same guard as capturePageArtifacts's dialog short-circuit above: the
         // dialog's message is page/JS-controlled and can carry a
-        // credential-shaped OR marker-latched string. Only the disk write is
-        // suppressed here for a plain shape match — `artifacts` (with its
-        // dialog::accept/dismiss instructions) and the dialog's `kind` still
-        // go back to the caller, because the top-level redactUnlessAllowed
-        // pass in mcp/src/index.ts already blanks any credential-SHAPED
-        // substring in the final response text before it reaches the agent.
-        // A marker-latched tab (obra#52 review round 2, finding 1: alert()
-        // showing a shapeless secret, e.g. a bare TOTP seed) has nothing for
-        // that regex to find, so this rebuilds the artifacts with the
-        // message itself swapped for the suppression notice instead of
-        // trusting a later pass to redact substrings out of it.
-        // `credentialSuppressed: true` tells that layer to add the ⚠️ notice
-        // alongside the artifacts either way.
-        const { suppress, latched } = await dialogSuppressionInfo(pinnedTab, artifacts.markdown, artifacts.html, artifacts.consoleSnapshot);
-        if (suppress) {
-          const safeArtifacts = latched
-            ? renderSyntheticArtifacts({
-                ...openAfter,
-                payload: { ...openAfter.payload, message: CREDENTIAL_SUPPRESSED_NOTICE, defaultPrompt: undefined },
-              })
-            : artifacts;
+        // credential-shaped string. Only the disk write is suppressed here —
+        // `artifacts` (with its dialog::accept/dismiss instructions) and the
+        // dialog's `kind` still go back to the caller, because the top-level
+        // redactUnlessAllowed pass in mcp/src/index.ts already blanks any
+        // credential-shaped substring in the final response text before it
+        // reaches the agent. `credentialSuppressed: true` tells that layer to
+        // add the ⚠️ notice alongside the (redacted) artifacts, instead of
+        // dropping them.
+        if (mustSuppress(artifacts.markdown, artifacts.html, artifacts.consoleSnapshot)) {
           return {
             actionResult,
             capture: null,
             dialog: { kind: openAfter.kind },
-            artifacts: safeArtifacts,
+            artifacts,
             credentialSuppressed: true,
           };
         }
@@ -568,8 +464,7 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
     // Either side showing a secret suppresses the whole action's capture:
     // the diff of a before-page secret would reprint it as a REMOVED line.
     // Both screenshots are removed too, so the action leaves no artifacts.
-    const afterStateSuppressed = await mustSuppressPageState(pinnedTab, afterHtml, markdown, domSummary, afterRenderedText);
-    if (beforeSuppressed || !afterShot || afterStateSuppressed) {
+    if (beforeSuppressed || !afterShot || mustSuppress(afterHtml, markdown, domSummary, afterRenderedText)) {
       fs.rmSync(beforeScreenshotPath, { force: true });
       fs.rmSync(afterScreenshotPath, { force: true });
       return {
@@ -757,49 +652,20 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
     const ps = await getPageSession(tabIndexOrWsUrl);
     const pinnedTab = { id: ps.targetId };
     const run = async () => {
-      if (!credentialCaptureAllowed() && await refreshSecretLatch(state, ps)) {
+      if (!credentialCaptureAllowed() && await pageHasSecretMarker(ps)) {
         throw new Error(secretMarkerRefusal('eval'));
       }
-
-      // obra#52 review round 2, finding 1: a post-hoc "is the marker present
-      // now" recheck (the round-1 fix, below this comment in spirit) only
-      // ever gated the RETURN path. It missed three other channels the
-      // expression can use to get the value out without ever "returning"
-      // it past that check:
-      //   - throw new Error(secret) — a rejected promise, a different code
-      //     path than the one the old recheck guarded.
-      //   - console.log(secret) then return something inert — the value
-      //     never appears in the return path at all.
-      //   - el.removeAttribute('data-sen-secret'); return el.textContent —
-      //     the expression erases the evidence as its own last synchronous
-      //     step, so a recheck that only looks at the LIVE DOM afterward
-      //     finds nothing to refuse on.
-      // Running the expression and inspecting only its outcome can't close
-      // all three at once; latching on ANY observation (including the
-      // sticky, mutation-record-based sentinel — see secret-marker.js —
-      // which sees the removeAttribute call itself, not just its aftermath)
-      // and gating BOTH the success and the error path on that latch does.
-      let result, evalError;
-      try {
-        result = await actions.evaluate(tabIndexOrWsUrl, expression);
-      } catch (err) {
-        evalError = err;
-      }
-
-      let latchedAfter;
-      try {
-        latchedAfter = !credentialCaptureAllowed() && await refreshSecretLatch(state, ps);
-      } catch (_err) {
-        // The latch check itself failed (CDP error, closed session, etc.) —
-        // fail closed exactly like an observed marker: refuse rather than
-        // let a result or error we couldn't vet through.
-        latchedAfter = !credentialCaptureAllowed();
-      }
-      if (latchedAfter) {
+      const result = await actions.evaluate(tabIndexOrWsUrl, expression);
+      // obra#52 review finding 2: actions.evaluate awaits the expression's
+      // own promise, so an expression can run arbitrary async code between
+      // the pre-check above and this point, including code that adds the
+      // marker mid-flight (click a reveal button, await a timer, then read
+      // the now-present marker) after the page was clean at the top of
+      // this function. Re-check right before the value is allowed near
+      // the return path so that case still gets refused and discarded.
+      if (!credentialCaptureAllowed() && await pageHasSecretMarker(ps)) {
         throw new Error(secretMarkerRefusal('eval'));
       }
-      if (evalError) throw evalError;
-
       const artifacts = await capturePageArtifacts(pinnedTab, 'eval');
       return {
         action: 'eval',
@@ -829,10 +695,7 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
   // read. So this refuses outright on a marker instead, the same as eval.
   async function extractPageText(tabIndexOrWsUrl) {
     const ps = await getPageSession(tabIndexOrWsUrl);
-    // refreshSecretLatch (not the bare live-marker check) so a page that was
-    // marked at any point stays refused here even after removeAttribute
-    // (obra#52 review round 2, finding 1).
-    if (!credentialCaptureAllowed() && await refreshSecretLatch(state, ps)) {
+    if (!credentialCaptureAllowed() && await pageHasSecretMarker(ps)) {
       throw new Error(secretMarkerRefusal('extract'));
     }
     return actions.evaluate(tabIndexOrWsUrl, 'document.body.innerText');

@@ -40,12 +40,6 @@ function createState({ host, port } = {}) {
     // Per-tab buffer of console messages for auto-capture.
     consoleMessages: new Map(),
 
-    // Per-tab "secret seen" latch (obra#52 review, round 2, finding 1):
-    // { seen, origin, latchedAt } keyed by sessionId. See
-    // lib/secret-marker.js (refreshSecretLatch / resetSecretLatchForNavigation)
-    // for the detection and reset rules.
-    secretLatch: new Map(),
-
     // Auto-capture session: lazily initialised on first capture.
     sessionDir: null,
     captureCounter: 0,
