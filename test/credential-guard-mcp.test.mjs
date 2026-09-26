@@ -91,6 +91,18 @@ const DELAYED_REVEAL_PAGE = dataUrl(
   `document.getElementById('out').textContent = ${TOKEN_JS_EXPR}; }, 20));</script>`
 );
 
+// Typing into the field opens an alert whose message is the token. The
+// alert is deferred with setTimeout so the typing call itself returns
+// (a dialog opened synchronously inside an input handler blocks the CDP
+// input call until the dialog closes); it opens during type's post-keystroke
+// delay, which drives captureActionWithDiff's after-dialog branch. The token
+// is assembled at runtime so only the dialog shows it, never the page.
+const ALERT_ON_INPUT_PAGE = dataUrl(
+  '<title>Alert page</title><h1>Create token</h1><input id="f">' +
+  `<script>document.getElementById('f').addEventListener('input', () => ` +
+  `setTimeout(() => alert(${TOKEN_JS_EXPR}), 0), { once: true });</script>`
+);
+
 /**
  * One MCP server process with its own XDG cache (so its Chrome profile and
  * session dir are private to this test). call() issues a use_browser
@@ -243,6 +255,24 @@ describe('credential guard through the MCP server (real Chrome)', { skip: !CHROM
     assertNoLeak(text);
     assert.ok(!text.includes('DOM Changes'), text);
     assert.equal(server.capturedFiles().length, filesBefore, 'no before/after/diff files may remain');
+  });
+
+  it('an action that opens a token-bearing dialog returns the notice, the accept/dismiss instructions and the redacted message, and writes no dialog files', async () => {
+    await server.call({ action: 'navigate', payload: ALERT_ON_INPUT_PAGE });
+    const filesBefore = new Set(server.capturedFiles());
+    const { text } = await server.call({ action: 'type', selector: '#f', payload: 'x' });
+
+    assert.ok(text.includes(NOTICE), text);
+    assert.ok(text.includes('dialog::accept'), text);
+    assert.ok(text.includes(REDACTION), text);
+    assertNoLeak(text);
+    // The BEFORE screenshot of the (clean) page is taken before the action
+    // opens the dialog and is the only file this action may leave.
+    const newFiles = server.capturedFiles().filter((f) => !filesBefore.has(f));
+    assert.deepEqual(newFiles.map((f) => path.basename(f).replace(/^\d+-/, '')), ['type-before.png']);
+
+    const accepted = await server.call({ action: 'click', selector: 'dialog::accept' });
+    assert.equal(accepted.isError, false, accepted.text);
   });
 
   for (const [name, page] of [

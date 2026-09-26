@@ -49,6 +49,29 @@ const MARKER_PAGE = {
   renderedText: '',
 };
 
+// A native dialog (alert/confirm/prompt/beforeunload) whose message is
+// page/JS-controlled and can carry a credential-shaped string. See
+// dialogs-render.js's renderSyntheticArtifacts for the payload shape.
+const DIALOG_WITH_TOKEN = {
+  kind: 'alert',
+  payload: {
+    message: `Your new bot token is ${FAKE_TOKEN}`,
+    url: 'https://example.test',
+    defaultPrompt: '',
+    hasBrowserHandler: false,
+  },
+};
+
+const DIALOG_BENIGN = {
+  kind: 'confirm',
+  payload: {
+    message: 'Are you sure you want to leave this page?',
+    url: 'https://example.test',
+    defaultPrompt: '',
+    hasBrowserHandler: false,
+  },
+};
+
 const ENV = 'SUPERPOWERS_CHROME_ALLOW_CREDENTIAL_CAPTURE';
 
 // Fresh XDG cache per test so each gets its own, initially empty, session dir.
@@ -80,8 +103,17 @@ after(() => {
 // revealOnScreenshot: { call, page } flips the page to `page` while the
 // call-th screenshot is being taken — a token revealed (e.g. by an XHR)
 // between the content check and the pixels.
-function setup({ before, after: afterPage = before, revealOnScreenshot = null }) {
+// dialog / dialogAfterAction: what dialogs.getOpen reports before and after
+// the action, for the dialog short-circuit branches. null means no dialog.
+function setup({
+  before,
+  after: afterPage = before,
+  revealOnScreenshot = null,
+  dialog = null,
+  dialogAfterAction = dialog,
+}) {
   const pageRef = { current: before };
+  const dialogRef = { current: dialog };
   const calls = { screenshot: 0, action: 0 };
   const ps = {
     sessionId: 'S1',
@@ -101,6 +133,7 @@ function setup({ before, after: afterPage = before, revealOnScreenshot = null })
     },
   };
   const state = { sessionDir: null, captureCounter: 0 };
+  const dialogs = { getOpen: () => dialogRef.current };
   const api = attachCapture({
     state,
     getPageSession: async () => ps,
@@ -112,12 +145,13 @@ function setup({ before, after: afterPage = before, revealOnScreenshot = null })
       return file;
     },
     actions: {
-      click: async () => { calls.action++; pageRef.current = afterPage; return { clicked: true }; },
+      click: async () => { calls.action++; pageRef.current = afterPage; dialogRef.current = dialogAfterAction; return { clicked: true }; },
       evaluate: async () => { calls.action++; return 42; },
     },
+    dialogs,
   });
-  const act = async () => { calls.action++; pageRef.current = afterPage; return 'acted'; };
-  return { ...api, state, calls, act };
+  const act = async () => { calls.action++; pageRef.current = afterPage; dialogRef.current = dialogAfterAction; return 'acted'; };
+  return { ...api, state, calls, act, dialogRef };
 }
 
 function sessionFiles(state) {
@@ -267,6 +301,99 @@ describe('captureActionWithDiff credential guard', () => {
     assert.ok(!result.capture.credentialSuppressed);
     assert.equal(sessionFiles(state).length, 6);
     assert.ok(result.capture.diffSummary.includes(FAKE_TOKEN));
+  });
+});
+
+// The dialog short-circuits skip all page reads (a dialog suspends the page's
+// execution context), so they check the synthetic dialog artifacts instead of
+// html/markdown/domSummary/renderedText — same guard, different inputs.
+describe('capturePageArtifacts dialog short-circuit credential guard', () => {
+  it('writes no files and returns credentialSuppressed when the dialog message carries a token', async () => {
+    const { capturePageArtifacts, state } = setup({ before: CLEAN_PAGE, dialog: DIALOG_WITH_TOKEN });
+    const result = await capturePageArtifacts(0, 'navigate');
+
+    assert.equal(result.credentialSuppressed, true);
+    assert.equal(result.files, null);
+    assert.deepEqual(sessionFiles(state), [], 'no dialog capture artifacts may be written');
+    assert.deepEqual(result.dialog, { kind: 'alert' }, 'only the dialog kind survives, never its payload');
+    assertNoLeak(result);
+  });
+
+  it('captures a benign dialog normally', async () => {
+    const { capturePageArtifacts, state } = setup({ before: CLEAN_PAGE, dialog: DIALOG_BENIGN });
+    const result = await capturePageArtifacts(0, 'navigate');
+
+    assert.ok(!result.credentialSuppressed);
+    assert.deepEqual(sessionFiles(state).sort(),
+      ['001-navigate-console.txt', '001-navigate.html', '001-navigate.md']);
+    assert.ok(result.markdown.includes(DIALOG_BENIGN.payload.message));
+  });
+
+  it(`${ENV}=1 restores capture of a dialog with a credential-shaped message`, async () => {
+    process.env[ENV] = '1';
+    const { capturePageArtifacts, state } = setup({ before: CLEAN_PAGE, dialog: DIALOG_WITH_TOKEN });
+    const result = await capturePageArtifacts(0, 'navigate');
+
+    assert.ok(!result.credentialSuppressed);
+    assert.equal(sessionFiles(state).length, 3);
+    assert.ok(result.markdown.includes(FAKE_TOKEN));
+  });
+});
+
+describe('captureActionWithDiff after-dialog short-circuit credential guard', () => {
+  it('writes no after-dialog files but returns the dialog artifacts (redacted later by the MCP layer) and the dialog kind when the action opens a dialog with a token in its message', async () => {
+    const { captureActionWithDiff, state, act } = setup({
+      before: CLEAN_PAGE,
+      dialog: null,
+      dialogAfterAction: DIALOG_WITH_TOKEN,
+    });
+    const result = await captureActionWithDiff(0, 'click', act, 0);
+
+    assert.equal(result.actionResult, 'acted', 'the action itself still runs');
+    assert.equal(result.capture, null, 'same no-capture shape as any other dialog-opened result');
+    assert.equal(result.credentialSuppressed, true, 'the disk write is suppressed');
+    assert.deepEqual(result.dialog, { kind: 'alert' }, 'only the dialog kind survives, never its raw payload');
+    // Only the disk write is suppressed. The synthetic artifacts (including
+    // the dialog::accept/dismiss instructions) still come back so the MCP
+    // layer's formatCaptureResponse + redactUnlessAllowed can build the
+    // redacted response + notice, instead of losing the instructions.
+    assert.ok(result.artifacts, 'the synthetic dialog artifacts must still be returned');
+    assert.ok(result.artifacts.markdown.includes('dialog::accept'),
+      'the accept/dismiss instructions must survive suppression');
+    assert.ok(result.artifacts.markdown.includes(FAKE_TOKEN),
+      'the raw (unredacted-at-this-layer) message survives here; redaction happens in mcp/src/index.ts');
+    assert.deepEqual(sessionFiles(state), ['001-click-before.png'],
+      'only the clean BEFORE screenshot may remain; no after-dialog artifacts written to disk');
+  });
+
+  it('captures a benign after-dialog normally', async () => {
+    const { captureActionWithDiff, state, act } = setup({
+      before: CLEAN_PAGE,
+      dialog: null,
+      dialogAfterAction: DIALOG_BENIGN,
+    });
+    const result = await captureActionWithDiff(0, 'click', act, 0);
+
+    assert.equal(result.capture, null);
+    assert.ok(!result.credentialSuppressed);
+    assert.ok(result.dialog);
+    assert.ok(result.artifacts.markdown.includes(DIALOG_BENIGN.payload.message));
+    assert.deepEqual(sessionFiles(state).sort(),
+      ['001-click-before.png', '002-click-console.txt', '002-click.html', '002-click.md']);
+  });
+
+  it(`${ENV}=1 restores the after-dialog capture of a credential-shaped message`, async () => {
+    process.env[ENV] = '1';
+    const { captureActionWithDiff, state, act } = setup({
+      before: CLEAN_PAGE,
+      dialog: null,
+      dialogAfterAction: DIALOG_WITH_TOKEN,
+    });
+    const result = await captureActionWithDiff(0, 'click', act, 0);
+
+    assert.ok(!result.credentialSuppressed);
+    assert.equal(sessionFiles(state).length, 4);
+    assert.ok(result.artifacts.markdown.includes(FAKE_TOKEN));
   });
 });
 

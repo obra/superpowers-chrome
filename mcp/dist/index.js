@@ -21150,9 +21150,9 @@ var StdioServerTransport = class {
 };
 
 // src/index.ts
-import { join, dirname } from "path";
-import { fileURLToPath } from "url";
-import { createRequire } from "module";
+import { join as join2, dirname as dirname2 } from "path";
+import { fileURLToPath as fileURLToPath2 } from "url";
+import { createRequire as createRequire2 } from "module";
 
 // src/payload.ts
 var PAYLOAD_SPECS = {
@@ -21273,13 +21273,100 @@ function resolveStrictStructuredPayload(payload) {
   };
 }
 
-// src/index.ts
+// src/response-format.ts
+import { join, dirname } from "path";
+import { fileURLToPath } from "url";
+import { createRequire } from "module";
 var __filename = fileURLToPath(import.meta.url);
 var __dirname = dirname(__filename);
 var require2 = createRequire(import.meta.url);
-var chromeLib = require2(join(__dirname, "../../skills/browsing/chrome-ws-lib.js")).createSession();
 var credentialGuard = require2(join(__dirname, "../../skills/browsing/lib/credential-guard.js"));
-var SERVER_VERSION = require2(join(__dirname, "../package.json")).version;
+function formatDialogRefusal(error2) {
+  const lines = [error2.message || "Page is behind a dialog."];
+  if (error2.artifacts?.markdown) {
+    lines.push("");
+    lines.push(error2.artifacts.markdown);
+  }
+  return lines.join("\n");
+}
+function formatCaptureFiles(actionResult) {
+  if (actionResult.credentialSuppressed) {
+    return [credentialGuard.CREDENTIAL_SUPPRESSED_NOTICE];
+  }
+  const prefix = actionResult.capturePrefix || "???";
+  return [
+    `Session dir: ${actionResult.sessionDir}`,
+    `Files: ${prefix}.html, ${prefix}.md, ${prefix}.png, ${prefix}-console.txt`
+  ];
+}
+function formatActionResponse(actionResult, actionDescription) {
+  const response = [
+    `${actionDescription}`,
+    `Current URL: ${actionResult.url || "unknown"}`,
+    `Size: ${actionResult.pageSize?.width}\xD7${actionResult.pageSize?.height}`,
+    ...formatCaptureFiles(actionResult)
+  ];
+  if (actionResult.consoleLog && actionResult.consoleLog.length > 0) {
+    response.push(`Console: ${actionResult.consoleLog.length} messages`);
+    actionResult.consoleLog.slice(0, 3).forEach((msg) => {
+      response.push(`  ${msg.level}: ${msg.text}`);
+    });
+    if (actionResult.consoleLog.length > 3) {
+      response.push(`  ... +${actionResult.consoleLog.length - 3} more`);
+    }
+  }
+  if (actionResult.domSummary) {
+    const lines = actionResult.domSummary.split("\n").slice(0, 8);
+    response.push("DOM:", ...lines.map((l) => `  ${l}`));
+    if (actionResult.domSummary.split("\n").length > 8) {
+      response.push("  ...");
+    }
+  }
+  return response.join("\n");
+}
+function formatCaptureResponse(action, details, captureOrNull, dialog, artifacts, credentialSuppressed) {
+  if (!captureOrNull) {
+    const dialogDesc = artifacts?.markdown || (dialog ? `Dialog opened: ${dialog.kind}` : "Dialog opened");
+    const suppressedNotice = credentialSuppressed ? `
+
+${credentialGuard.CREDENTIAL_SUPPRESSED_NOTICE}` : "";
+    return `${action}: ${details}
+
+Dialog is now open \u2014 page is waiting for user input.${suppressedNotice}
+
+${dialogDesc}`;
+  }
+  const capture = captureOrNull;
+  if (capture.credentialSuppressed) {
+    return `${action}: ${details}
+
+${credentialGuard.CREDENTIAL_SUPPRESSED_NOTICE}
+
+\u{1F4CA} Page: ${capture.pageSize.width}\xD7${capture.pageSize.height}
+${capture.domSummary}`;
+  }
+  const fileList = Object.entries(capture.files).map(([key, path]) => `  ${key}: ${path}`).join("\n");
+  return `${action}: ${details}
+
+\u{1F4C1} Capture saved to: ${capture.sessionDir}
+${fileList}
+
+\u{1F4CA} Page: ${capture.pageSize.width}\xD7${capture.pageSize.height}
+${capture.domSummary}
+
+\u{1F4DD} DOM Changes:
+${capture.diffSummary}`;
+}
+function redactUnlessAllowed(text) {
+  return credentialGuard.credentialCaptureAllowed() ? text : credentialGuard.redactCredentialShaped(text);
+}
+
+// src/index.ts
+var __filename2 = fileURLToPath2(import.meta.url);
+var __dirname2 = dirname2(__filename2);
+var require3 = createRequire2(import.meta.url);
+var chromeLib = require3(join2(__dirname2, "../../skills/browsing/chrome-ws-lib.js")).createSession();
+var SERVER_VERSION = require3(join2(__dirname2, "../package.json")).version;
 function hasDisplay() {
   const platform = process.platform;
   if (platform === "darwin") {
@@ -21373,82 +21460,6 @@ async function ensureChromeRunning() {
     throw new Error(`Failed to auto-start Chrome: ${startError instanceof Error ? startError.message : String(startError)}`);
   }
 }
-function formatDialogRefusal(error2) {
-  const lines = [error2.message || "Page is behind a dialog."];
-  if (error2.artifacts?.markdown) {
-    lines.push("");
-    lines.push(error2.artifacts.markdown);
-  }
-  return lines.join("\n");
-}
-function formatCaptureFiles(actionResult) {
-  if (actionResult.credentialSuppressed) {
-    return [credentialGuard.CREDENTIAL_SUPPRESSED_NOTICE];
-  }
-  const prefix = actionResult.capturePrefix || "???";
-  return [
-    `Session dir: ${actionResult.sessionDir}`,
-    `Files: ${prefix}.html, ${prefix}.md, ${prefix}.png, ${prefix}-console.txt`
-  ];
-}
-function formatActionResponse(actionResult, actionDescription) {
-  const response = [
-    `${actionDescription}`,
-    `Current URL: ${actionResult.url || "unknown"}`,
-    `Size: ${actionResult.pageSize?.width}\xD7${actionResult.pageSize?.height}`,
-    ...formatCaptureFiles(actionResult)
-  ];
-  if (actionResult.consoleLog && actionResult.consoleLog.length > 0) {
-    response.push(`Console: ${actionResult.consoleLog.length} messages`);
-    actionResult.consoleLog.slice(0, 3).forEach((msg) => {
-      response.push(`  ${msg.level}: ${msg.text}`);
-    });
-    if (actionResult.consoleLog.length > 3) {
-      response.push(`  ... +${actionResult.consoleLog.length - 3} more`);
-    }
-  }
-  if (actionResult.domSummary) {
-    const lines = actionResult.domSummary.split("\n").slice(0, 8);
-    response.push("DOM:", ...lines.map((l) => `  ${l}`));
-    if (actionResult.domSummary.split("\n").length > 8) {
-      response.push("  ...");
-    }
-  }
-  return response.join("\n");
-}
-function formatCaptureResponse(action, details, captureOrNull, dialog, artifacts) {
-  if (!captureOrNull) {
-    const dialogDesc = artifacts?.markdown || (dialog ? `Dialog opened: ${dialog.kind}` : "Dialog opened");
-    return `${action}: ${details}
-
-Dialog is now open \u2014 page is waiting for user input.
-
-${dialogDesc}`;
-  }
-  const capture = captureOrNull;
-  if (capture.credentialSuppressed) {
-    return `${action}: ${details}
-
-${credentialGuard.CREDENTIAL_SUPPRESSED_NOTICE}
-
-\u{1F4CA} Page: ${capture.pageSize.width}\xD7${capture.pageSize.height}
-${capture.domSummary}`;
-  }
-  const fileList = Object.entries(capture.files).map(([key, path]) => `  ${key}: ${path}`).join("\n");
-  return `${action}: ${details}
-
-\u{1F4C1} Capture saved to: ${capture.sessionDir}
-${fileList}
-
-\u{1F4CA} Page: ${capture.pageSize.width}\xD7${capture.pageSize.height}
-${capture.domSummary}
-
-\u{1F4DD} DOM Changes:
-${capture.diffSummary}`;
-}
-function redactUnlessAllowed(text) {
-  return credentialGuard.credentialCaptureAllowed() ? text : credentialGuard.redactCredentialShaped(text);
-}
 var RESTART_BANNER = "[Chrome auto-restarted; URL reset to about:blank. Re-navigate to continue.]";
 async function executeBrowserAction(params) {
   const tabIndex = activeTab;
@@ -21522,7 +21533,7 @@ async function executeBrowserAction(params) {
       );
       if (!typeResult.capture) {
         const target = selector ? `into ${selector}` : "into current focus";
-        return formatCaptureResponse("Typed", target, null, typeResult.dialog, typeResult.artifacts);
+        return formatCaptureResponse("Typed", target, null, typeResult.dialog, typeResult.artifacts, typeResult.credentialSuppressed);
       }
       return formatCaptureResponse(
         "Typed",
@@ -21717,7 +21728,7 @@ Result: ${evalResult.result}`);
         "hover",
         () => chromeLib.hover(tabIndex, selector)
       );
-      return formatCaptureResponse("Hovered", selector, hoverResult.capture, hoverResult.dialog, hoverResult.artifacts);
+      return formatCaptureResponse("Hovered", selector, hoverResult.capture, hoverResult.dialog, hoverResult.artifacts, hoverResult.credentialSuppressed);
     }
     case "drag_drop" /* DRAG_DROP */: {
       const decodedPayload = tryParseJsonObject(payload) ?? payload;
@@ -21755,7 +21766,7 @@ Result: ${evalResult.result}`);
         () => chromeLib.drag(tabIndex, source, dragTarget)
       );
       const targetDesc = typeof dragTarget === "object" ? `(${dragTarget.x}, ${dragTarget.y})` : dragTarget;
-      return formatCaptureResponse("Dragged", `${source} \u2192 ${targetDesc}`, dragResult.capture, dragResult.dialog, dragResult.artifacts);
+      return formatCaptureResponse("Dragged", `${source} \u2192 ${targetDesc}`, dragResult.capture, dragResult.dialog, dragResult.artifacts, dragResult.credentialSuppressed);
     }
     case "mouse_move" /* MOUSE_MOVE */: {
       const shapeHint = "{x,y} or {x,y,steps?,fromX?,fromY?}";
@@ -21823,7 +21834,7 @@ Result: ${evalResult.result}`);
         "dblclick",
         () => chromeLib.doubleClick(tabIndex, selector)
       );
-      return formatCaptureResponse("Double-clicked", selector, dblClickResult.capture, dblClickResult.dialog, dblClickResult.artifacts);
+      return formatCaptureResponse("Double-clicked", selector, dblClickResult.capture, dblClickResult.dialog, dblClickResult.artifacts, dblClickResult.credentialSuppressed);
     }
     case "right_click" /* RIGHT_CLICK */: {
       const selector = topSelector ?? (typeof payload === "string" ? payload : null);
@@ -21835,7 +21846,7 @@ Result: ${evalResult.result}`);
         "rightclick",
         () => chromeLib.rightClick(tabIndex, selector)
       );
-      return formatCaptureResponse("Right-clicked", selector, rightClickResult.capture, rightClickResult.dialog, rightClickResult.artifacts);
+      return formatCaptureResponse("Right-clicked", selector, rightClickResult.capture, rightClickResult.dialog, rightClickResult.artifacts, rightClickResult.credentialSuppressed);
     }
     case "file_upload" /* FILE_UPLOAD */: {
       const p = parsePayload(payload, "file_upload");
@@ -21865,7 +21876,8 @@ Result: ${evalResult.result}`);
         `${filePaths.length} file(s) to ${selector}`,
         uploadResult.capture,
         uploadResult.dialog,
-        uploadResult.artifacts
+        uploadResult.artifacts,
+        uploadResult.credentialSuppressed
       );
     }
     case "keyboard_press" /* KEYBOARD_PRESS */: {
@@ -21886,7 +21898,8 @@ Result: ${evalResult.result}`);
         modStr ? `${modStr}+${key}` : key,
         keyResult.capture,
         keyResult.dialog,
-        keyResult.artifacts
+        keyResult.artifacts,
+        keyResult.credentialSuppressed
       );
     }
     case "set_viewport" /* SET_VIEWPORT */: {
@@ -22262,7 +22275,12 @@ main().catch((error2) => {
 export {
   PAYLOAD_SPECS,
   describeUnusableScrollPayload,
+  formatActionResponse,
+  formatCaptureFiles,
+  formatCaptureResponse,
+  formatDialogRefusal,
   parsePayload,
+  redactUnlessAllowed,
   resolveConsoleSince,
   resolveStrictStructuredPayload,
   tryParseCoords,
