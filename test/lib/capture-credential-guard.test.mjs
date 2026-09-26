@@ -341,7 +341,7 @@ describe('capturePageArtifacts dialog short-circuit credential guard', () => {
 });
 
 describe('captureActionWithDiff after-dialog short-circuit credential guard', () => {
-  it('writes no files, but still returns the redacted-response artifacts and dialog kind, when the action opens a dialog with a token in its message', async () => {
+  it('writes no after-dialog files but returns the dialog artifacts (redacted later by the MCP layer) and the dialog kind when the action opens a dialog with a token in its message', async () => {
     const { captureActionWithDiff, state, act } = setup({
       before: CLEAN_PAGE,
       dialog: null,
