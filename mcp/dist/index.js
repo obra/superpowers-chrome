@@ -21588,7 +21588,15 @@ async function executeBrowserAction(params) {
                   const tag = el.tagName.toLowerCase();
                   const text = el.textContent.trim();
                   if (tag.startsWith('h')) return '#'.repeat(parseInt(tag[1])) + ' ' + text;
-                  if (tag === 'a') return '[' + text + '](' + el.href + ')';
+                  if (tag === 'a') {
+                    /* obra#52 review round 3, finding 10: el.href (the resolved property, not getAttribute) resolves against the CLONE's own about:blank base once root has been cloned into an inert document -- see the TS comment above this template literal for the full explanation. Resolve against the LIVE top document's baseURI explicitly instead. */
+                    var raw = el.getAttribute('href');
+                    var resolved = raw;
+                    if (raw) {
+                      try { resolved = new URL(raw, document.baseURI).href; } catch (e) { resolved = raw; }
+                    }
+                    return '[' + text + '](' + (resolved || '') + ')';
+                  }
                   if (tag === 'li') return '- ' + text;
                   if (tag === 'pre' || tag === 'code') return '\\\`\\\`\\\`\\n' + text + '\\n\\\`\\\`\\\`';
                   return text;
@@ -22164,7 +22172,7 @@ Files use sequential prefixes: 001-navigate, 002-click, etc.
 Prefer reading these files to using 'extract' or 'screenshot' whenever possible.
 
 ## Credential-Shaped Pages
-If a page shows credential-shaped content (Slack/GitHub/1Password tokens, otpauth:// seeds, or any element with a data-sen-secret attribute), auto-capture writes no files and returns only metadata with a "\u26A0\uFE0F Page shows credential-shaped content" line; screenshot refuses; token-shaped substrings (not the data-sen-secret marker itself, which has no substring to redact) are replaced by [REDACTED credential-shaped] everywhere else. eval refuses outright \u2014 with no value-blind exception \u2014 while ANY element on the page carries data-sen-secret, checked live before the expression runs. extract and attr instead read off a copy with data-sen-secret content removed (or refuse if the element you named is itself the marked one). set_attr is a separate write-only action (see above) that is NOT gated by any of this \u2014 it can't read anything \u2014 except that it refuses to touch an element already marked data-sen-secret unless the write IS the (re-)marking itself. Its attribute name must be exactly "data-sen-nonce" or "data-sen-secret" (no other data-*/aria-* name \u2014 arbitrary data-*/aria-* attributes are routinely wired to page behavior, e.g. data-action/aria-controls, so they are not assumed inert): use "data-sen-nonce" to write a broker nonce onto an unmarked sibling element on a page that already has a captured secret, and "data-sen-secret" to mark a secret element yourself before reading it \u2014 marking only ever tightens what eval/extract/attr will refuse, never loosens it. Use a credential broker to capture secret values. SUPERPOWERS_CHROME_ALLOW_CREDENTIAL_CAPTURE=1 disables all of this.
+If a page shows credential-shaped content (Slack/GitHub/1Password tokens, otpauth:// seeds, or any element with a data-sen-secret attribute), auto-capture writes no files and returns only metadata with a "\u26A0\uFE0F Page shows credential-shaped content" line; screenshot refuses; token-shaped substrings (not the data-sen-secret marker itself, which has no substring to redact) are replaced by [REDACTED credential-shaped] everywhere else. eval refuses outright \u2014 with no value-blind exception \u2014 while ANY element on the page carries data-sen-secret, checked live at the moment of the call (a point check that does not remember a page was ever marked). extract and attr instead read off an inert clone with data-sen-secret content removed, or refuse if the resolved element OR ANY ANCESTOR of it (through shadow-root hosts) is marked. set_attr is a separate write-only action (see above) that is NOT gated by any of this \u2014 it can't read anything \u2014 except that it refuses to touch an element already marked data-sen-secret unless the write IS the (re-)marking itself. Its attribute name must be exactly "data-sen-nonce" or "data-sen-secret" (no other data-*/aria-* name \u2014 arbitrary data-*/aria-* attributes are routinely wired to page behavior, e.g. data-action/aria-controls, so they are not assumed inert): use "data-sen-nonce" to write a broker nonce onto an unmarked sibling element on a page that already has a captured secret, and "data-sen-secret" to mark every matching element (hidden duplicates included) yourself before reading it \u2014 marking only ever tightens what eval/extract/attr will refuse, never loosens or removes an existing mark. Use a credential broker to capture secret values. THIS IS NOT A SECURITY BOUNDARY: eval runs in the same JS realm as a marked element and can already read/fetch/stash its value or erase the marker itself; don't mark then eval on a page expecting the value to stay contained. SUPERPOWERS_CHROME_ALLOW_CREDENTIAL_CAPTURE=1 disables all of this.
 
 ## Selectors
 CSS: "button.submit", "#email", ".form input[name=password]"
@@ -22208,7 +22216,7 @@ Every DOM action (navigate, click, type, select, eval) auto-captures to the sess
 - {prefix}-console.txt \u2014 browser console messages
 
 Prefer reading these files to using 'extract' or 'screenshot' whenever possible.
-Pages showing credential-shaped content (tokens, 2FA seeds, or any data-sen-secret element) are never captured, such values are redacted from all output, and eval refuses outright while any data-sen-secret element is on the page. 'set_attr' is a write-only setter for exactly 'data-sen-nonce' or 'data-sen-secret' that is exempt from that eval restriction (see 'help' for details) \u2014 use it, not eval, to write onto the page while a secret is present, or to mark a secret element yourself before reading anything else off the page.
+Pages showing credential-shaped content (tokens, 2FA seeds, or any data-sen-secret element) are never captured, such values are redacted from all output, and eval refuses outright while any data-sen-secret element is on the page \u2014 an accident guard against a cooperating agent's own reads, not a security boundary. 'set_attr' is a write-only setter for exactly 'data-sen-nonce' or 'data-sen-secret' that is exempt from that eval restriction (see 'help' for details) \u2014 use it, not eval, to write onto the page while a secret is present, or to mark a secret element yourself before reading anything else off the page.
 
 Schema: 4 parameters \u2014 action, selector (CSS/XPath or null), payload (string or object), timeout (ms).
 selector targets a DOM element (null/omit for navigation, eval, tab management, etc.).

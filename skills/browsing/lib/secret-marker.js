@@ -28,6 +28,15 @@
  * `null` for a cross-origin frame (the getter itself never throws), so
  * this only ever descends where the top frame could read the child's DOM
  * anyway.
+ *
+ * Also recurses into same-origin `<object>`/`<embed>` (obra#52 review
+ * round 3, finding 6): a marker inside a same-origin OBJECT's embedded
+ * HTML document, or an OBJECT/EMBED's embedded SVG document, was invisible
+ * to a scan that only checked IFRAME/FRAME. `contentDocument` covers an
+ * OBJECT embedding an HTML/XML document (EMBED has no such property);
+ * `getSVGDocument()` covers either tag embedding SVG. Both getters can
+ * throw or return null for a cross-origin or non-document embed, which is
+ * exactly the cases this must not descend into anyway.
  */
 const { throwIfExceptionDetails } = require('./cdp-utils');
 const { MARKER_ATTR } = require('./credential-guard');
@@ -35,15 +44,26 @@ const { MARKER_ATTR } = require('./credential-guard');
 const HAS_SECRET_MARKER_SCRIPT = `
   (() => {
     const MARKER = ${JSON.stringify(MARKER_ATTR)};
+    const embeddedDocOf = (el) => {
+      try {
+        if (el.contentDocument) return el.contentDocument;
+      } catch (_e) { /* cross-origin: never reachable from here either */ }
+      try {
+        if (typeof el.getSVGDocument === 'function') {
+          const svgDoc = el.getSVGDocument();
+          if (svgDoc) return svgDoc;
+        }
+      } catch (_e) { /* cross-origin, or not embedding an SVG document */ }
+      return null;
+    };
     const hasMarker = (root) => {
       if (root.querySelector && root.querySelector('[' + MARKER + ']')) return true;
       if (!root.querySelectorAll) return false;
       for (const el of root.querySelectorAll('*')) {
         if (el.shadowRoot && hasMarker(el.shadowRoot)) return true;
-        if (el.tagName === 'IFRAME' || el.tagName === 'FRAME') {
-          let frameDoc;
-          try { frameDoc = el.contentDocument; } catch (_e) { frameDoc = null; }
-          if (frameDoc && hasMarker(frameDoc)) return true;
+        if (el.tagName === 'IFRAME' || el.tagName === 'FRAME' || el.tagName === 'OBJECT' || el.tagName === 'EMBED') {
+          const embeddedDoc = embeddedDocOf(el);
+          if (embeddedDoc && hasMarker(embeddedDoc)) return true;
         }
       }
       return false;

@@ -275,17 +275,18 @@ describe('evaluateWithCapture fails closed on a live data-sen-secret marker', ()
   });
 });
 
-// obra#52 review finding 2: actions.evaluate awaits the expression's own
-// promise (Runtime.evaluate with awaitPromise: true), so a caller
-// expression can run arbitrary async code between the pre-check above and
-// the value coming back. jc's PoC: `(async()=>{btn.click(); await
-// sleep(50); return document.querySelector('[data-sen-secret]')
-// .textContent})()` -- the page is clean when the pre-check runs, the
-// click reveals/marks the secret, and only THEN does the expression read
-// it. This uses a minimal, purpose-built ps/actions pair (not the shared
-// setup() above, which can't flip secretMarkerLive mid-call) so the
-// marker can change state between the pre-check and the post-check.
-describe('evaluateWithCapture: async marker race (obra#52 review finding 2)', () => {
+// Jesse's decision on PR #52 round 4: eval's marker check is a point check
+// at call time only — no re-check after the expression runs, nothing
+// sticky remembered across calls (see
+// evaluateWithCapture's module comment). An expression that reveals the
+// marker mid-run (click a button, await a timer, THEN read it) is exactly
+// the async-eval race a round-2 sticky-flag mechanism tried to close and
+// round 3 proved
+// still leaked around; abandoning that in-page gate is the point of the
+// scoped-subset decision, so this now runs to completion and returns the
+// value — same as any other unmarked-at-call-time eval. Documented, not
+// silently regressed.
+describe('evaluateWithCapture: async marker race is NOT gated (accident guard only, not a boundary)', () => {
   function setupRace() {
     let markerLive = false;
     const ps = {
@@ -318,12 +319,10 @@ describe('evaluateWithCapture: async marker race (obra#52 review finding 2)', ()
     return api;
   }
 
-  it('refuses and discards the result when the marker appears only during the awaited expression', async () => {
+  it('returns the value when the marker only appears during the awaited expression (call-time check already passed)', async () => {
     const api = setupRace();
-    await assert.rejects(
-      () => api.evaluateWithCapture(0, '(async () => { /* reveal */ ; return secret; })()'),
-      /eval refused.*data-sen-secret/
-    );
+    const result = await api.evaluateWithCapture(0, '(async () => { /* reveal */ ; return secret; })()');
+    assert.equal(result.result, 'THE-SECRET-SEED-VALUE');
   });
 });
 

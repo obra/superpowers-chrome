@@ -81,6 +81,46 @@ describe('HAS_SECRET_MARKER_SCRIPT (real DOM)', () => {
     shadow.innerHTML = '<span data-sen-secret>seed</span>';
     assert.equal(dom.window.eval(HAS_SECRET_MARKER_SCRIPT), true);
   });
+
+  // Jesse's scoped-subset decision on obra#52 round 4, item 2 / round-3
+  // review finding 6: same-origin <object>/<embed> were invisible to the
+  // scan even though the top frame can read their embedded document just
+  // like it can an iframe's. jsdom does not implement OBJECT's
+  // contentDocument or EMBED's getSVGDocument() at all (both come back
+  // undefined out of the box, unlike a real browser), so this stubs the
+  // getter directly on the element the same way a real embedded document
+  // would answer it, to prove the SCAN LOGIC descends into whatever
+  // embeddedDocOf() returns rather than skipping OBJECT/EMBED tags
+  // entirely. See the real-Chrome file:// test in
+  // credential-guard-mcp.test.mjs for the end-to-end proof against an
+  // actual embedded document.
+  it('is true for a marker inside a same-origin OBJECT embedding an HTML document (via contentDocument)', () => {
+    const dom = new JSDOM('<object id="o" type="text/html"></object>', { runScripts: 'dangerously' });
+    const inner = new JSDOM('<div data-sen-secret>the-seed</div>');
+    Object.defineProperty(dom.window.document.getElementById('o'), 'contentDocument', {
+      value: inner.window.document,
+      configurable: true,
+    });
+    assert.equal(dom.window.eval(HAS_SECRET_MARKER_SCRIPT), true);
+  });
+
+  it('is true for a marker inside an EMBED\'s embedded SVG document (via getSVGDocument())', () => {
+    const dom = new JSDOM('<embed id="e" type="image/svg+xml">', { runScripts: 'dangerously' });
+    const inner = new JSDOM('<svg xmlns="http://www.w3.org/2000/svg"><text data-sen-secret="">the-seed</text></svg>', { contentType: 'image/svg+xml' });
+    dom.window.document.getElementById('e').getSVGDocument = () => inner.window.document;
+    assert.equal(dom.window.eval(HAS_SECRET_MARKER_SCRIPT), true);
+  });
+
+  it('is false for an OBJECT/EMBED whose embedded document has no marker', () => {
+    const dom = new JSDOM('<object id="o" type="text/html"></object><embed id="e">', { runScripts: 'dangerously' });
+    const innerObj = new JSDOM('<p>clean</p>');
+    Object.defineProperty(dom.window.document.getElementById('o'), 'contentDocument', {
+      value: innerObj.window.document,
+      configurable: true,
+    });
+    dom.window.document.getElementById('e').getSVGDocument = () => null;
+    assert.equal(dom.window.eval(HAS_SECRET_MARKER_SCRIPT), false);
+  });
 });
 
 describe('ANCESTOR_MARKED_FN_SRC (real DOM)', () => {

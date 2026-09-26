@@ -648,6 +648,22 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
   // data-sen-secret page, which by definition has no shape to verify
   // against. Refusing is also what keeps this from ever mutating the live
   // DOM to get a safe answer: the expression simply never runs.
+  //
+  // Deliberately a point check, not a boundary: this is the ONLY marker
+  // check eval gets — no re-check after the expression runs, and nothing
+  // sticky remembered across calls.
+  // Three review rounds on obra#52 confirmed that gating eval any harder
+  // can't actually stop a deliberately adversarial expression — eval runs
+  // in the same JS realm as the secret, so an expression that reveals the
+  // marker mid-run (click a button, await a timer, THEN read it) always
+  // finds a gap a post-hoc check can't close (throw the value instead of
+  // returning it, console.log it, alert() it, or erase the marker with
+  // removeAttribute as its last synchronous step) — see the PR discussion
+  // for the full history of why each attempt to close those gaps opened a
+  // new one. This refusal exists only to catch the ACCIDENTAL case: you
+  // already marked a secret and then ran eval on that same page. Don't
+  // mark a page and then eval on it if you need eval to be trustworthy —
+  // it never is, on any page, marked or not.
   async function evaluateWithCapture(tabIndexOrWsUrl, expression) {
     const ps = await getPageSession(tabIndexOrWsUrl);
     const pinnedTab = { id: ps.targetId };
@@ -656,16 +672,6 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
         throw new Error(secretMarkerRefusal('eval'));
       }
       const result = await actions.evaluate(tabIndexOrWsUrl, expression);
-      // obra#52 review finding 2: actions.evaluate awaits the expression's
-      // own promise, so an expression can run arbitrary async code between
-      // the pre-check above and this point, including code that adds the
-      // marker mid-flight (click a reveal button, await a timer, then read
-      // the now-present marker) after the page was clean at the top of
-      // this function. Re-check right before the value is allowed near
-      // the return path so that case still gets refused and discarded.
-      if (!credentialCaptureAllowed() && await pageHasSecretMarker(ps)) {
-        throw new Error(secretMarkerRefusal('eval'));
-      }
       const artifacts = await capturePageArtifacts(pinnedTab, 'eval');
       return {
         action: 'eval',

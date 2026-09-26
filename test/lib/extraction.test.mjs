@@ -256,4 +256,32 @@ describe('extractText / getAttribute / getSanitizedHtml: marker on an ANCESTOR (
     const { extractText } = setupJsdom(html);
     await assert.rejects(() => extractText(0, '#wrap'), /extract refused.*data-sen-secret/);
   });
+
+  // Jesse's scoped-subset decision on obra#52 round 4, item 1: "Keep the
+  // body-marked whole-page guard, and add its missing test." documentElement
+  // (<html>) is the whole-page root cloneAndStrip/getSanitizedHtml resolve
+  // against with no selector; BODY marked directly (not merely a div
+  // somewhere under it, which the WRAPPED fixture above already covers) is
+  // the specific case that stresses "querySelectorAll on a clone never
+  // matches the clone ROOT" -- here the root is documentElement, and body
+  // is a proper descendant of it, so it must still be found and stripped.
+  it('getSanitizedHtml (whole page) strips the page when <body> ITSELF (not a descendant div) is marked', async () => {
+    const dom = new JSDOM(
+      '<!DOCTYPE html><html><body data-sen-secret>' +
+      '<span id="val">the-seed</span></body></html>',
+      { runScripts: 'dangerously' }
+    );
+    const { window } = dom;
+    const ps = {
+      sessionId: 'S1',
+      send: async (method, params) => {
+        if (method === 'Runtime.evaluate') return { result: { value: window.eval(params.expression) } };
+        return {};
+      },
+    };
+    const { getSanitizedHtml } = attachExtraction({ getPageSession: async () => ps });
+
+    const html = await getSanitizedHtml(0);
+    assert.ok(!html.includes('the-seed'), `seed leaked into whole-page HTML with body itself marked: ${html}`);
+  });
 });

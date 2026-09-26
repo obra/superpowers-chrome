@@ -74,7 +74,8 @@ const PRIOR_NONCE = 'stale-prior-nonce-should-never-leak';
 const SET_ATTR_PAGE = dataUrl(
   '<title>Split box</title><h1>Backup codes</h1>' +
   `<code id="secret" data-sen-secret>${BASE32_SEED}</code>` +
-  `<input id="box0" data-sen-nonce="${PRIOR_NONCE}">`
+  `<input id="box0" data-sen-nonce="${PRIOR_NONCE}">` +
+  '<span id="plain">unmarked control element</span>'
 );
 const DIGIT_COUNT = 6;
 const DIGITS = '123456';
@@ -613,14 +614,34 @@ describe('set_attr (real Chrome)', { skip: !CHROME_AVAILABLE && 'Chrome not inst
     assert.match(text, /set_attr refused.*data-sen-secret/i);
   });
 
-  it('(c) name=data-sen-secret is refused (cannot strip or overwrite the marker)', async () => {
+  // obra#52 review round 2, finding 4 / round 3 hygiene note: this test
+  // used to assert data-sen-secret was refused as a set_attr target name,
+  // but that predates set_attr becoming the write path for the marker
+  // itself (see set-attribute.js's module doc) and had gone stale
+  // asserting the OLD behavior. Replaced with the two cases the documented
+  // contract actually specifies -- marking an unmarked element succeeds,
+  // and re-marking an already-marked one is a no-op, not a refusal --
+  // using #plain and #secret (NOT #box0, which later tests in this
+  // describe block still need to be an ordinary data-sen-nonce target).
+  it('(c) name=data-sen-secret marks a previously-unmarked element', async () => {
     const { text, isError } = await server.call({
       action: 'set_attr',
-      selector: '#box0',
-      payload: { name: 'data-sen-secret', value: 'x' },
+      selector: '#plain',
+      payload: { name: 'data-sen-secret', value: '' },
     });
-    assert.equal(isError, true, text);
-    assert.match(text, /set_attr refused.*not allowed/i);
+    assert.equal(isError, false, text);
+    const marked = await readLiveValueDirectly(server.port, "document.getElementById('plain').hasAttribute('data-sen-secret')");
+    assert.equal(marked, true);
+  });
+
+  it('(c) name=data-sen-secret re-marking an already-marked element (#secret) is a no-op, not a refusal', async () => {
+    const { text, isError } = await server.call({
+      action: 'set_attr',
+      selector: '#secret',
+      payload: { name: 'data-sen-secret', value: '' },
+    });
+    assert.equal(isError, false, text);
+    assert.ok(!text.includes(BASE32_SEED), text);
   });
 
   // The allowlist is a single exact name (data-sen-nonce), not a
@@ -720,5 +741,93 @@ describe('set_attr (real Chrome)', { skip: !CHROME_AVAILABLE && 'Chrome not inst
     for (const r of [evalAttempt, setNonce, ...typeResponses]) {
       assert.ok(!r.text.includes(BASE32_SEED), r.text);
     }
+  });
+});
+
+// obra#52 review round 3, finding 10: extract markdown's whole-page path
+// runs against an inert clone (document.implementation.createHTMLDocument
+// -- see __senInertClone in secret-marker.js), added to fix a cloneNode
+// image-onload regression. That clone's OWN document has an about:blank
+// URL, so `el.href` (the resolved DOM property) started resolving a
+// relative link against about:blank instead of the real page, silently
+// turning '/relative/path' into an unresolved relative string instead of
+// an absolute URL -- a regression on every ordinary, unmarked page, not
+// just marked ones. Not credential-guard-specific, but lives alongside
+// the other obra#52 regression tests in this file.
+describe('extract markdown resolves relative href against the live page (real Chrome)', { skip: !CHROME_AVAILABLE && 'Chrome not installed' }, () => {
+  let server;
+  let dir;
+
+  before(async () => {
+    server = await startServer();
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'href-regress-'));
+    const file = path.join(dir, 'page.html');
+    fs.writeFileSync(file, '<title>Href page</title><a href="/relative/path">Link text</a>');
+    await server.call({ action: 'navigate', payload: `file://${file}` });
+  });
+  after(async () => {
+    await server?.stop();
+    if (dir) fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('resolves a relative href to an absolute URL instead of leaving it unresolved', async () => {
+    const { text, isError } = await server.call({ action: 'extract', payload: 'markdown' });
+    assert.equal(isError, false, text);
+    assert.match(text, /\[Link text\]\(file:\/\/\/relative\/path\)/, text);
+    assert.ok(!text.includes('(/relative/path)'), `href must not be left unresolved: ${text}`);
+  });
+});
+
+// obra#52 review round 3, finding 6 / Jesse's scoped-subset decision, item
+// 2: the live marker scan (HAS_SECRET_MARKER_SCRIPT) only descended into
+// IFRAME/FRAME, so a marker inside a same-origin OBJECT's embedded HTML
+// document was invisible to eval's point check AND to the screenshot/
+// capture guard, even though the top frame can read `obj.contentDocument`
+// directly. Real file:// pages (not data: URLs -- object/embed same-
+// origin access needs a real hierarchical origin) so this proves the fix
+// against actual browser same-origin semantics, not just the jsdom stub
+// in test/lib/secret-marker.test.mjs.
+describe('eval and screenshot see a marker inside a same-origin OBJECT/EMBED (real Chrome)', { skip: !CHROME_AVAILABLE && 'Chrome not installed' }, () => {
+  let server;
+  let dir;
+
+  before(async () => {
+    // OBJECT/EMBED only get a real contentDocument/getSVGDocument for an
+    // embedded SVG document (not for type="text/html", which no current
+    // browser treats as a nested browsing context the way old IE did),
+    // and headless Chrome needs --allow-file-access-from-files for a
+    // file:// page to load a file:// subresource at all.
+    server = await startServer({ CHROME_EXTRA_ARGS: '--allow-file-access-from-files' });
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'object-embed-'));
+    fs.writeFileSync(
+      path.join(dir, 'inner.svg'),
+      `<svg xmlns="http://www.w3.org/2000/svg"><text data-sen-secret="">${BASE32_SEED}</text></svg>`
+    );
+    fs.writeFileSync(
+      path.join(dir, 'outer.html'),
+      '<title>Object test</title>' +
+      '<object id="obj" type="image/svg+xml" data="inner.svg" width="50" height="50"></object>' +
+      '<embed id="emb" type="image/svg+xml" src="inner.svg" width="50" height="50">'
+    );
+    await server.call({ action: 'navigate', payload: `file://${path.join(dir, 'outer.html')}` });
+  });
+  after(async () => {
+    await server?.stop();
+    if (dir) fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('eval refuses because the OBJECT/EMBED embed a marked SVG document, even though the top document has no marker itself', async () => {
+    const { text, isError } = await server.call({ action: 'eval', payload: '1 + 1' });
+    assert.equal(isError, true, text);
+    assert.match(text, /eval refused.*data-sen-secret/i);
+    assert.ok(!text.includes(BASE32_SEED), text);
+  });
+
+  it('screenshot refuses / writes no file because of the marker inside the OBJECT/EMBED', async () => {
+    const shot = path.join(server.xdg, 'object-refused.png');
+    const { text, isError } = await server.call({ action: 'screenshot', payload: shot });
+    assert.equal(isError, true, text);
+    assert.match(text, /screenshot refused/i);
+    assert.equal(fs.existsSync(shot), false);
   });
 });

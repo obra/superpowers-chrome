@@ -131,17 +131,18 @@ These use CDP Input.dispatchMouseEvent, bypassing synthetic event restrictions.
   - `payload`: Attribute name
   - Example: `{action: "attr", selector: "a.download", payload: "href"}`
 
-- **set_attr**: Write-only attribute setter, restricted to EXACTLY the attribute name `data-sen-nonce` (nothing else — not `data-sen-secret`, not any other `data-*`/`aria-*` name; see `skills/browsing/lib/set-attribute.js`'s `ALLOWED_ATTRIBUTE_NAME` constant)
+- **set_attr**: Write-only attribute setter, restricted to EXACTLY two attribute names — `data-sen-nonce` and `data-sen-secret` itself (nothing else, not any other `data-*`/`aria-*` name; see `skills/browsing/lib/set-attribute.js`'s `ALLOWED_ATTRIBUTE_NAMES` constant)
   - `selector`: CSS or XPath selector
-  - `payload`: `{"name": "data-sen-nonce", "value": "..."}` (no bare-string form — needs both fields)
-  - Refuses if the target element itself carries `data-sen-secret`. Unlike every read action, it is NOT blocked by a `data-sen-secret` element existing elsewhere on the page — it can't read anything, so there's nothing for it to leak. Use this instead of `eval` to write onto a page that already has a captured secret (e.g. stamping a credential-broker nonce onto an unmarked digit-input box next to a just-captured TOTP seed).
-  - Why so narrow: page JS and frameworks routinely read arbitrary `data-*`/`aria-*` attributes and wire them to behavior (`data-action`, `data-href`, `aria-controls`, and more a hostile page could invent), so a prefix allowlist is not guaranteed inert. Widening past this one name is a deliberate, separate change.
+  - `payload`: `{"name": "data-sen-nonce"|"data-sen-secret", "value": "..."}` (no bare-string form — needs both fields)
+  - `data-sen-nonce` resolves to the single first-VISIBLE match, the same way `extract`/`click`/`type` resolve a selector, and refuses if that element already carries `data-sen-secret`. `data-sen-secret` instead marks EVERY element the selector matches, hidden duplicates included, and can never remove or weaken an existing mark (re-marking an already-marked element is a no-op, not a refusal) — this is the write path for the marker itself.
+  - Unlike every read action, `set_attr` is NOT blocked by a `data-sen-secret` element existing elsewhere on the page — it takes no caller JavaScript and can't read anything back, so there's nothing here for it to leak. Use it instead of `eval` to write onto a page that already has a captured secret (e.g. stamping a credential-broker nonce onto an unmarked digit-input box next to a just-captured TOTP seed, or marking the seed's element in the first place).
+  - Why so narrow: page JS and frameworks routinely read arbitrary `data-*`/`aria-*` attributes and wire them to behavior (`data-action`, `data-href`, `aria-controls`, and more a hostile page could invent), so a prefix allowlist is not guaranteed inert. Widening past these two names is a deliberate, separate change. Its `ok`/`no element matched`/`refused: target element is marked` responses differ by outcome, which is itself a limited prefix oracle over page content for a caller who varies the selector and watches which result comes back — a known, accepted limitation, not something this guards against.
   - Example: `{action: "set_attr", selector: "#code-input-0", payload: {"name": "data-sen-nonce", "value": "opaque-nonce"}}`
 
 - **eval**: Execute JavaScript
   - `payload`: JavaScript code
   - Example: `{action: "eval", payload: "document.title"}`
-  - Refuses outright (no value-blind exception) while any element on the page carries `data-sen-secret` — see `set_attr` above for the write-only escape hatch.
+  - Refuses outright (no value-blind exception) while any element on the page carries `data-sen-secret`, checked live at the moment of the call — see `set_attr` above for the write-only escape hatch. **This is an accident guard, not a security boundary**: eval runs in the same JS realm as the marked element, so it can already read the value directly, exfiltrate it via `fetch()`/`window.name`/storage, or erase the marker with `removeAttribute` as its own last step — none of which this check can catch, by design. Don't mark an element and then eval on that page expecting the value to stay contained; use the credential broker (or `set_attr`) instead once you're done needing eval on a page holding a secret.
 
 ### Export
 - **screenshot**: Capture screenshot of a specific element
