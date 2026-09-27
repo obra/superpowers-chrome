@@ -21300,6 +21300,17 @@ function formatCaptureFiles(actionResult) {
   ];
 }
 function formatActionResponse(actionResult, actionDescription) {
+  if (actionResult.midFlight) {
+    const dialogDesc = actionResult.artifacts?.markdown || (actionResult.dialog ? `Dialog opened: ${actionResult.dialog.kind}` : "Dialog opened");
+    const suppressedNotice = actionResult.actionResult?.credentialSuppressed ? `
+
+${credentialGuard.CREDENTIAL_SUPPRESSED_NOTICE}` : "";
+    return `${actionDescription}
+
+Dialog is now open \u2014 page is waiting for user input.${suppressedNotice}
+
+${dialogDesc}`;
+  }
   const response = [
     `${actionDescription}`,
     `Current URL: ${actionResult.url || "unknown"}`,
