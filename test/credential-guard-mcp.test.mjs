@@ -144,6 +144,39 @@ const ALERT_ON_INPUT_PAGE = dataUrl(
   `setTimeout(() => alert(${TOKEN_JS_EXPR}), 0), { once: true });</script>`
 );
 
+// A plain password and a plain 6-digit one-time code, neither shaped like
+// any pattern credential-guard.js knows. Each field's change handler mirrors
+// .value into both the `value` attribute and a `data-initial-value`
+// attribute -- an as-you-type-validation pattern real login/2FA forms use.
+// Submitting the form (never actually navigates: the handler calls
+// preventDefault) proves the live fields still hold what was typed after
+// auto-capture has run against them repeatedly.
+const PLAIN_PASSWORD = 'Correct-Horse-Battery42';
+const PLAIN_OTP = '654321';
+const SECRET_FORM_PAGE = dataUrl(
+  '<title>Sign in</title>' +
+  '<form id="frm">' +
+  '<input id="pw" type="password">' +
+  '<input id="otp" type="text" autocomplete="one-time-code">' +
+  '<button id="submitBtn" type="submit">Submit</button>' +
+  '</form>' +
+  '<script>' +
+  "function mirror(e) { e.target.setAttribute('data-initial-value', e.target.value); e.target.setAttribute('value', e.target.value); }" +
+  "document.getElementById('pw').addEventListener('input', mirror);" +
+  "document.getElementById('otp').addEventListener('input', mirror);" +
+  // The submit handler reads .value into a JS variable, never into the DOM
+  // (a visible "you submitted: ..." div would be an unrelated leak path --
+  // plain page TEXT the existing shape-based guard was never meant to catch
+  // -- and isn't what this fix is about). Keeping it JS-only means the only
+  // question this page can test is whether the live fields still hold what
+  // was typed, and whether the submit handler still reads it correctly.
+  "document.getElementById('frm').addEventListener('submit', function(e) {" +
+  "  e.preventDefault();" +
+  "  window.__submitted = document.getElementById('pw').value + ':' + document.getElementById('otp').value;" +
+  "});" +
+  '</script>'
+);
+
 /**
  * One MCP server process with its own XDG cache (so its Chrome profile and
  * session dir are private to this test). call() issues a use_browser
@@ -879,4 +912,52 @@ describe('eval and screenshot see a marker inside a same-origin OBJECT/EMBED (re
       assert.equal(fs.existsSync(shot), false);
     });
   }
+});
+
+describe('password and one-time-code fields mirrored into attributes (real Chrome)', { skip: !CHROME_AVAILABLE && 'Chrome not installed' }, () => {
+  let server;
+  before(async () => { server = await startServer(); });
+  after(async () => { await server?.stop(); });
+
+  function htmlAndMdFiles() {
+    return server.capturedFiles().filter((f) => f.endsWith('.html') || f.endsWith('.md'));
+  }
+
+  it('never writes the mirrored value to disk, and the live fields (and form submission) still see it', async () => {
+    await server.call({ action: 'navigate', payload: SECRET_FORM_PAGE });
+
+    await server.call({ action: 'type', selector: '#pw', payload: PLAIN_PASSWORD });
+    await server.call({ action: 'type', selector: '#otp', payload: PLAIN_OTP });
+
+    // Neither the password's nor the one-time code's mirrored attribute
+    // copy may have reached any capture file written so far.
+    const files = htmlAndMdFiles();
+    assert.ok(files.length > 0, 'expected some capture files to have been written');
+    for (const file of files) {
+      const written = fs.readFileSync(file, 'utf8');
+      assert.ok(!written.includes(PLAIN_PASSWORD), `password leaked into ${file}:\n${written}`);
+      assert.ok(!written.includes(PLAIN_OTP), `one-time code leaked into ${file}:\n${written}`);
+    }
+
+    // The live page must be untouched: the clone-based scrub never mutates
+    // the real DOM, so the fields still hold what was typed.
+    const pwLive = await server.call({ action: 'eval', payload: "document.getElementById('pw').value" });
+    assert.match(pwLive.text, new RegExp(PLAIN_PASSWORD), pwLive.text);
+    const otpLive = await server.call({ action: 'eval', payload: "document.getElementById('otp').value" });
+    assert.match(otpLive.text, new RegExp(PLAIN_OTP), otpLive.text);
+
+    // ... and the form still submits with the right values, proving the
+    // fields the browser actually uses were never swapped for the clone.
+    await server.call({ action: 'click', selector: '#submitBtn' });
+    const submitted = await server.call({ action: 'eval', payload: 'window.__submitted' });
+    assert.match(submitted.text, new RegExp(`${PLAIN_PASSWORD}:${PLAIN_OTP}`), submitted.text);
+
+    // Re-check every capture file written by the whole sequence (including
+    // the eval and click actions above, each of which auto-captures too).
+    for (const file of htmlAndMdFiles()) {
+      const written = fs.readFileSync(file, 'utf8');
+      assert.ok(!written.includes(PLAIN_PASSWORD), `password leaked into ${file}:\n${written}`);
+      assert.ok(!written.includes(PLAIN_OTP), `one-time code leaked into ${file}:\n${written}`);
+    }
+  });
 });

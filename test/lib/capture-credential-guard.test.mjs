@@ -14,6 +14,7 @@ const { attachCapture } = require('../../skills/browsing/lib/capture.js');
 const markdownScript = require('../../skills/browsing/lib/page-scripts/markdown.js');
 const domSummaryScript = require('../../skills/browsing/lib/page-scripts/dom-summary.js');
 const { HAS_SECRET_MARKER_SCRIPT } = require('../../skills/browsing/lib/secret-marker.js');
+const htmlWithScrubScript = require('../../skills/browsing/lib/page-scripts/html-with-scrub.js');
 
 // Fake tokens are assembled from prefix + body at runtime so no complete
 // token-shaped literal sits in the source (GitHub push protection rejects
@@ -47,6 +48,29 @@ const MARKER_PAGE = {
   html: '<html><body><h1>Backup codes</h1><ul data-sen-secret><li>1234 5678</li></ul></body></html>',
   markdown: '# Backup codes\n\n- 1234 5678',
   domSummary: 'Backup codes\nInteractive: 0 buttons, 0 inputs, 0 links\nHeadings: "Backup codes"\nLayout: body',
+  renderedText: '',
+};
+
+// A plain password typed into a password field, mirrored by the page's own
+// change handler into the `value` attribute and a `data-initial-value`
+// attribute (a common as-you-type-validation pattern). It has no token
+// shape, so containsCredentialShaped never matches it — this page must NOT
+// be suppressed — but the mirrored copy must not reach disk either.
+// `scrubbedHtml` is what page-scripts/html-with-scrub.js's clone pass
+// would produce for this markup: the same document with `value` and every
+// `data-*` attribute stripped from the password input.
+const PLAIN_SECRET = 'Sup3r-Secret-Pw';
+const PASSWORD_MIRRORED_PAGE = {
+  html:
+    '<html><body><h1>Sign in</h1>' +
+    `<input type="password" value="${PLAIN_SECRET}" data-initial-value="${PLAIN_SECRET}">` +
+    '</body></html>',
+  scrubbedHtml:
+    '<html><body><h1>Sign in</h1>' +
+    '<input type="password">' +
+    '</body></html>',
+  markdown: '# Sign in',
+  domSummary: 'Sign in\nInteractive: 0 buttons, 1 inputs, 0 links\nHeadings: "Sign in"\nLayout: body',
   renderedText: '',
 };
 
@@ -128,6 +152,11 @@ function setup({
       if (expr === markdownScript) return { result: { value: page.markdown } };
       if (expr === domSummaryScript) return { result: { value: page.domSummary } };
       if (expr === 'document.body.innerText') return { result: { value: page.renderedText } };
+      if (expr === htmlWithScrubScript) {
+        // scrubbedHtml defaults to html for pages with nothing to scrub.
+        const scrubbed = page.scrubbedHtml !== undefined ? page.scrubbedHtml : page.html;
+        return { result: { value: { raw: page.html, scrubbed } } };
+      }
       if (expr.includes('window.innerWidth')) {
         return { result: { value: { width: 800, height: 600, documentWidth: 800, documentHeight: 600 } } };
       }
@@ -206,6 +235,20 @@ describe('capturePageArtifacts credential guard', () => {
     assert.equal(calls.screenshot, 1);
     assert.equal(result.domSummary, CLEAN_PAGE.domSummary);
     assert.equal(fs.readFileSync(result.files.html, 'utf8'), CLEAN_PAGE.html);
+  });
+
+  it('scrubs a password field mirrored into an attribute, without suppressing the whole page', async () => {
+    // No token shape here, so the page is NOT suppressed (files ARE written,
+    // unlike the credential-shaped cases above) — but the mirrored copy of
+    // the password must not be one of the bytes written.
+    const { capturePageArtifacts, calls } = setup({ before: PASSWORD_MIRRORED_PAGE });
+    const result = await capturePageArtifacts(0, 'navigate');
+
+    assert.ok(!result.credentialSuppressed);
+    assert.equal(calls.screenshot, 1);
+    const written = fs.readFileSync(result.files.html, 'utf8');
+    assert.ok(!written.includes(PLAIN_SECRET), `password leaked into .html: ${written}`);
+    assert.equal(written, PASSWORD_MIRRORED_PAGE.scrubbedHtml);
   });
 
   it(`${ENV}=1 restores capture of a credential-shaped page`, async () => {

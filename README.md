@@ -218,6 +218,8 @@ Mark an element with the `data-sen-secret` attribute (via `set_attr`) when it ho
 
 Set `SUPERPOWERS_CHROME_ALLOW_CREDENTIAL_CAPTURE=1` to restore the old, unguarded behavior when debugging your own browser.
 
+Separately, whatever auto-capture *does* write to disk has `value` and every `data-*` attribute stripped from `input[type="password"]`, `input[autocomplete="one-time-code"]`, and any `data-sen-secret`-marked element, on a detached clone taken just before serializing. This catches a page's own change handler mirroring a typed value into an attribute (a common as-you-type-validation pattern) — a plain password or 6-digit code has no shape the check above recognizes, so it wouldn't otherwise be caught. The live page is never touched.
+
 ### Usage
 
 ```json

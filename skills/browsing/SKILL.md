@@ -38,6 +38,8 @@ Files are saved to the session directory with sequential prefixes (001-navigate,
 
 **When to mark a secret:** mark its element with `set_attr` (`data-sen-secret`) as soon as the action that revealed it returns, before any other action on that page, then capture the value with the credential broker. Marking only affects later actions. The capture files the revealing action already wrote (e.g. `003-click.html`/`.md`) still hold the value and are not deleted, so don't read them back. This is an accident guard for a cooperating agent, not a security boundary. `SUPERPOWERS_CHROME_ALLOW_CREDENTIAL_CAPTURE=1` turns all of this off.
 
+Separately (and unconditionally): a plain password or one-time code has no shape the check above recognizes, so a page's own change handler mirroring one into an attribute (e.g. `setAttribute('data-initial-value', value)`) would otherwise land in the `.html` file untouched. Whatever gets written is scrubbed first: `value` and every `data-*` attribute are stripped from `input[type="password"]`, `input[autocomplete="one-time-code"]`, and `data-sen-secret`-marked elements, on a detached clone — the live page is never touched.
+
 ## The use_browser Tool
 
 Single MCP tool with action-based interface. Chrome auto-starts on first use.

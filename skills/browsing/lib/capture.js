@@ -6,6 +6,7 @@ const { throwIfExceptionDetails } = require('./cdp-utils');
 const markdownScript = require('./page-scripts/markdown');
 const domSummaryScript = require('./page-scripts/dom-summary');
 const renderedTextScript = require('./page-scripts/rendered-text');
+const htmlWithScrubScript = require('./page-scripts/html-with-scrub');
 const { containsCredentialShaped, credentialCaptureAllowed, secretMarkerRefusal } = require('./credential-guard');
 const { pageHasSecretMarker } = require('./secret-marker');
 
@@ -155,6 +156,22 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
     return result.result.value;
   }
 
+  // outerHTML in two flavors: `raw` (fed to the credential-shape scan,
+  // unchanged) and `scrubbed` (what actually gets written to disk). See
+  // page-scripts/html-with-scrub.js for why the two must differ: a plain
+  // password or one-time code mirrored into an attribute by the page's own
+  // change handler has no shape the scan can recognize.
+  async function getHtmlWithScrub(tabIndexOrWsUrl) {
+    const ps = await getPageSession(tabIndexOrWsUrl);
+    const result = await ps.send('Runtime.evaluate', {
+      expression: htmlWithScrubScript,
+      returnByValue: true
+    });
+    throwIfExceptionDetails(result);
+    const value = result.result.value || {};
+    return { raw: value.raw || '', scrubbed: value.scrubbed || '' };
+  }
+
   // True when auto-capture must not copy this page's content anywhere.
   // Always false when SUPERPOWERS_CHROME_ALLOW_CREDENTIAL_CAPTURE=1.
   function mustSuppress(...pageTexts) {
@@ -267,8 +284,8 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
     // point before the last artifact means no artifact survives.
     const shot = await screenshotUnlessCredentialShaped(tabIndexOrWsUrl, screenshotPath);
 
-    const [html, markdown, pageSize, domSummary, renderedText] = await Promise.all([
-      getHtml(tabIndexOrWsUrl),
+    const [{ raw: html, scrubbed: scrubbedHtml }, markdown, pageSize, domSummary, renderedText] = await Promise.all([
+      getHtmlWithScrub(tabIndexOrWsUrl),
       generateMarkdown(tabIndexOrWsUrl),
       getPageSize(tabIndexOrWsUrl),
       generateDomSummary(tabIndexOrWsUrl),
@@ -287,7 +304,9 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
       };
     }
 
-    fs.writeFileSync(htmlPath, html || '');
+    // Write the scrubbed HTML, not the raw HTML the scan above just used:
+    // see page-scripts/html-with-scrub.js for why they differ.
+    fs.writeFileSync(htmlPath, scrubbedHtml || '');
     fs.writeFileSync(markdownPath, markdown || '');
     fs.writeFileSync(consoleLogPath, '# Console Log\n# TODO: Console logging not yet implemented\n');
 
@@ -396,8 +415,8 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
     const focusInfo = await saveFocus();
     const beforeShot = await screenshotUnlessCredentialShaped(pinnedTab, beforeScreenshotPath);
     await restoreFocus(focusInfo);
-    const [beforeHtml, beforeRenderedText] = await Promise.all([
-      getHtml(pinnedTab),
+    const [{ raw: beforeHtml, scrubbed: beforeScrubbedHtml }, beforeRenderedText] = await Promise.all([
+      getHtmlWithScrub(pinnedTab),
       getRenderedText(pinnedTab)
     ]);
     const beforeSuppressed = !beforeShot || mustSuppress(beforeHtml, beforeRenderedText);
@@ -453,8 +472,8 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
     const afterScreenshotPath = path.join(dir, `${prefix}-after.png`);
     const afterShot = beforeSuppressed ? null : await screenshotUnlessCredentialShaped(pinnedTab, afterScreenshotPath);
 
-    const [afterHtml, markdown, pageSize, domSummary, afterRenderedText] = await Promise.all([
-      getHtml(pinnedTab),
+    const [{ raw: afterHtml, scrubbed: afterScrubbedHtml }, markdown, pageSize, domSummary, afterRenderedText] = await Promise.all([
+      getHtmlWithScrub(pinnedTab),
       generateMarkdown(pinnedTab),
       getPageSize(pinnedTab),
       generateDomSummary(pinnedTab),
@@ -481,15 +500,19 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
       };
     }
 
-    const diff = generateHtmlDiff(beforeHtml, afterHtml);
+    // Diff and disk writes use the scrubbed HTML, not the raw HTML the
+    // scans above just used: see page-scripts/html-with-scrub.js for why
+    // they differ. Diffing the raw pair would reprint a scrubbed field's
+    // mirrored attribute as an ADDED/REMOVED line.
+    const diff = generateHtmlDiff(beforeScrubbedHtml, afterScrubbedHtml);
 
     const beforeHtmlPath = path.join(dir, `${prefix}-before.html`);
     const afterHtmlPath = path.join(dir, `${prefix}-after.html`);
     const diffPath = path.join(dir, `${prefix}-diff.txt`);
     const markdownPath = path.join(dir, `${prefix}.md`);
 
-    fs.writeFileSync(beforeHtmlPath, beforeHtml || '');
-    fs.writeFileSync(afterHtmlPath, afterHtml || '');
+    fs.writeFileSync(beforeHtmlPath, beforeScrubbedHtml || '');
+    fs.writeFileSync(afterHtmlPath, afterScrubbedHtml || '');
     fs.writeFileSync(diffPath, diff);
     fs.writeFileSync(markdownPath, markdown || '');
 

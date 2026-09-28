@@ -4,6 +4,18 @@ All notable changes to the superpowers-chrome MCP project.
 
 ## [Unreleased]
 
+## [3.0.9] - 2026-09-28 - Password and one-time-code fields no longer copied to disk when a page mirrors them into an attribute
+
+### Security
+- A field's live value can be mirrored into an attribute by the page's own JavaScript — an `input`/`change` handler doing `setAttribute('data-initial-value', value)` or `setAttribute('value', value)` for as-you-type validation UI is a common, entirely ordinary pattern. Once mirrored there, auto-capture's `outerHTML` snapshot picked it up like any other markup and wrote it to the `.html` file (and, for a before/after action, the `-before.html`/`-after.html`/`-diff.txt` files) in the session dir. A plain password or a 6-digit one-time code has no shape `credential-guard.js`'s detector recognizes — it isn't a Slack/GitHub/1Password token and it isn't wrapped in an `otpauth://` URI or marked `data-sen-secret` — so nothing caught it. This is about accidental exposure to disk during ordinary use, not a defense against a hostile page.
+- Auto-capture now takes a second, scrubbed serialization of the page for anything it writes: a detached clone of `document.documentElement` with the `value` attribute and every `data-*` attribute removed from `input[type="password"]`, `input[autocomplete="one-time-code"]`, and any element carrying `data-sen-secret`. The clone is never attached to the document, so the live page — and the credential-shape scan that decides whether to suppress the capture entirely — is unaffected; only the bytes written to disk change. See `skills/browsing/lib/page-scripts/html-with-scrub.js`.
+- Session dirs are normally removed when the server exits, but one left behind by a crash may still hold a mirrored value captured by 3.0.7 or earlier. Delete old session dirs under `superpowers/browser/` in the cache dir (`$XDG_CACHE_HOME`, else `~/.cache` on Linux, `~/Library/Caches` on macOS, `%LOCALAPPDATA%` on Windows).
+
+### Tests
+- `test/lib/page-scripts/html-with-scrub.test.mjs` (new): the scrub script strips `value` and every `data-*` attribute from a password input, a one-time-code input, and a `data-sen-secret`-marked element, leaves an ordinary input untouched, and never mutates the live document it was evaluated against.
+- `test/lib/capture-credential-guard.test.mjs`: a password field mirrored into an attribute is captured (not suppressed — it has no token shape) but the written `.html` has the mirrored copy stripped.
+- `test/credential-guard-mcp.test.mjs` (new, real Chrome): typing a plain password and a plain one-time code into fields whose change handlers mirror them into attributes leaves no capture file (from typing, from a follow-up `eval`, or from clicking submit) containing either value, while the live fields still hold what was typed and the form's own submit handler still reads the correct values.
+
 ## [3.0.8] - 2026-09-26 - data-sen-secret marking: an accident guard, not a boundary
 
 ### Added
