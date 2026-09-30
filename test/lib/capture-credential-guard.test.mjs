@@ -13,6 +13,7 @@ const require = createRequire(import.meta.url);
 const { attachCapture } = require('../../skills/browsing/lib/capture.js');
 const markdownScript = require('../../skills/browsing/lib/page-scripts/markdown.js');
 const domSummaryScript = require('../../skills/browsing/lib/page-scripts/dom-summary.js');
+const { HAS_SECRET_MARKER_SCRIPT } = require('../../skills/browsing/lib/secret-marker.js');
 
 // Fake tokens are assembled from prefix + body at runtime so no complete
 // token-shaped literal sits in the source (GitHub push protection rejects
@@ -111,6 +112,7 @@ function setup({
   revealOnScreenshot = null,
   dialog = null,
   dialogAfterAction = dialog,
+  secretMarkerLive = false,
 }) {
   const pageRef = { current: before };
   const dialogRef = { current: dialog };
@@ -122,8 +124,10 @@ function setup({
       if (method !== 'Runtime.evaluate') return {};
       const expr = params.expression;
       const page = pageRef.current;
+      if (expr === HAS_SECRET_MARKER_SCRIPT) return { result: { value: secretMarkerLive } };
       if (expr === markdownScript) return { result: { value: page.markdown } };
       if (expr === domSummaryScript) return { result: { value: page.domSummary } };
+      if (expr === 'document.body.innerText') return { result: { value: page.renderedText } };
       if (expr.includes('window.innerWidth')) {
         return { result: { value: { width: 800, height: 600, documentWidth: 800, documentHeight: 600 } } };
       }
@@ -146,7 +150,7 @@ function setup({
     },
     actions: {
       click: async () => { calls.action++; pageRef.current = afterPage; dialogRef.current = dialogAfterAction; return { clicked: true }; },
-      evaluate: async () => { calls.action++; return 42; },
+      evaluate: async (_tab, expression) => { calls.action++; return expression === 'document.body.innerText' ? pageRef.current.renderedText : 42; },
     },
     dialogs,
   });
@@ -236,6 +240,109 @@ describe('capturePageArtifacts credential guard', () => {
     const evaluated = await evaluateWithCapture(0, '21+21');
     assert.equal(evaluated.credentialSuppressed, true);
     assert.equal(evaluated.result, 42, 'eval still returns its (non-secret) value');
+  });
+});
+
+// The data-sen-secret marker (unlike a token-shaped
+// value) has no shape a returned result can be checked against after the
+// fact, so eval and the whole-page extract('text') path fail closed on the
+// marker's live presence, checked BEFORE running anything — unlike the
+// TOKEN_PAGE case above, where eval still runs and only the capture
+// metadata is suppressed.
+describe('evaluateWithCapture fails closed on a live data-sen-secret marker', () => {
+  it('refuses without running the expression when the marker is present', async () => {
+    const { evaluateWithCapture, calls } = setup({ before: CLEAN_PAGE, secretMarkerLive: true });
+    await assert.rejects(
+      () => evaluateWithCapture(0, 'document.getElementById("secret").textContent'),
+      /eval refused.*data-sen-secret/
+    );
+    assert.equal(calls.action, 0, 'the expression must never run');
+  });
+
+  it('runs normally when no marker is present', async () => {
+    const { evaluateWithCapture, calls } = setup({ before: CLEAN_PAGE, secretMarkerLive: false });
+    const result = await evaluateWithCapture(0, '21+21');
+    assert.equal(result.result, 42);
+    assert.equal(calls.action, 1);
+  });
+
+  it(`${ENV}=1 skips the marker check and runs the expression`, async () => {
+    process.env[ENV] = '1';
+    const { evaluateWithCapture, calls } = setup({ before: CLEAN_PAGE, secretMarkerLive: true });
+    const result = await evaluateWithCapture(0, '21+21');
+    assert.equal(result.result, 42);
+    assert.equal(calls.action, 1);
+  });
+});
+
+// eval's marker check is a point check at call time only: no re-check
+// after the expression runs, nothing sticky remembered across calls (see
+// evaluateWithCapture's module comment). An expression that reveals the
+// marker mid-run (click a button, await a timer, THEN read it) runs to
+// completion and returns the value, like any other eval on a page that was
+// unmarked at call time. The guard catches accidents; it is not a boundary.
+describe('evaluateWithCapture: async marker race is NOT gated (accident guard only, not a boundary)', () => {
+  function setupRace() {
+    let markerLive = false;
+    const ps = {
+      sessionId: 'S1',
+      targetId: 'T1',
+      send: async (method, params) => {
+        if (method === 'Runtime.evaluate' && params.expression === HAS_SECRET_MARKER_SCRIPT) {
+          return { result: { value: markerLive } };
+        }
+        return { result: { value: null } };
+      },
+    };
+    const state = { sessionDir: null, captureCounter: 0 };
+    const api = attachCapture({
+      state,
+      getPageSession: async () => ps,
+      getHtml: async () => '<html></html>',
+      screenshot: async (_t, f) => { fs.writeFileSync(f, 'PNG'); return f; },
+      actions: {
+        click: async () => ({ clicked: true }),
+        // Simulates the awaited expression's own side effect: the marker
+        // appears only DURING evaluation, after the pre-check already
+        // read markerLive === false.
+        evaluate: async (_tab, _expression) => {
+          markerLive = true;
+          return 'THE-SECRET-SEED-VALUE';
+        },
+      },
+    });
+    return api;
+  }
+
+  it('returns the value when the marker only appears during the awaited expression (call-time check already passed)', async () => {
+    const api = setupRace();
+    const result = await api.evaluateWithCapture(0, '(async () => { /* reveal */ ; return secret; })()');
+    assert.equal(result.result, 'THE-SECRET-SEED-VALUE');
+  });
+});
+
+describe("extractPageText fails closed on a live data-sen-secret marker (extract action's whole-page text mode)", () => {
+  it('refuses when the marker is present, without reading innerText', async () => {
+    const page = { ...CLEAN_PAGE, renderedText: 'should never be read' };
+    const { extractPageText, calls } = setup({ before: page, secretMarkerLive: true });
+    await assert.rejects(
+      () => extractPageText(0),
+      /extract refused.*data-sen-secret/
+    );
+    assert.equal(calls.action, 0, 'innerText must never be read');
+  });
+
+  it('returns the rendered text normally when no marker is present', async () => {
+    const page = { ...CLEAN_PAGE, renderedText: 'Welcome to the page' };
+    const { extractPageText } = setup({ before: page, secretMarkerLive: false });
+    assert.equal(await extractPageText(0), 'Welcome to the page');
+  });
+
+  it(`${ENV}=1 skips the marker check and returns the text`, async () => {
+    process.env[ENV] = '1';
+    const page = { ...MARKER_PAGE, renderedText: '1234 5678' };
+    const { extractPageText } = setup({ before: page, secretMarkerLive: true });
+    assert.equal(await extractPageText(0), '1234 5678');
   });
 });
 
@@ -409,6 +516,26 @@ describe('pageContainsCredentialShaped', () => {
     const { pageContainsCredentialShaped } = setup({ before: CLEAN_PAGE });
     assert.equal(await pageContainsCredentialShaped(0), false);
   });
+
+  // containsCredentialShaped(html) || containsCredentialShaped(renderedText)
+  // alone is an HTML-string regex requiring the marker's tag to be in the
+  // serialized top-document outerHTML. A marker inside an open shadow root
+  // or a same-origin iframe never appears there, so the regex alone would
+  // report a page with the marker ONLY in one of those as clean, even though
+  // the live marker check (secret-marker.js, the same one eval/extract/attr
+  // use) says otherwise. secretMarkerLive here stands in for exactly that
+  // case: a page whose HTML/renderedText are clean by the regex, but whose
+  // live-DOM marker check reports true.
+  it('is true when the page is clean by the HTML/text regex but the live marker check reports a marker (shadow root / same-origin iframe)', async () => {
+    const { pageContainsCredentialShaped } = setup({ before: CLEAN_PAGE, secretMarkerLive: true });
+    assert.equal(await pageContainsCredentialShaped(0), true);
+  });
+
+  it(`${ENV}=1 skips the live marker check too`, async () => {
+    process.env[ENV] = '1';
+    const { pageContainsCredentialShaped } = setup({ before: CLEAN_PAGE, secretMarkerLive: true });
+    assert.equal(await pageContainsCredentialShaped(0), false);
+  });
 });
 
 describe('screenshotUnlessCredentialShaped', () => {
@@ -444,5 +571,16 @@ describe('screenshotUnlessCredentialShaped', () => {
     const { screenshotUnlessCredentialShaped } = setup({ before: TOKEN_PAGE });
     assert.equal(await screenshotUnlessCredentialShaped(0, shotPath()), shotPath());
     assert.ok(fs.existsSync(shotPath()));
+  });
+
+  // Screenshots must do the LIVE marker check, not only the HTML-string
+  // regex -- a marker in a shadow root or
+  // same-origin iframe is invisible to the regex but the seed would still
+  // be legible in the PNG.
+  it('takes no screenshot when the live marker check reports a marker, even though HTML/text are clean by the regex', async () => {
+    const { screenshotUnlessCredentialShaped, calls } = setup({ before: CLEAN_PAGE, secretMarkerLive: true });
+    assert.equal(await screenshotUnlessCredentialShaped(0, shotPath()), null);
+    assert.equal(calls.screenshot, 0);
+    assert.equal(fs.existsSync(shotPath()), false);
   });
 });

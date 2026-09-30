@@ -42,6 +42,8 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const require = createRequire(import.meta.url);
 const chromeLib = require(join(__dirname, "../../skills/browsing/chrome-ws-lib.js")).createSession();
+const credentialGuard = require(join(__dirname, "../../skills/browsing/lib/credential-guard.js"));
+const secretMarker = require(join(__dirname, "../../skills/browsing/lib/secret-marker.js"));
 const SERVER_VERSION = require(join(__dirname, "../package.json")).version;
 
 /**
@@ -100,6 +102,7 @@ enum BrowserAction {
   EVAL = "eval",                // payload=JS source string, taken literally (never JSON-parsed, even if it looks like JSON e.g. "[1,2]")
   SELECT = "select",            // selector=CSS/XPath, payload=literal option value/text, or {selector,value} (value never JSON-parsed as a whole; a JSON array string is still accepted for multi-select)
   ATTR = "attr",                // selector=CSS/XPath, payload=bare attribute name string, or {selector,attr} (also accepted as a JSON-encoded string)
+  SET_ATTR = "set_attr",        // selector=CSS/XPath, payload={name,value} - write-only, name must be exactly 'data-sen-nonce' or 'data-sen-secret' (see lib/set-attribute.js); no bare-string form (needs both name and value)
   AWAIT_ELEMENT = "await_element", // selector=CSS/XPath to wait for; payload={selector?,timeout?} also accepted as a JSON-encoded string
   AWAIT_TEXT = "await_text",    // payload=literal text to wait for (never JSON-parsed); timeout= top-level ms
   NEW_TAB = "new_tab",          // payload=URL string (optional; also accepted as a JSON-encoded {url} string)
@@ -332,7 +335,11 @@ async function executeBrowserAction(params: UseBrowserInput): Promise<string> {
         if (format === 'text') {
           extracted = await chromeLib.extractText(tabIndex, selector);
         } else if (format === 'html') {
-          extracted = await chromeLib.getHtml(tabIndex, selector);
+          // getSanitizedHtml, not getHtml: getHtml is the raw, unstripped
+          // form capture.js's credential guard relies on internally (see
+          // lib/extraction.js's module doc) and must not have
+          // data-sen-secret content removed from it.
+          extracted = await chromeLib.getSanitizedHtml(tabIndex, selector);
         } else {
           throw new Error("selector-based extraction only supports 'text' or 'html' format");
         }
@@ -343,25 +350,85 @@ async function executeBrowserAction(params: UseBrowserInput): Promise<string> {
       } else {
         // Extract whole page
         if (format === 'text') {
-          return await chromeLib.evaluate(tabIndex, 'document.body.innerText');
+          // extractPageText, not a raw innerText evaluate: innerText needs
+          // page layout, which a detached clone doesn't have, so this
+          // refuses outright on a data-sen-secret marker instead of trying
+          // to strip it (see lib/capture.js).
+          return await chromeLib.extractPageText(tabIndex);
         } else if (format === 'html') {
-          return await chromeLib.getHtml(tabIndex);
+          return await chromeLib.getSanitizedHtml(tabIndex);
         } else if (format === 'markdown') {
-          // Generate markdown-like output
-          return await chromeLib.evaluate(tabIndex, `
-            Array.from(document.querySelectorAll('h1, h2, h3, h4, h5, h6, p, a, li, pre, code'))
-              .map(el => {
-                const tag = el.tagName.toLowerCase();
-                const text = el.textContent.trim();
-                if (tag.startsWith('h')) return '#'.repeat(parseInt(tag[1])) + ' ' + text;
-                if (tag === 'a') return '[' + text + '](' + el.href + ')';
-                if (tag === 'li') return '- ' + text;
-                if (tag === 'pre' || tag === 'code') return '\\\`\\\`\\\`\\n' + text + '\\n\\\`\\\`\\\`';
-                return text;
-              })
-              .filter(x => x)
-              .join('\\n\\n')
+          // Generate markdown-like output. textContent (unlike innerText)
+          // doesn't need layout, so unlike the 'text' branch above, this
+          // can run against a detached, stripped clone rather than refusing.
+          //
+          // Two helpers guard the clone (extraction.js's cloneAndStrip uses
+          // them the same way): an ancestor check, because a marker on
+          // document.body itself (or an ancestor of it) would otherwise
+          // leak -- stripping removes only DESCENDANTS, and querySelectorAll
+          // never matches the node it is called on; and an inert clone,
+          // because the live document.body.cloneNode(true) fires
+          // onload/onerror on any cloned <img>, since that clone's
+          // ownerDocument is still the live, "fully active" page.
+          //
+          // The inert clone has its own base URI. `el.href` (the resolved DOM
+          // property, not getAttribute) resolves against the ELEMENT'S OWN
+          // ownerDocument base URI -- once `root` below is a clone imported
+          // into `document.implementation.createHTMLDocument('')`, that
+          // document's URL is about:blank, so a relative link like '/foo'
+          // would come back unresolved instead of absolute against the real
+          // page. The generated script below resolves against the LIVE top
+          // document's baseURI explicitly instead (`document` inside that
+          // script is still the live page -- only `root` is ever the inert
+          // clone -- so this is correct whether or not root got cloned).
+          // NOTE: no `//` comments inside that template literal itself --
+          // it gets `.replace(/\s+/g, ' ')`'d below before being sent to
+          // the page, which collapses newlines WITHOUT stripping line
+          // comments, silently commenting out everything after them.
+          const credentialCaptureAllowed = credentialGuard.credentialCaptureAllowed();
+          const markerSelector = JSON.stringify(`[${credentialGuard.MARKER_ATTR}]`);
+          const root = credentialCaptureAllowed
+            ? 'document.body'
+            : `(() => {
+                ${secretMarker.ANCESTOR_MARKED_FN_SRC}
+                ${secretMarker.INERT_CLONE_FN_SRC}
+                const src = document.body;
+                if (!src) return __senInertClone(document.createElement('body'));
+                if (__senAncestorMarked(src)) return { __secretMarked: true };
+                const clone = __senInertClone(src);
+                clone.querySelectorAll(${markerSelector}).forEach(el => el.remove());
+                return clone;
+              })()`;
+          const result = await chromeLib.evaluate(tabIndex, `
+            (() => {
+              const root = (${root});
+              if (root && root.__secretMarked) return { __secretMarked: true };
+              return Array.from(root.querySelectorAll('h1, h2, h3, h4, h5, h6, p, a, li, pre, code'))
+                .map(el => {
+                  const tag = el.tagName.toLowerCase();
+                  const text = el.textContent.trim();
+                  if (tag.startsWith('h')) return '#'.repeat(parseInt(tag[1])) + ' ' + text;
+                  if (tag === 'a') {
+                    /* el.href (the resolved property, not getAttribute) resolves against the CLONE's own about:blank base once root has been cloned into an inert document -- see the TS comment above this template literal for the full explanation. Resolve against the LIVE top document's baseURI explicitly instead. */
+                    var raw = el.getAttribute('href');
+                    var resolved = raw;
+                    if (raw !== null) {
+                      try { resolved = new URL(raw, document.baseURI).href; } catch (e) { resolved = raw; }
+                    }
+                    return '[' + text + '](' + (resolved || '') + ')';
+                  }
+                  if (tag === 'li') return '- ' + text;
+                  if (tag === 'pre' || tag === 'code') return '\\\`\\\`\\\`\\n' + text + '\\n\\\`\\\`\\\`';
+                  return text;
+                })
+                .filter(x => x)
+                .join('\\n\\n');
+            })()
           `.replace(/\s+/g, ' ').trim());
+          if (result && typeof result === 'object' && (result as any).__secretMarked) {
+            throw new Error(credentialGuard.secretMarkerRefusal('extract') + ' (whole page)');
+          }
+          return result;
         } else {
           throw new Error("extract format must be 'text', 'html', or 'markdown'");
         }
@@ -380,7 +447,7 @@ async function executeBrowserAction(params: UseBrowserInput): Promise<string> {
       if (!savedPath) {
         throw new Error(
           "screenshot refused: page shows credential-shaped content. " +
-          "Use the credential broker to capture values; use eval only for value-blind queries."
+          credentialGuard.CREDENTIAL_ADVICE
         );
       }
       return `Screenshot saved to ${savedPath}`;
@@ -441,6 +508,40 @@ async function executeBrowserAction(params: UseBrowserInput): Promise<string> {
       }
       const attrValue = await chromeLib.getAttribute(tabIndex, selector, attr);
       return String(attrValue);
+    }
+
+    case BrowserAction.SET_ATTR: {
+      // Write-only counterpart to ATTR (see lib/set-attribute.js for the
+      // full guard rationale). No legitimate
+      // bare-string form: unlike attr's bare-string-is-the-attribute-NAME
+      // reading form, set_attr needs both a name AND a value, and there is
+      // no single string that means both. So this uses the strict
+      // resolver, same as set_viewport/mouse_move: a string payload MUST
+      // be parseable JSON, and a parse failure is reported honestly
+      // instead of being silently wrapped under a throwaway key.
+      const shapeHint = '{name, value} (selector top-level or in payload.selector)';
+      const resolved = resolveStrictStructuredPayload(payload);
+      if (resolved.errorDetail) {
+        throw new Error(`set_attr requires payload with name and value: ${shapeHint} (${resolved.errorDetail})`);
+      }
+      const p = resolved.object!;
+      const selector: string | null = topSelector ?? (typeof p.selector === 'string' ? p.selector : null);
+      if (!selector || typeof selector !== 'string') {
+        throw new Error("set_attr requires selector (top-level or payload.selector)");
+      }
+      if (typeof p.name !== 'string' || !p.name) {
+        throw new Error(`set_attr requires payload.name (attribute name): ${shapeHint}`);
+      }
+      if (typeof p.value !== 'string') {
+        throw new Error(`set_attr requires payload.value (string): ${shapeHint}`);
+      }
+      // setAttributeWithCapture throws (never returns a leak-prone value) on
+      // every refusal path: disallowed attribute name, no element matched,
+      // or the target itself is marked data-sen-secret. The value just set
+      // is deliberately never echoed back into the response, even though
+      // it's a caller-supplied nonce rather than page content.
+      const setResult = await chromeLib.setAttributeWithCapture(tabIndex, selector, p.name, p.value);
+      return formatActionResponse(setResult, `Set attribute: ${p.name} on ${selector}`);
     }
 
     case BrowserAction.AWAIT_ELEMENT: {
@@ -778,11 +879,11 @@ async function executeBrowserAction(params: UseBrowserInput): Promise<string> {
       // set_viewport has no legitimate bare-string form (there's no
       // sensible single string that means "width and height"), so it uses
       // the strict resolver: a string payload MUST be parseable JSON. This
-      // is the exact bug this fix addresses — set_viewport given
-      // '{"width":390,"height":844}' used to fall through parsePayload's
-      // literal-wrap fallback, land in the (p.viewport || {}) branch
-      // below with an empty object, and throw "requires payload with width
-      // and height" even though both were supplied, just JSON-encoded.
+      // keeps '{"width":390,"height":844}' from falling through
+      // parsePayload's literal-wrap fallback, landing in the
+      // (p.viewport || {}) branch below with an empty object, and throwing
+      // "requires payload with width and height" even though both were
+      // supplied, just JSON-encoded.
       const shapeHint = '{width,height,deviceScaleFactor?,mobile?}';
       const resolved = resolveStrictStructuredPayload(payload);
       if (resolved.errorDetail) {
@@ -958,6 +1059,7 @@ file_upload: {"action": "file_upload", "selector": "#upload", "payload": {"files
 extract: {"action": "extract", "selector": ".price", "payload": {"format": "text"}}
 extract: {"action": "extract", "payload": {"format": "markdown"}} → whole page
 attr: {"action": "attr", "selector": "a", "payload": {"attr": "href"}}
+set_attr: {"action": "set_attr", "selector": "#code-input-0", "payload": {"name": "data-sen-nonce", "value": "opaque-nonce"}} → write-only; name must be exactly "data-sen-nonce" or "data-sen-secret" (nothing else, not even other data-*/aria-* names); works even while a data-sen-secret element is on the page (eval does not). Use name="data-sen-secret" to MARK a secret element (TOTP/2FA seeds and other secrets with no distinctive shape) as soon as the action that revealed it returns, before any other action on that page. Marking only affects later actions: capture files already written (typically that revealing action's NNN-*.html/.md) keep the value and are not deleted.
 screenshot: {"action": "screenshot", "payload": "filename.png"}
 screenshot: {"action": "screenshot", "payload": {"path": "file.png", "fullpage": true}}
 
@@ -1029,7 +1131,7 @@ Files use sequential prefixes: 001-navigate, 002-click, etc.
 Prefer reading these files to using 'extract' or 'screenshot' whenever possible.
 
 ## Credential-Shaped Pages
-If a page shows credential-shaped content (Slack/GitHub/1Password tokens, otpauth:// seeds, or any element with a data-sen-secret attribute), the action writes no capture files and returns only metadata with a "⚠️ Page shows credential-shaped content" line. All output has such values replaced by [REDACTED credential-shaped]; screenshot refuses. Use a credential broker to capture secrets; use eval only for value-blind queries. SUPERPOWERS_CHROME_ALLOW_CREDENTIAL_CAPTURE=1 disables this.
+If a page shows credential-shaped content (Slack/GitHub/1Password tokens, otpauth:// seeds, or any element with a data-sen-secret attribute), auto-capture for that action writes no files and returns only metadata with a "⚠️ Page shows credential-shaped content" line; screenshot refuses; token-shaped substrings (not the data-sen-secret marker itself, which has no substring to redact) are replaced by [REDACTED credential-shaped] everywhere else. eval refuses outright — with no value-blind exception — while ANY element on the page carries data-sen-secret, checked live at the moment of the call (a point check that does not remember a page was ever marked). extract and attr instead read off an inert clone with data-sen-secret content removed, or refuse if the resolved element OR ANY ANCESTOR of it (through shadow-root hosts) is marked; markup inside an iframe's srcdoc attribute is not stripped (extract html and attr srcdoc return it verbatim). The marker scan covers the top document, open shadow roots and same-origin iframe/frame/object/embed. set_attr is a separate write-only action (see above) that is NOT gated by any of this — it takes no caller JavaScript; its ok/no-match/refused responses act as a limited prefix oracle over page content — except that it refuses to touch an element already marked data-sen-secret unless the write IS the (re-)marking itself. Its attribute name must be exactly "data-sen-nonce" or "data-sen-secret" (no other data-*/aria-* name — arbitrary data-*/aria-* attributes are routinely wired to page behavior, e.g. data-action/aria-controls, so they are not assumed inert): use "data-sen-nonce" to write a broker nonce onto an unmarked sibling element on a page that already has a captured secret, and "data-sen-secret" to mark every matching element (hidden duplicates included) yourself as soon as the action that revealed it returns — capture files written before the mark keep the value and are not deleted. Marking only ever tightens what eval/extract/attr will refuse, never loosens or removes an existing mark. Use a credential broker to capture secret values. THIS IS NOT A SECURITY BOUNDARY: eval runs in the same JS realm as a marked element and can already read/fetch/stash its value or erase the marker itself; don't mark then eval on a page expecting the value to stay contained. SUPERPOWERS_CHROME_ALLOW_CREDENTIAL_CAPTURE=1 disables all of this.
 
 ## Selectors
 CSS: "button.submit", "#email", ".form input[name=password]"
@@ -1086,7 +1188,7 @@ Every DOM action (navigate, click, type, select, eval) auto-captures to the sess
 - {prefix}-console.txt — browser console messages
 
 Prefer reading these files to using 'extract' or 'screenshot' whenever possible.
-Pages showing credential-shaped content (tokens, 2FA seeds) are never captured, and such values are redacted from all output.
+Actions on a page showing token-shaped content (Slack/GitHub/1Password tokens, otpauth:// URIs) or any data-sen-secret element write no capture files, token-shaped values are redacted from all output, and eval refuses outright while any data-sen-secret element is on the page — an accident guard against a cooperating agent's own reads, not a security boundary. A secret with no distinctive shape (bare TOTP seed, backup code) is captured like any other text until it is marked: mark it with 'set_attr' name 'data-sen-secret' as soon as the action that revealed it returns, before any other action on that page. Capture files written before the mark keep the value and are not deleted, so don't read them back. 'set_attr' is a write-only setter for exactly 'data-sen-nonce' or 'data-sen-secret' that is exempt from that eval restriction (see 'help' for details) — use it, not eval, to write onto the page while a secret is present.
 
 Schema: 4 parameters — action, selector (CSS/XPath or null), payload (string or object), timeout (ms).
 selector targets a DOM element (null/omit for navigation, eval, tab management, etc.).

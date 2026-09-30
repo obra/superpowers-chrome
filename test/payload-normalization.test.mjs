@@ -276,13 +276,11 @@ describe('scroll / drag_drop: shared JSON-object decoding primitive', () => {
 });
 
 // ---------------------------------------------------------------------------
-// scroll: the empty-error-detail bug (obra's review nit on PR #43). A
-// string payload that's valid JSON but not a direction keyword or a
-// {deltaX,deltaY} object (e.g. '[1,2]', '5') used to reach the throw with
-// an EMPTY detail — the JSON.parse-and-discard probe in the old inline
-// code succeeded silently instead of explaining the shape mismatch, unlike
+// scroll: no empty error detail. A string payload that's valid JSON but
+// not a direction keyword or a {deltaX,deltaY} object (e.g. '[1,2]', '5')
+// must reach the throw with a detail explaining the shape mismatch, like
 // every other structured action's three-way (missing / unparsable /
-// wrong-shape) error split.
+// wrong-shape) error split, not an EMPTY one.
 // ---------------------------------------------------------------------------
 
 describe('scroll: honest detail when a string payload is JSON but not a usable shape', () => {
@@ -308,11 +306,10 @@ describe('scroll: honest detail when a string payload is JSON but not a usable s
 
 // ---------------------------------------------------------------------------
 // get_console_messages: a bare epoch-ms string must work like {since:n}.
-// The Postel gap this PR exists to close, and the same honesty class as the
-// misleading error: a payload of '1785900000000' used to be wrapped as the
-// STRING {since:'1785900000000'}, fail the handler's typeof-number check,
-// and be dropped without a word — returning every message as if no filter
-// had been asked for.
+// Otherwise a payload of '1785900000000' would be wrapped as the STRING
+// {since:'1785900000000'}, fail the handler's typeof-number check, and be
+// dropped without a word — returning every message as if no filter had
+// been asked for.
 // ---------------------------------------------------------------------------
 
 describe('get_console_messages: bare numeric string since (the Postel gap)', () => {

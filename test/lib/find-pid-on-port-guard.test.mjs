@@ -4,15 +4,13 @@ import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
 
-// Regression tests for the port handling in findPidOnPort:
-//  - d205cbd ("Normalize port to a number in findPidOnPort") added the
-//    Number() + integer/range guard so hostile strings are rejected before
-//    any external command runs;
-//  - the follow-up execFileSync conversion removed the shell entirely:
-//    lsof/netstat are invoked argv-form, so even a bypassed guard could not
-//    smuggle metacharacters into a shell. The win32 `netstat | findstr`
-//    pipeline became netstat + a JS filter matching the local-address column
-//    on an exact `:PORT` suffix.
+// Tests for the port handling in findPidOnPort:
+//  - a Number() + integer/range guard rejects hostile strings before any
+//    external command runs;
+//  - execFileSync keeps the shell out entirely: lsof/netstat are invoked
+//    argv-form, so even a bypassed guard could not smuggle metacharacters
+//    into a shell. On win32, netstat output goes through a JS filter
+//    matching the local-address column on an exact `:PORT` suffix.
 // These tests pin:
 //   1. injection-shaped and malformed inputs are rejected (null) before ANY
 //      process is spawned — the exec stub must never be called;

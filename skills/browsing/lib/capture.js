@@ -6,7 +6,8 @@ const { throwIfExceptionDetails } = require('./cdp-utils');
 const markdownScript = require('./page-scripts/markdown');
 const domSummaryScript = require('./page-scripts/dom-summary');
 const renderedTextScript = require('./page-scripts/rendered-text');
-const { containsCredentialShaped, credentialCaptureAllowed } = require('./credential-guard');
+const { containsCredentialShaped, credentialCaptureAllowed, secretMarkerRefusal } = require('./credential-guard');
+const { pageHasSecretMarker } = require('./secret-marker');
 
 // Only these DOM-summary lines are returned for a suppressed capture: they
 // are element counts and landmark structure. The title and headings lines
@@ -161,11 +162,21 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
   }
 
   async function pageContainsCredentialShaped(tabIndexOrWsUrl) {
-    const [html, renderedText] = await Promise.all([
+    const [html, renderedText, ps] = await Promise.all([
       getHtml(tabIndexOrWsUrl),
-      getRenderedText(tabIndexOrWsUrl)
+      getRenderedText(tabIndexOrWsUrl),
+      getPageSession(tabIndexOrWsUrl),
     ]);
-    return containsCredentialShaped(html) || containsCredentialShaped(renderedText);
+    // The HTML-string regex check (containsCredentialShaped) alone is not
+    // enough: it requires the marker's tag to be in the serialized
+    // top-document outerHTML. A marker inside an open shadow root or a
+    // same-origin iframe is invisible there, so a screenshot of that page
+    // would legibly show the seed. OR in the live-DOM check
+    // (secret-marker.js) - the same one eval/extract/attr use - which
+    // recurses into both.
+    return containsCredentialShaped(html)
+      || containsCredentialShaped(renderedText)
+      || (!credentialCaptureAllowed() && await pageHasSecretMarker(ps));
   }
 
   // A screenshot that never leaves an image of a credential-shaped page on
@@ -542,6 +553,40 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
     return run();
   }
 
+  // set_attr (see lib/set-attribute.js for the guard rationale): a
+  // write-only action, so its post-action capture is the
+  // same single post-capture click/select use, gated by the SAME
+  // credential-shape suppression as every other *WithCapture wrapper
+  // (mustSuppress inside capturePageArtifacts). It is deliberately NOT
+  // additionally gated behind the page-wide secret-marker check eval
+  // uses — actions.setAttribute (lib/set-attribute.js) already refuses on
+  // its own if the TARGET element is marked, which is the only read this
+  // action could possibly need to make.
+  async function setAttributeWithCapture(tabIndexOrWsUrl, selector, name, value) {
+    const ps = await getPageSession(tabIndexOrWsUrl);
+    const run = async () => {
+      await actions.setAttribute(tabIndexOrWsUrl, selector, name, value);
+      const pinnedTab = { id: ps.targetId };
+      const artifacts = await capturePageArtifacts(pinnedTab, 'set_attr');
+      return {
+        action: 'set_attr',
+        selector,
+        name,
+        pageSize: artifacts.pageSize,
+        capturePrefix: artifacts.capturePrefix,
+        sessionDir: artifacts.sessionDir,
+        files: artifacts.files,
+        domSummary: artifacts.domSummary,
+        credentialSuppressed: artifacts.credentialSuppressed,
+        consoleLog: [] // Placeholder
+      };
+    };
+    if (dialogs && dialogs.withDialogAwarenessForSession) {
+      return dialogs.withDialogAwarenessForSession('set_attr', ps, { selector }, run);
+    }
+    return run();
+  }
+
   async function fillWithCapture(tabIndexOrWsUrl, selector, value) {
     const ps = await getPageSession(tabIndexOrWsUrl);
     const pinnedTab = { id: ps.targetId };
@@ -592,10 +637,38 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
     return run();
   }
 
+  // eval runs arbitrary caller JS against the live page and hands back
+  // whatever it returns, verbatim — there is no result shape to inspect
+  // and redact after the fact the way a plain-text extraction can be
+  // scanned. So this checks BEFORE running the expression at all and
+  // refuses outright when the marker is present, rather than trying to
+  // run the expression and filter its result: a value-blind expression
+  // (`.textContent.length`) is fine for a token-shaped secret (whose shape
+  // lets the final redaction pass confirm nothing leaked) but not for a
+  // data-sen-secret page, which by definition has no shape to verify
+  // against. Refusing is also what keeps this from ever mutating the live
+  // DOM to get a safe answer: the expression simply never runs.
+  //
+  // Deliberately a point check, not a boundary: this is the ONLY marker
+  // check eval gets — no re-check after the expression runs, and nothing
+  // sticky remembered across calls.
+  // Gating eval any harder can't stop a deliberately adversarial
+  // expression: eval runs in the same JS realm as the secret, so an
+  // expression that reveals the marker mid-run (click a button, await a
+  // timer, THEN read it) always finds a gap a post-hoc check can't close
+  // (throw the value instead of returning it, console.log it, alert() it,
+  // or erase the marker with removeAttribute as its last synchronous
+  // step). This refusal exists only to catch the ACCIDENTAL case: you
+  // already marked a secret and then ran eval on that same page. Don't
+  // mark a page and then eval on it if you need eval to be trustworthy —
+  // it never is, on any page, marked or not.
   async function evaluateWithCapture(tabIndexOrWsUrl, expression) {
     const ps = await getPageSession(tabIndexOrWsUrl);
     const pinnedTab = { id: ps.targetId };
     const run = async () => {
+      if (!credentialCaptureAllowed() && await pageHasSecretMarker(ps)) {
+        throw new Error(secretMarkerRefusal('eval'));
+      }
       const result = await actions.evaluate(tabIndexOrWsUrl, expression);
       const artifacts = await capturePageArtifacts(pinnedTab, 'eval');
       return {
@@ -617,6 +690,21 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
     return run();
   }
 
+  // Whole-page rendered text for extract's format='text' with no selector.
+  // Uses innerText (see page-scripts/rendered-text.js on why: it collapses
+  // display:none, joins inline runs the way a screenshot would show them),
+  // which only reads right off the live, laid-out DOM — unlike extractText
+  // and getSanitizedHtml (lib/extraction.js), there is no detached-clone
+  // trick available here, since a clone has no layout for innerText to
+  // read. So this refuses outright on a marker instead, the same as eval.
+  async function extractPageText(tabIndexOrWsUrl) {
+    const ps = await getPageSession(tabIndexOrWsUrl);
+    if (!credentialCaptureAllowed() && await pageHasSecretMarker(ps)) {
+      throw new Error(secretMarkerRefusal('extract'));
+    }
+    return actions.evaluate(tabIndexOrWsUrl, 'document.body.innerText');
+  }
+
   return {
     initializeSession,
     cleanupSession,
@@ -632,6 +720,8 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
     fillWithCapture,
     selectOptionWithCapture,
     evaluateWithCapture,
+    extractPageText,
+    setAttributeWithCapture,
   };
 }
 
