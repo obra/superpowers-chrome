@@ -89,6 +89,15 @@ export function formatActionResponse(actionResult, actionDescription) {
     return response.join('\n');
 }
 /**
+ * Describe an eval call. On the midFlight wrapper (the eval opened a
+ * dialog) the evaluated value lives on the wrapped actionResult, not the
+ * top level.
+ */
+export function formatEvalDescription(expression, evalResult) {
+    const value = evalResult.midFlight ? evalResult.actionResult?.result : evalResult.result;
+    return `Evaluated: ${expression}\nResult: ${value}`;
+}
+/**
  * Format capture response with DOM diff information.
  * When capture is null (action opened a dialog), returns dialog info instead.
  */

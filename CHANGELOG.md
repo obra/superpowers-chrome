@@ -6,9 +6,10 @@ All notable changes to the superpowers-chrome MCP project.
 
 ### Fixed
 - `formatActionResponse` (used by `click`, `select` and `eval`) ignored the `midFlight` result shape that `withDialogAwarenessForSession` returns when the action itself opens a native dialog (`{ midFlight, actionResult, dialog, artifacts }`). It read `url`, `pageSize` and `capturePrefix` off the top level, where they don't exist on that shape, so the agent got `Current URL: unknown`, an empty size and a `Files: ???.html, …` line instead of the dialog text and the `dialog::accept`/`dialog::dismiss` instructions — and, when the dialog message was credential-shaped, the `⚠️ … suppressed` notice never appeared either (#53). `formatActionResponse` now renders a midFlight result the same way `formatCaptureResponse`'s null-capture dialog branch already does. Follow-up from #51; doesn't leak (the final `redactUnlessAllowed` pass still redacts the response text either way).
+- On that same midFlight shape, `eval` reported `Result: undefined` because it read the value off the wrapper instead of the wrapped action result. It now shows the evaluated value.
 
 ### Tests
-- `test/response-format-midflight.test.mjs` (new): a midFlight result renders the dialog markdown and `dialog::accept` instructions instead of the capture-shaped fallback, surfaces the suppressed-credential notice when the wrapped action result carries one, falls back to `Dialog opened: <kind>` only when no artifacts are supplied, and leaves the normal (non-midFlight) capture path unchanged.
+- `test/response-format-midflight.test.mjs` (new): a midFlight result renders the dialog markdown and `dialog::accept` instructions instead of the capture-shaped fallback, surfaces the suppressed-credential notice when the wrapped action result carries one, falls back to `Dialog opened: <kind>` only when no artifacts are supplied, and leaves the normal (non-midFlight) capture path unchanged. `formatEvalDescription` reads the eval value from the wrapped action result on a midFlight result.
 
 ## [3.0.7] - 2026-09-25 - Native dialog text no longer copied to disk
 

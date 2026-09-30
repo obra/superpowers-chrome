@@ -28,7 +28,7 @@ import { createRequire } from 'node:module';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
-const { formatActionResponse } = await import(path.join(__dirname, '..', 'mcp', 'dist', 'response-format.js'));
+const { formatActionResponse, formatEvalDescription } = await import(path.join(__dirname, '..', 'mcp', 'dist', 'response-format.js'));
 const { CREDENTIAL_SUPPRESSED_NOTICE } = require(
   path.join(__dirname, '..', 'skills', 'browsing', 'lib', 'credential-guard.js')
 );
@@ -59,6 +59,7 @@ describe('formatActionResponse: midFlight wrapper (click/select/eval opened a di
     assert.ok(text.includes('Dialog is now open'), `dialog-open framing missing from: ${text}`);
     assert.ok(!text.includes('Current URL: unknown'), `regressed to the capture-shaped fallback: ${text}`);
     assert.ok(!text.includes('???.html'), `regressed to the capture-shaped fallback: ${text}`);
+    assert.ok(!text.includes('Dialog opened:'), `fallback line appended despite artifacts: ${text}`);
   });
 
   it('surfaces the credential-suppressed notice when the wrapped actionResult carries it', () => {
@@ -97,5 +98,22 @@ describe('formatActionResponse: midFlight wrapper (click/select/eval opened a di
     );
     assert.ok(text.includes('Current URL: https://example.test/'));
     assert.ok(text.includes('Files: click-1.html'));
+  });
+});
+
+describe('formatEvalDescription: the eval result survives the midFlight wrapper', () => {
+  it('reads the value from the wrapped actionResult when the eval opened a dialog', () => {
+    const text = formatEvalDescription('setTimeout(() => alert("x"), 0), 42', {
+      midFlight: true,
+      actionResult: { result: 42 },
+      dialog: { kind: 'alert' },
+      artifacts: { markdown: DIALOG_MARKDOWN },
+    });
+    assert.equal(text, 'Evaluated: setTimeout(() => alert("x"), 0), 42\nResult: 42');
+  });
+
+  it('reads the value from the top level on the normal capture path', () => {
+    const text = formatEvalDescription('1 + 1', { result: 2, url: 'https://example.test/' });
+    assert.equal(text, 'Evaluated: 1 + 1\nResult: 2');
   });
 });

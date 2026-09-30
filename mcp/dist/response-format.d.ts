@@ -26,6 +26,12 @@ export declare function formatCaptureFiles(actionResult: any): string[];
  */
 export declare function formatActionResponse(actionResult: any, actionDescription: string): string;
 /**
+ * Describe an eval call. On the midFlight wrapper (the eval opened a
+ * dialog) the evaluated value lives on the wrapped actionResult, not the
+ * top level.
+ */
+export declare function formatEvalDescription(expression: string, evalResult: any): string;
+/**
  * Format capture response with DOM diff information.
  * When capture is null (action opened a dialog), returns dialog info instead.
  */

@@ -6,5 +6,5 @@
  * Auto-starts Chrome when needed. Uses chrome-ws-lib for direct CDP access.
  */
 export { parsePayload, resolveStrictStructuredPayload, tryParseJsonObject, tryParseCoords, describeUnusableScrollPayload, resolveConsoleSince, tryParseIntegerValue, PAYLOAD_SPECS } from "./payload.js";
-export { formatDialogRefusal, formatCaptureFiles, formatActionResponse, formatCaptureResponse, redactUnlessAllowed } from "./response-format.js";
+export { formatDialogRefusal, formatCaptureFiles, formatActionResponse, formatCaptureResponse, formatEvalDescription, redactUnlessAllowed } from "./response-format.js";
 //# sourceMappingURL=index.d.ts.map
