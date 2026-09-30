@@ -10,9 +10,11 @@
  * to stamp a broker nonce onto an *unmarked* sibling digit-input element
  * right after capturing and marking the TOTP seed displayed on that same
  * now-marked page. set_attr is scoped narrowly enough -
- * no read capability at all, restricted target element, a two-name
- * allowlist - that it doesn't need the secret-marker/eval guard: there is
- * nothing here for it to leak.
+ * no caller JavaScript, restricted target element, a two-name
+ * allowlist - that it doesn't need the secret-marker/eval guard. Its only
+ * output is ok / "no element matched" / "refused: target element is
+ * marked", which acts as a limited prefix oracle over page content for a
+ * caller who varies the selector; that is known and accepted.
  *
  * PRI-3256 / obra#52 follow-up: sen-core-v2 has no path to WRITE the
  * data-sen-secret marker itself, so the guard #52 hardens never engages -
@@ -24,8 +26,9 @@
  *   - Marking only ever TIGHTENS what eval/extract/attr will refuse; it
  *     can never loosen anything, so it needs none of the read-side
  *     guard's care.
- *   - set_attr never reads (see below), so letting it write one more
- *     boolean-ish attribute name adds no new read capability.
+ *   - set_attr returns no page content (see below), so letting it write
+ *     one more boolean-ish attribute name adds no new read capability
+ *     beyond the prefix oracle above.
  *   - It reuses the existing name-allowlist and "target already marked"
  *     mechanics instead of adding a second action with its own surface
  *     (a dedicated mark-secret action was the alternative; see the

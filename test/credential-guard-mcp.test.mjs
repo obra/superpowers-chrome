@@ -554,6 +554,19 @@ describe('data-sen-secret marker with no token-shaped content (real Chrome)', { 
     assert.ok(!text.includes('<body'), text);
   });
 
+  // obra#52 round 4, finding 4: the suppression notice and the screenshot
+  // refusal used to recommend eval for value-blind queries even on a
+  // marked page, where the very next eval is refused.
+  it('the suppression notice and screenshot refusal on a marked page say eval refuses there', async () => {
+    const nav = await server.call({ action: 'navigate', payload: MARKER_TEXT_PAGE });
+    assert.ok(nav.text.includes(NOTICE), nav.text);
+    assert.match(nav.text, /eval refuses while any element is marked data-sen-secret/, nav.text);
+
+    const shot = await server.call({ action: 'screenshot', payload: path.join(server.xdg, 'marked.png') });
+    assert.equal(shot.isError, true, shot.text);
+    assert.match(shot.text, /eval refuses while any element is marked data-sen-secret/, shot.text);
+  });
+
   it('attr on the marked element refuses, even for an attribute that is not the marker itself', async () => {
     await server.call({ action: 'navigate', payload: MARKER_INPUT_PAGE });
     const { text, isError } = await server.call({ action: 'attr', selector: '#secret', payload: 'value' });

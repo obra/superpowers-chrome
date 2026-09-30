@@ -72,9 +72,16 @@ function credentialCaptureAllowed() {
   return process.env.SUPERPOWERS_CHROME_ALLOW_CREDENTIAL_CAPTURE === '1';
 }
 
+// Suppression can come from a token shape (eval still runs, redacted) or
+// from a data-sen-secret marker (eval refuses outright), and callers don't
+// know which, so the advice has to be true for both.
+const CREDENTIAL_ADVICE =
+  'Use the credential broker to capture values. ' +
+  'eval refuses while any element is marked data-sen-secret; otherwise use it only for value-blind queries.';
+
 const CREDENTIAL_SUPPRESSED_NOTICE =
   '⚠️ Page shows credential-shaped content; auto-capture and DOM output suppressed. ' +
-  'Use the credential broker to capture values; use eval only for value-blind queries.';
+  CREDENTIAL_ADVICE;
 
 // eval and extract/attr cannot tell whether their result would carry a
 // data-sen-secret element's value forward — by the time either produces
@@ -97,6 +104,7 @@ module.exports = {
   containsCredentialShaped,
   redactCredentialShaped,
   credentialCaptureAllowed,
+  CREDENTIAL_ADVICE,
   CREDENTIAL_SUPPRESSED_NOTICE,
   secretMarkerRefusal,
   REDACTION,
