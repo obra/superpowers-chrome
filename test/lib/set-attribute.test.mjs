@@ -157,6 +157,25 @@ describe('setAttribute (real DOM)', () => {
     assert.equal(window.document.getElementById('b').hasAttribute('data-sen-secret'), true);
   });
 
+  // obra#52 round 4, finding 5: the allowlist check ignores case, so an
+  // upper-case spelling must take the same mark-every-match / re-mark-is-
+  // a-no-op path as the lowercase one, not the single-element write path.
+  it('an upper-case DATA-SEN-SECRET marks every match and re-marking is a no-op', async () => {
+    const { setAttribute, window } = setupJsdom(
+      '<code id="decoy" class="box" style="display:none">JBSWY3DPDECOY</code>' +
+      '<code id="real" class="box">JBSWY3DPREAL</code>'
+    );
+    window.document.getElementById('real').getBoundingClientRect = () => (
+      { x: 0, y: 0, width: 100, height: 20, top: 0, left: 0, right: 100, bottom: 20 }
+    );
+
+    await setAttribute(0, '.box', 'DATA-SEN-SECRET', '');
+    assert.equal(window.document.getElementById('real').hasAttribute('data-sen-secret'), true);
+    assert.equal(window.document.getElementById('decoy').hasAttribute('data-sen-secret'), true);
+
+    await setAttribute(0, '.box', 'Data-Sen-Secret', '');
+  });
+
   // data-sen-nonce is a real value write with exactly one legitimate
   // target, so (per the module doc's "resolve selectors the same way
   // extract does") it resolves to the first VISIBLE match rather than

@@ -65,6 +65,10 @@ const MARKER_INPUT_PAGE = dataUrl(
   `<input id="secret" data-sen-secret value="${BASE32_SEED}">` +
   `<input id="control" value="${CONTROL_VALUE}">`
 );
+// Marks the root of whole-page extraction itself, not a descendant of it.
+const MARKER_BODY_PAGE = dataUrl(
+  `<title>Marked body page</title><body data-sen-secret><p>${BASE32_SEED}</p></body>`
+);
 
 // set_attr fixtures (obra#50 follow-up: split-digit TOTP nonce write).
 // PRIOR_NONCE stands in for whatever value a broker nonce field might
@@ -527,6 +531,29 @@ describe('data-sen-secret marker with no token-shaped content (real Chrome)', { 
     assert.ok(text.includes(CONTROL_VALUE), text);
   });
 
+  // obra#52 round 4, finding 2: stripping marked DESCENDANTS of <body>
+  // leaves the seed in place when <body> itself carries the marker, so
+  // whole-page extraction has to check the root too. markdown and text
+  // refuse; html clones documentElement, where <body> is an ordinary
+  // marked descendant and is stripped like any other.
+  for (const format of ['markdown', 'text']) {
+    it(`whole-page extract ${format} refuses when <body> itself carries the marker`, async () => {
+      await server.call({ action: 'navigate', payload: MARKER_BODY_PAGE });
+      const { text, isError } = await server.call({ action: 'extract', payload: format });
+      assert.equal(isError, true, text);
+      assert.match(text, /extract refused.*data-sen-secret/i);
+      assert.ok(!text.includes(BASE32_SEED), text);
+    });
+  }
+
+  it('whole-page extract html strips a marked <body> and returns no seed', async () => {
+    await server.call({ action: 'navigate', payload: MARKER_BODY_PAGE });
+    const { text, isError } = await server.call({ action: 'extract', payload: 'html' });
+    assert.equal(isError, false, text);
+    assert.ok(!text.includes(BASE32_SEED), text);
+    assert.ok(!text.includes('<body'), text);
+  });
+
   it('attr on the marked element refuses, even for an attribute that is not the marker itself', async () => {
     await server.call({ action: 'navigate', payload: MARKER_INPUT_PAGE });
     const { text, isError } = await server.call({ action: 'attr', selector: '#secret', payload: 'value' });
@@ -762,7 +789,7 @@ describe('extract markdown resolves relative href against the live page (real Ch
     server = await startServer();
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'href-regress-'));
     const file = path.join(dir, 'page.html');
-    fs.writeFileSync(file, '<title>Href page</title><a href="/relative/path">Link text</a>');
+    fs.writeFileSync(file, '<title>Href page</title><a href="/relative/path">Link text</a><a href="">Empty link</a>');
     await server.call({ action: 'navigate', payload: `file://${file}` });
   });
   after(async () => {
@@ -776,58 +803,72 @@ describe('extract markdown resolves relative href against the live page (real Ch
     assert.match(text, /\[Link text\]\(file:\/\/\/relative\/path\)/, text);
     assert.ok(!text.includes('(/relative/path)'), `href must not be left unresolved: ${text}`);
   });
+
+  it('resolves an empty href to the page URL, the way el.href does', async () => {
+    const { text, isError } = await server.call({ action: 'extract', payload: 'markdown' });
+    assert.equal(isError, false, text);
+    const pageUrl = `file://${path.join(dir, 'page.html')}`;
+    assert.ok(text.includes(`[Empty link](${pageUrl})`), text);
+  });
 });
 
 // obra#52 review round 3, finding 6 / Jesse's scoped-subset decision, item
 // 2: the live marker scan (HAS_SECRET_MARKER_SCRIPT) only descended into
-// IFRAME/FRAME, so a marker inside a same-origin OBJECT's embedded HTML
-// document was invisible to eval's point check AND to the screenshot/
-// capture guard, even though the top frame can read `obj.contentDocument`
-// directly. Real file:// pages (not data: URLs -- object/embed same-
-// origin access needs a real hierarchical origin) so this proves the fix
-// against actual browser same-origin semantics, not just the jsdom stub
-// in test/lib/secret-marker.test.mjs.
+// IFRAME/FRAME, so a marker inside a same-origin OBJECT or EMBED was
+// invisible to eval's point check AND to the screenshot/capture guard,
+// even though the top frame can read the embedded document directly.
+//
+// In Chrome, OBJECT gets a contentDocument for both text/html and SVG;
+// EMBED gets none, and getSVGDocument() only covers SVG. A same-origin
+// EMBED of text/html is reachable only through window.frames (round 4,
+// finding 1), so each tag/content-type pair gets its own page here: a
+// shared page would let one tag's scan mask a gap in the other's.
+//
+// Real file:// pages (not data: URLs -- object/embed same-origin access
+// needs a real hierarchical origin), with --allow-file-access-from-files
+// so a file:// page can load a file:// subresource at all.
 describe('eval and screenshot see a marker inside a same-origin OBJECT/EMBED (real Chrome)', { skip: !CHROME_AVAILABLE && 'Chrome not installed' }, () => {
   let server;
   let dir;
+  const EMBED_PAGES = {
+    'OBJECT text/html': '<object type="text/html" data="inner.html" width="50" height="50"></object>',
+    'EMBED text/html': '<embed type="text/html" src="inner.html" width="50" height="50">',
+    'OBJECT SVG': '<object type="image/svg+xml" data="inner.svg" width="50" height="50"></object>',
+    'EMBED SVG': '<embed type="image/svg+xml" src="inner.svg" width="50" height="50">',
+  };
 
   before(async () => {
-    // OBJECT/EMBED only get a real contentDocument/getSVGDocument for an
-    // embedded SVG document (not for type="text/html", which no current
-    // browser treats as a nested browsing context the way old IE did),
-    // and headless Chrome needs --allow-file-access-from-files for a
-    // file:// page to load a file:// subresource at all.
     server = await startServer({ CHROME_EXTRA_ARGS: '--allow-file-access-from-files' });
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'object-embed-'));
     fs.writeFileSync(
       path.join(dir, 'inner.svg'),
       `<svg xmlns="http://www.w3.org/2000/svg"><text data-sen-secret="">${BASE32_SEED}</text></svg>`
     );
-    fs.writeFileSync(
-      path.join(dir, 'outer.html'),
-      '<title>Object test</title>' +
-      '<object id="obj" type="image/svg+xml" data="inner.svg" width="50" height="50"></object>' +
-      '<embed id="emb" type="image/svg+xml" src="inner.svg" width="50" height="50">'
-    );
-    await server.call({ action: 'navigate', payload: `file://${path.join(dir, 'outer.html')}` });
+    fs.writeFileSync(path.join(dir, 'inner.html'), `<p data-sen-secret>${BASE32_SEED}</p>`);
   });
   after(async () => {
     await server?.stop();
     if (dir) fs.rmSync(dir, { recursive: true, force: true });
   });
 
-  it('eval refuses because the OBJECT/EMBED embed a marked SVG document, even though the top document has no marker itself', async () => {
-    const { text, isError } = await server.call({ action: 'eval', payload: '1 + 1' });
-    assert.equal(isError, true, text);
-    assert.match(text, /eval refused.*data-sen-secret/i);
-    assert.ok(!text.includes(BASE32_SEED), text);
-  });
+  for (const [label, tag] of Object.entries(EMBED_PAGES)) {
+    const file = `${label.replace(/\W+/g, '-')}.html`;
 
-  it('screenshot refuses / writes no file because of the marker inside the OBJECT/EMBED', async () => {
-    const shot = path.join(server.xdg, 'object-refused.png');
-    const { text, isError } = await server.call({ action: 'screenshot', payload: shot });
-    assert.equal(isError, true, text);
-    assert.match(text, /screenshot refused/i);
-    assert.equal(fs.existsSync(shot), false);
-  });
+    it(`${label}: eval refuses although the top document has no marker itself`, async () => {
+      fs.writeFileSync(path.join(dir, file), `<title>${label}</title>${tag}`);
+      await server.call({ action: 'navigate', payload: `file://${path.join(dir, file)}` });
+      const { text, isError } = await server.call({ action: 'eval', payload: '1 + 1' });
+      assert.equal(isError, true, text);
+      assert.match(text, /eval refused.*data-sen-secret/i);
+      assert.ok(!text.includes(BASE32_SEED), text);
+    });
+
+    it(`${label}: screenshot refuses and writes no file`, async () => {
+      const shot = path.join(server.xdg, `${file}.png`);
+      const { text, isError } = await server.call({ action: 'screenshot', payload: shot });
+      assert.equal(isError, true, text);
+      assert.match(text, /screenshot refused/i);
+      assert.equal(fs.existsSync(shot), false);
+    });
+  }
 });

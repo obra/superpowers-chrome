@@ -21592,7 +21592,7 @@ async function executeBrowserAction(params) {
                     /* obra#52 review round 3, finding 10: el.href (the resolved property, not getAttribute) resolves against the CLONE's own about:blank base once root has been cloned into an inert document -- see the TS comment above this template literal for the full explanation. Resolve against the LIVE top document's baseURI explicitly instead. */
                     var raw = el.getAttribute('href');
                     var resolved = raw;
-                    if (raw) {
+                    if (raw !== null) {
                       try { resolved = new URL(raw, document.baseURI).href; } catch (e) { resolved = raw; }
                     }
                     return '[' + text + '](' + (resolved || '') + ')';

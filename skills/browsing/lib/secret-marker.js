@@ -37,6 +37,17 @@
  * `getSVGDocument()` covers either tag embedding SVG. Both getters can
  * throw or return null for a cross-origin or non-document embed, which is
  * exactly the cases this must not descend into anyway.
+ *
+ * A same-origin EMBED of text/html has neither: Chrome gives EMBED no
+ * contentDocument, and getSVGDocument() is null for HTML, yet
+ * `frames[i].document` still reads it (obra#52 review round 4, finding
+ * 1). So the last fallback looks the element up in its owner window's
+ * `frames` by `frameElement` and reads that frame's document. A
+ * cross-origin frame throws on `frameElement`/`document`, so this still
+ * only descends where the top frame could read the child's DOM anyway.
+ * Recursion into deeper frames comes from hasMarker scanning the
+ * embedded document's own elements. Not covered: an EMBED of text/html
+ * inside a shadow root, whose frame `window.frames` does not list.
  */
 const { throwIfExceptionDetails } = require('./cdp-utils');
 const { MARKER_ATTR } = require('./credential-guard');
@@ -54,6 +65,13 @@ const HAS_SECRET_MARKER_SCRIPT = `
           if (svgDoc) return svgDoc;
         }
       } catch (_e) { /* cross-origin, or not embedding an SVG document */ }
+      const win = el.ownerDocument && el.ownerDocument.defaultView;
+      if (!win) return null;
+      for (let i = 0; i < win.frames.length; i++) {
+        try {
+          if (win.frames[i].frameElement === el) return win.frames[i].document;
+        } catch (_e) { /* cross-origin frame: its document is unreadable from here */ }
+      }
       return null;
     };
     const hasMarker = (root) => {

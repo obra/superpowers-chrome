@@ -151,6 +151,11 @@ function attachSetAttribute({ getPageSession }) {
         `(only ${[...ALLOWED_ATTRIBUTE_NAMES].join(' or ')} are writable)`
       );
     }
+    // HTML attribute names are case-insensitive, and the allowlist check
+    // above ignores case, so normalize once here: the page-side function
+    // compares against MARKER exactly, and an upper-case spelling must take
+    // the mark-every-match path, not the single-element write path.
+    const attributeName = name.toLowerCase();
 
     const ps = await getPageSession(tabIndexOrWsUrl);
 
@@ -168,7 +173,7 @@ function attachSetAttribute({ getPageSession }) {
     const result = await ps.send('Runtime.callFunctionOn', {
       objectId: docResult.result.objectId,
       functionDeclaration: buildFunctionDeclaration(selector),
-      arguments: [{ value: name }, { value: String(value) }],
+      arguments: [{ value: attributeName }, { value: String(value) }],
       returnByValue: true,
     });
     throwIfExceptionDetails(result);
