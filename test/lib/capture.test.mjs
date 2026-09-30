@@ -17,8 +17,8 @@ function makePageSessionFake(sessionId = 'fake-session-id') {
     send: async (method, params) => {
       calls.push({ method, params });
       // False: none of these generic capture.js tests exercise a
-      // data-sen-secret page, so the live marker check (obra#50 follow-up)
-      // must say "absent" or evaluateWithCapture refuses before running
+      // data-sen-secret page, so the live marker check must say
+      // "absent" or evaluateWithCapture refuses before running
       // anything, same as it would on a real marked page.
       if (params.expression === HAS_SECRET_MARKER_SCRIPT) return { result: { value: false } };
       return { result: { value: 'fake' } };

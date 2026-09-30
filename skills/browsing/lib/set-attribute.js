@@ -1,12 +1,12 @@
 /**
  * set_attr: a write-only, name/value-restricted attribute setter.
  *
- * Why this exists (obra#50 follow-up): the eval fail-closed guard added in
- * capture.js's evaluateWithCapture refuses EVERY eval call once a page has
- * any data-sen-secret element, because eval can read anything - there is
- * no way to tell a value-blind expression from one that would leak the
- * secret. That is correct for eval, but it collaterally blocked a
- * legitimate write: an agent entering a split-digit one-time code needs
+ * Why this exists: the eval fail-closed guard in capture.js's
+ * evaluateWithCapture refuses EVERY eval call once a page has any
+ * data-sen-secret element, because eval can read anything - there is no
+ * way to tell a value-blind expression from one that would leak the
+ * secret. That is correct for eval, but it would also block a legitimate
+ * write: an agent entering a split-digit one-time code needs
  * to stamp a broker nonce onto an *unmarked* sibling digit-input element
  * right after capturing and marking the TOTP seed displayed on that same
  * now-marked page. set_attr is scoped narrowly enough -
@@ -16,30 +16,28 @@
  * marked", which acts as a limited prefix oracle over page content for a
  * caller who varies the selector; that is known and accepted.
  *
- * PRI-3256 / obra#52 follow-up: sen-core-v2 has no path to WRITE the
- * data-sen-secret marker itself, so the guard #52 hardens never engages -
- * nothing ever marks the seed in the first place. set_attr is the only
- * write surface an agent has on a marked-or-about-to-be-marked page, so it
- * is now also allowed to set exactly `data-sen-secret` (see MARKER_ATTR),
- * in addition to the pre-existing `data-sen-nonce`. This is deliberately
- * the smallest change that closes that gap:
+ * set_attr is also the write path for the data-sen-secret marker itself:
+ * callers need some way to WRITE the marker, or the marker guard never
+ * engages because nothing ever marks the seed. set_attr is the only write
+ * surface an agent has on a marked-or-about-to-be-marked page, so it may
+ * set exactly `data-sen-secret` (see MARKER_ATTR) as well as
+ * `data-sen-nonce`. This is deliberately the smallest surface that covers
+ * marking:
  *   - Marking only ever TIGHTENS what eval/extract/attr will refuse; it
  *     can never loosen anything, so it needs none of the read-side
  *     guard's care.
  *   - set_attr returns no page content (see below), so letting it write
  *     one more boolean-ish attribute name adds no new read capability
  *     beyond the prefix oracle above.
- *   - It reuses the existing name-allowlist and "target already marked"
- *     mechanics instead of adding a second action with its own surface
- *     (a dedicated mark-secret action was the alternative; see the
- *     sen-core-v2 PR this shipped with for why it lost).
+ *   - It reuses the name-allowlist and "target already marked" mechanics
+ *     instead of adding a second action (such as a dedicated mark-secret
+ *     action) with its own surface.
  *   - The "target already marked" refusal below is skipped specifically
  *     for name === MARKER_ATTR: marking an already-marked element is a
  *     no-op, not a bypass, and refusing it would just make the caller
  *     retry-with-a-different-approach for no security benefit.
  *
- * Element resolution (obra#52 review round 4 / Jesse's scoped-subset
- * decision, item 4: "resolve selectors the same way extract does"):
+ * Element resolution:
  *   - data-sen-nonce writes exactly ONE element, resolved the same way
  *     extract/click/type resolve a selector (lib/element-selector.js's
  *     getElementSelector: prefer the first VISIBLE match, fall back to
@@ -48,12 +46,11 @@
  *     picks the same one a human looking at the page would call "the"
  *     field.
  *   - data-sen-secret instead marks EVERY element the selector matches,
- *     hidden duplicates included (getElementSelectorAll). A round-3
- *     review finding: marking only the single resolved match left a
- *     hidden duplicate, or a hidden form input carrying the same value,
- *     fully readable by extract/attr even after the marker check ran.
- *     Marking is
- *     the whole guard's opt-in signal, not a value write - there is no
+ *     hidden duplicates included (getElementSelectorAll). Marking only
+ *     the single resolved match would leave a hidden duplicate, or a
+ *     hidden form input carrying the same value, fully readable by
+ *     extract/attr even after the marker check ran. Marking is the whole
+ *     guard's opt-in signal, not a value write - there is no
  *     "wrong element" failure mode to worry about the way there is for a
  *     real write, so the safe default is "mark anything this selector
  *     could mean," not "guess the one visible element and leave the rest."
@@ -94,16 +91,16 @@ const { throwIfExceptionDetails } = require('./cdp-utils');
 const { MARKER_ATTR } = require('./credential-guard');
 const { getElementSelector, getElementSelectorAll } = require('./element-selector');
 
-// The pre-existing writable name (stamping a credential-broker nonce
-// during a split-digit one-time-code entry flow, while the TOTP seed
-// captured earlier is still marked on the page) plus, as of PRI-3256,
-// MARKER_ATTR itself - not a data-*/aria-* prefix allowlist. Page JS and
-// frameworks routinely read arbitrary data-*/aria-* attributes and wire
-// them to behavior (data-action, data-href, aria-controls, and many more a
-// hostile page could invent), so "any data-*/aria-* name" is NOT
-// guaranteed inert the way it first looked - widening this to a third name
-// is a deliberate, separate change, not a regex tweak. Single constant, so
-// it stays easy to find and to audit if that widening is ever proposed.
+// The nonce name (stamping a credential-broker nonce during a split-digit
+// one-time-code entry flow, while the TOTP seed captured earlier is still
+// marked on the page) plus MARKER_ATTR itself - not a data-*/aria-* prefix
+// allowlist. Page JS and frameworks routinely read arbitrary data-*/aria-*
+// attributes and wire them to behavior (data-action, data-href,
+// aria-controls, and many more a hostile page could invent), so "any
+// data-*/aria-* name" is NOT guaranteed inert the way it first looked -
+// widening this to a third name is a deliberate, separate change, not a
+// regex tweak. Single constant, so it stays easy to find and to audit if
+// that widening is ever proposed.
 const NONCE_ATTRIBUTE_NAME = 'data-sen-nonce';
 const ALLOWED_ATTRIBUTE_NAMES = new Set([NONCE_ATTRIBUTE_NAME, MARKER_ATTR]);
 // Back-compat alias: existing callers/imports expect a single "the nonce

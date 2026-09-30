@@ -1,6 +1,6 @@
-// set_attr: name allowlist (data-sen-nonce, and, as of PRI-3256,
-// data-sen-secret) and the page-side refusal logic. Real-DOM (jsdom) for
-// the page-side function, the same pattern as test/lib/select-option.test.mjs.
+// set_attr: name allowlist (data-sen-nonce and data-sen-secret) and the
+// page-side refusal logic. Real-DOM (jsdom) for the page-side function, the
+// same pattern as test/lib/select-option.test.mjs.
 import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
 import { createRequire } from 'node:module';
@@ -21,9 +21,9 @@ describe('isAllowedAttributeName', () => {
     assert.equal(isAllowedAttributeName('data-sen-nonce'), true);
   });
 
-  // PRI-3256: set_attr is now also the write path for marking a secret
-  // element, since #52's guard never engages unless something writes
-  // data-sen-secret in the first place.
+  // set_attr is also the write path for marking a secret element, since
+  // the marker guard never engages unless something writes data-sen-secret
+  // in the first place.
   it('allows data-sen-secret', () => {
     assert.equal(isAllowedAttributeName('data-sen-secret'), true);
   });
@@ -88,7 +88,7 @@ describe('setAttribute (real DOM)', () => {
     );
   });
 
-  // PRI-3256: marking is the whole point of allowing this name, so writing
+  // Marking is the whole point of allowing this name, so writing
   // data-sen-secret must work even on an element that is ALREADY marked
   // (idempotent re-marking is not a bypass -- it's a no-op) and must not
   // require the caller to check first.
@@ -123,15 +123,10 @@ describe('setAttribute (real DOM)', () => {
     await assert.rejects(() => setAttribute(0, '#box0', 'value', 'evil'), /not allowed/);
   });
 
-  // obra#52 review round 3, finding 9 / Jesse's scoped-subset decision,
-  // item 4: marking must hit EVERY match of the selector, hidden
-  // duplicates included -- the round-2 behavior of marking only the one
-  // resolved (visible-preferred) element left a hidden duplicate, or a
-  // hidden form input carrying the same value, fully readable by
-  // extract/attr. This is the regression test: it fails (decoy stays
-  // unmarked) against the round-2 "resolve like click/type, refuse if
-  // ambiguous" behavior and against the pre-round-2 "first DOM match
-  // only" behavior alike, and passes only when every match gets marked.
+  // Marking must hit EVERY match of the selector, hidden duplicates
+  // included. Marking only one resolved (visible-preferred) element, or
+  // only the first DOM match, would leave a hidden duplicate, or a hidden
+  // form input carrying the same value, readable by extract/attr.
   it('marks EVERY match of the selector with data-sen-secret, hidden duplicates included', async () => {
     const { setAttribute, window } = setupJsdom(
       '<code id="decoy" class="secret-box" style="display:none">JBSWY3DPDECOY</code>' +
@@ -157,7 +152,7 @@ describe('setAttribute (real DOM)', () => {
     assert.equal(window.document.getElementById('b').hasAttribute('data-sen-secret'), true);
   });
 
-  // obra#52 round 4, finding 5: the allowlist check ignores case, so an
+  // The allowlist check ignores case, so an
   // upper-case spelling must take the same mark-every-match / re-mark-is-
   // a-no-op path as the lowercase one, not the single-element write path.
   it('an upper-case DATA-SEN-SECRET marks every match and re-marking is a no-op', async () => {

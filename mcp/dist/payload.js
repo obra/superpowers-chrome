@@ -251,7 +251,7 @@ export function describeUnusableScrollPayload(payload) {
  *
  * The object and array decodes go through the same primitive that backs
  * tryParseJsonObject(), so there is one implementation of "maybe-JSON
- * string -> shape" rather than the two idioms this module used to carry.
+ * string -> shape" rather than two separate idioms.
  * The primitive is called with trimBeforeParse=false here, preserving this
  * path's historical raw-JSON.parse semantics: a JSON string prefixed with
  * something JSON.parse rejects but String.trim() removes (a BOM, a

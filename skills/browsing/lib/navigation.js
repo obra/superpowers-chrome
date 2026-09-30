@@ -35,8 +35,8 @@ function attachNavigation({ state, getPageSession, capturePageArtifacts, evaluat
     // Reset console buffer for this session (keyed by sessionId, not wsUrl).
     // console-logging.js (enableConsoleLogging / attachConsoleLogging) is the
     // single writer for state.consoleMessages.  Navigation must NOT also write
-    // here — two writers for the same Runtime.consoleAPICalled event is the
-    // root cause of the double-entry bug (Bug 1 / fix G follow-up).
+    // here — two writers for the same Runtime.consoleAPICalled event would
+    // record every console message twice.
     state.consoleMessages.set(sid, []);
 
     await ps.enableDomain('Page');

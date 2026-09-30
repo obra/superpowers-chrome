@@ -167,13 +167,13 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
       getRenderedText(tabIndexOrWsUrl),
       getPageSession(tabIndexOrWsUrl),
     ]);
-    // obra#52 review finding 4: screenshots and auto-capture used only the
-    // HTML-string regex check (containsCredentialShaped), which requires
-    // the marker's tag to be in the serialized top-document outerHTML. A
-    // marker inside an open shadow root or a same-origin iframe is
-    // invisible there, so a screenshot of that page still legibly showed
-    // the seed. OR in the live-DOM check (secret-marker.js) instead - the
-    // same one eval/extract/attr use - which recurses into both.
+    // The HTML-string regex check (containsCredentialShaped) alone is not
+    // enough: it requires the marker's tag to be in the serialized
+    // top-document outerHTML. A marker inside an open shadow root or a
+    // same-origin iframe is invisible there, so a screenshot of that page
+    // would legibly show the seed. OR in the live-DOM check
+    // (secret-marker.js) - the same one eval/extract/attr use - which
+    // recurses into both.
     return containsCredentialShaped(html)
       || containsCredentialShaped(renderedText)
       || (!credentialCaptureAllowed() && await pageHasSecretMarker(ps));
@@ -553,8 +553,8 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
     return run();
   }
 
-  // set_attr (obra#50 follow-up — see lib/set-attribute.js for the guard
-  // rationale): a write-only action, so its post-action capture is the
+  // set_attr (see lib/set-attribute.js for the guard rationale): a
+  // write-only action, so its post-action capture is the
   // same single post-capture click/select use, gated by the SAME
   // credential-shape suppression as every other *WithCapture wrapper
   // (mustSuppress inside capturePageArtifacts). It is deliberately NOT
@@ -652,15 +652,13 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
   // Deliberately a point check, not a boundary: this is the ONLY marker
   // check eval gets — no re-check after the expression runs, and nothing
   // sticky remembered across calls.
-  // Three review rounds on obra#52 confirmed that gating eval any harder
-  // can't actually stop a deliberately adversarial expression — eval runs
-  // in the same JS realm as the secret, so an expression that reveals the
-  // marker mid-run (click a button, await a timer, THEN read it) always
-  // finds a gap a post-hoc check can't close (throw the value instead of
-  // returning it, console.log it, alert() it, or erase the marker with
-  // removeAttribute as its last synchronous step) — see the PR discussion
-  // for the full history of why each attempt to close those gaps opened a
-  // new one. This refusal exists only to catch the ACCIDENTAL case: you
+  // Gating eval any harder can't stop a deliberately adversarial
+  // expression: eval runs in the same JS realm as the secret, so an
+  // expression that reveals the marker mid-run (click a button, await a
+  // timer, THEN read it) always finds a gap a post-hoc check can't close
+  // (throw the value instead of returning it, console.log it, alert() it,
+  // or erase the marker with removeAttribute as its last synchronous
+  // step). This refusal exists only to catch the ACCIDENTAL case: you
   // already marked a secret and then ran eval on that same page. Don't
   // mark a page and then eval on it if you need eval to be trustworthy —
   // it never is, on any page, marked or not.

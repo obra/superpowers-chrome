@@ -243,7 +243,7 @@ describe('capturePageArtifacts credential guard', () => {
   });
 });
 
-// obra#50 follow-up: the data-sen-secret marker (unlike a token-shaped
+// The data-sen-secret marker (unlike a token-shaped
 // value) has no shape a returned result can be checked against after the
 // fact, so eval and the whole-page extract('text') path fail closed on the
 // marker's live presence, checked BEFORE running anything — unlike the
@@ -275,17 +275,12 @@ describe('evaluateWithCapture fails closed on a live data-sen-secret marker', ()
   });
 });
 
-// Jesse's decision on PR #52 round 4: eval's marker check is a point check
-// at call time only — no re-check after the expression runs, nothing
-// sticky remembered across calls (see
+// eval's marker check is a point check at call time only: no re-check
+// after the expression runs, nothing sticky remembered across calls (see
 // evaluateWithCapture's module comment). An expression that reveals the
-// marker mid-run (click a button, await a timer, THEN read it) is exactly
-// the async-eval race a round-2 sticky-flag mechanism tried to close and
-// round 3 proved
-// still leaked around; abandoning that in-page gate is the point of the
-// scoped-subset decision, so this now runs to completion and returns the
-// value — same as any other unmarked-at-call-time eval. Documented, not
-// silently regressed.
+// marker mid-run (click a button, await a timer, THEN read it) runs to
+// completion and returns the value, like any other eval on a page that was
+// unmarked at call time. The guard catches accidents; it is not a boundary.
 describe('evaluateWithCapture: async marker race is NOT gated (accident guard only, not a boundary)', () => {
   function setupRace() {
     let markerLive = false;
@@ -522,16 +517,15 @@ describe('pageContainsCredentialShaped', () => {
     assert.equal(await pageContainsCredentialShaped(0), false);
   });
 
-  // obra#52 review finding 4: this used to be just
   // containsCredentialShaped(html) || containsCredentialShaped(renderedText)
-  // -- an HTML-string regex requiring the marker's tag to be in the
+  // alone is an HTML-string regex requiring the marker's tag to be in the
   // serialized top-document outerHTML. A marker inside an open shadow root
-  // or a same-origin iframe never appears there, so a page with the
-  // marker ONLY in one of those was reported clean even though the live
-  // marker check (secret-marker.js, the same one eval/extract/attr use)
-  // would say otherwise. secretMarkerLive here stands in for exactly that
-  // case: a page whose HTML/renderedText are clean by the regex, but
-  // whose live-DOM marker check reports true.
+  // or a same-origin iframe never appears there, so the regex alone would
+  // report a page with the marker ONLY in one of those as clean, even though
+  // the live marker check (secret-marker.js, the same one eval/extract/attr
+  // use) says otherwise. secretMarkerLive here stands in for exactly that
+  // case: a page whose HTML/renderedText are clean by the regex, but whose
+  // live-DOM marker check reports true.
   it('is true when the page is clean by the HTML/text regex but the live marker check reports a marker (shadow root / same-origin iframe)', async () => {
     const { pageContainsCredentialShaped } = setup({ before: CLEAN_PAGE, secretMarkerLive: true });
     assert.equal(await pageContainsCredentialShaped(0), true);
@@ -579,8 +573,8 @@ describe('screenshotUnlessCredentialShaped', () => {
     assert.ok(fs.existsSync(shotPath()));
   });
 
-  // obra#52 review finding 4: screenshots must do the LIVE marker check,
-  // not only the stale HTML-string regex -- a marker in a shadow root or
+  // Screenshots must do the LIVE marker check, not only the HTML-string
+  // regex -- a marker in a shadow root or
   // same-origin iframe is invisible to the regex but the seed would still
   // be legible in the PNG.
   it('takes no screenshot when the live marker check reports a marker, even though HTML/text are clean by the regex', async () => {

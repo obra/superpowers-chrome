@@ -25,18 +25,17 @@ const { ANCESTOR_MARKED_FN_SRC, INERT_CLONE_FN_SRC } = require('./secret-marker'
  * getSanitizedHtml is the caller-facing, marker-safe equivalent extract
  * uses instead.
  *
- * obra#52 review, two follow-up fixes baked into cloneAndStrip/getAttribute
- * below:
- *   - Finding 1: marking a WRAPPER (an ancestor of the value element, the
- *     normal pattern) used to leak, because the marker check only looked
- *     at the resolved element and its descendants. Both now walk UP from
- *     the resolved element — through shadow-root hosts too — via
+ * Two guards in cloneAndStrip/getAttribute below:
+ *   - Ancestor check: marking a WRAPPER (an ancestor of the value element,
+ *     the normal pattern) must refuse too, so checking only the resolved
+ *     element and its descendants is not enough. Both walk UP from the
+ *     resolved element — through shadow-root hosts too — via
  *     `__senAncestorMarked` (secret-marker.js) before reading anything.
- *   - Regression: cloning with the live `el.cloneNode(true)` fires
+ *   - Inert clone: cloning with the live `el.cloneNode(true)` fires
  *     onload/onerror on any `<img>` in the clone, because the image-load
  *     algorithm keys off the clone's (still-live) ownerDocument being
- *     "fully active," not whether the clone is attached. Both now clone
- *     via `__senInertClone` (secret-marker.js), which imports the node
+ *     "fully active," not whether the clone is attached. Both clone via
+ *     `__senInertClone` (secret-marker.js), which imports the node
  *     into a fresh `document.implementation.createHTMLDocument('')` — a
  *     document that never has a browsing context, so it is never "fully
  *     active" and never runs that algorithm.
@@ -125,7 +124,7 @@ function attachExtraction({ getPageSession }) {
     // No clone-and-strip here: an attribute is a single scalar on the
     // resolved element itself, not text gathered from a subtree, so
     // "strip marked descendants" has nothing to remove. If the resolved
-    // element, or any ancestor of it (obra#52 review finding 1), carries
+    // element, or any ancestor of it, carries
     // the marker, any of its attributes could be the secret (the value=
     // of a marked input, a title=, the marker attribute's own value if
     // it's non-boolean) — refuse outright rather than guess which

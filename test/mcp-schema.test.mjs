@@ -22,9 +22,9 @@ describe('use_browser schema shape', () => {
   });
 
   it('schema Postel-accepts tab_index as a legacy alias for switch_tab', () => {
-    // tab_index used to be the per-call routing parameter; the reshape replaced
-    // it with sticky activeTab + switch_tab. Agents still emit tab_index from
-    // prior schema versions, so the bundle accepts it and translates it into
+    // tab_index was the per-call routing parameter in prior schema versions;
+    // sticky activeTab + switch_tab replace it. Agents still emit tab_index
+    // from those versions, so the bundle accepts it and translates it into
     // an implicit switch_tab rather than silently dropping it.
     assert.ok(bundleSrc.includes('tab_index'),
       'bundle should keep tab_index as a Postel-accepted legacy parameter');

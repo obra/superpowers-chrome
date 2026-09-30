@@ -362,22 +362,21 @@ async function executeBrowserAction(params: UseBrowserInput): Promise<string> {
           // doesn't need layout, so unlike the 'text' branch above, this
           // can run against a detached, stripped clone rather than refusing.
           //
-          // obra#52 review fixes folded in here (see extraction.js's
-          // cloneAndStrip for the same two helpers used the same way):
-          // marking document.body itself (or an ancestor of it) used to
-          // leak, since only DESCENDANTS were stripped and querySelectorAll
-          // never matches the node it is called on; and cloning with the
-          // live document.body.cloneNode(true) fired onload/onerror on any
-          // cloned <img>, because that clone's ownerDocument was still the
-          // live, "fully active" page.
+          // Two helpers guard the clone (extraction.js's cloneAndStrip uses
+          // them the same way): an ancestor check, because a marker on
+          // document.body itself (or an ancestor of it) would otherwise
+          // leak -- stripping removes only DESCENDANTS, and querySelectorAll
+          // never matches the node it is called on; and an inert clone,
+          // because the live document.body.cloneNode(true) fires
+          // onload/onerror on any cloned <img>, since that clone's
+          // ownerDocument is still the live, "fully active" page.
           //
-          // obra#52 review round 3, finding 10: that inert-clone fix
-          // introduced its own regression. `el.href` (the resolved DOM
+          // The inert clone has its own base URI. `el.href` (the resolved DOM
           // property, not getAttribute) resolves against the ELEMENT'S OWN
           // ownerDocument base URI -- once `root` below is a clone imported
           // into `document.implementation.createHTMLDocument('')`, that
           // document's URL is about:blank, so a relative link like '/foo'
-          // came back unresolved instead of absolute against the real
+          // would come back unresolved instead of absolute against the real
           // page. The generated script below resolves against the LIVE top
           // document's baseURI explicitly instead (`document` inside that
           // script is still the live page -- only `root` is ever the inert
@@ -410,7 +409,7 @@ async function executeBrowserAction(params: UseBrowserInput): Promise<string> {
                   const text = el.textContent.trim();
                   if (tag.startsWith('h')) return '#'.repeat(parseInt(tag[1])) + ' ' + text;
                   if (tag === 'a') {
-                    /* obra#52 review round 3, finding 10: el.href (the resolved property, not getAttribute) resolves against the CLONE's own about:blank base once root has been cloned into an inert document -- see the TS comment above this template literal for the full explanation. Resolve against the LIVE top document's baseURI explicitly instead. */
+                    /* el.href (the resolved property, not getAttribute) resolves against the CLONE's own about:blank base once root has been cloned into an inert document -- see the TS comment above this template literal for the full explanation. Resolve against the LIVE top document's baseURI explicitly instead. */
                     var raw = el.getAttribute('href');
                     var resolved = raw;
                     if (raw !== null) {
@@ -512,8 +511,8 @@ async function executeBrowserAction(params: UseBrowserInput): Promise<string> {
     }
 
     case BrowserAction.SET_ATTR: {
-      // Write-only counterpart to ATTR (obra#50 follow-up — see
-      // lib/set-attribute.js for the full guard rationale). No legitimate
+      // Write-only counterpart to ATTR (see lib/set-attribute.js for the
+      // full guard rationale). No legitimate
       // bare-string form: unlike attr's bare-string-is-the-attribute-NAME
       // reading form, set_attr needs both a name AND a value, and there is
       // no single string that means both. So this uses the strict
@@ -880,11 +879,11 @@ async function executeBrowserAction(params: UseBrowserInput): Promise<string> {
       // set_viewport has no legitimate bare-string form (there's no
       // sensible single string that means "width and height"), so it uses
       // the strict resolver: a string payload MUST be parseable JSON. This
-      // is the exact bug this fix addresses — set_viewport given
-      // '{"width":390,"height":844}' used to fall through parsePayload's
-      // literal-wrap fallback, land in the (p.viewport || {}) branch
-      // below with an empty object, and throw "requires payload with width
-      // and height" even though both were supplied, just JSON-encoded.
+      // keeps '{"width":390,"height":844}' from falling through
+      // parsePayload's literal-wrap fallback, landing in the
+      // (p.viewport || {}) branch below with an empty object, and throwing
+      // "requires payload with width and height" even though both were
+      // supplied, just JSON-encoded.
       const shapeHint = '{width,height,deviceScaleFactor?,mobile?}';
       const resolved = resolveStrictStructuredPayload(payload);
       if (resolved.errorDetail) {

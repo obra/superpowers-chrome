@@ -21,18 +21,17 @@
  * the HTML-string check can't see a marker placed inside one, but a live
  * query can.
  *
- * Also recurses into same-origin iframes/frames (obra#52 review finding
- * 3): a marker placed inside an `srcdoc` or same-origin `<iframe>` is
- * invisible to a top-document-only scan, but the seed is still reachable
- * from the top frame via `frames[0].document...`. `el.contentDocument` is
- * `null` for a cross-origin frame (the getter itself never throws), so
- * this only ever descends where the top frame could read the child's DOM
- * anyway.
+ * Also recurses into same-origin iframes/frames: a marker placed inside an
+ * `srcdoc` or same-origin `<iframe>` is invisible to a top-document-only
+ * scan, but the seed is still reachable from the top frame via
+ * `frames[0].document...`. `el.contentDocument` is `null` for a
+ * cross-origin frame (the getter itself never throws), so this only ever
+ * descends where the top frame could read the child's DOM anyway.
  *
- * Also recurses into same-origin `<object>`/`<embed>` (obra#52 review
- * round 3, finding 6): a marker inside a same-origin OBJECT's embedded
- * HTML document, or an OBJECT/EMBED's embedded SVG document, was invisible
- * to a scan that only checked IFRAME/FRAME. `contentDocument` covers an
+ * Also recurses into same-origin `<object>`/`<embed>`: a marker inside a
+ * same-origin OBJECT's embedded HTML document, or an OBJECT/EMBED's
+ * embedded SVG document, is invisible to a scan that only checks
+ * IFRAME/FRAME. `contentDocument` covers an
  * OBJECT embedding an HTML/XML document (EMBED has no such property);
  * `getSVGDocument()` covers either tag embedding SVG. Both getters can
  * throw or return null for a cross-origin or non-document embed, which is
@@ -40,9 +39,9 @@
  *
  * A same-origin EMBED of text/html has neither: Chrome gives EMBED no
  * contentDocument, and getSVGDocument() is null for HTML, yet
- * `frames[i].document` still reads it (obra#52 review round 4, finding
- * 1). So the last fallback looks the element up in its owner window's
- * `frames` by `frameElement` and reads that frame's document. A
+ * `frames[i].document` still reads it. So the last fallback looks the
+ * element up in its owner window's `frames` by `frameElement` and reads
+ * that frame's document. A
  * cross-origin frame throws on `frameElement`/`document`, so this still
  * only descends where the top frame could read the child's DOM anyway.
  * Recursion into deeper frames comes from hasMarker scanning the
@@ -92,10 +91,10 @@ const HAS_SECRET_MARKER_SCRIPT = `
 
 // Page-context source for a helper that walks UP from a node — through
 // shadow-root hosts, the same way HAS_SECRET_MARKER_SCRIPT walks down them
-// — checking the node itself and every ancestor for the marker (obra#52
-// review finding 1: marking a wrapper is the normal pattern, but
-// extractText/getAttribute/getSanitizedHtml only checked the resolved
-// element and its descendants, so a marker on an ancestor leaked). Spliced
+// — checking the node itself and every ancestor for the marker. Marking a
+// wrapper is the normal pattern, so extractText/getAttribute/
+// getSanitizedHtml must not check only the resolved element and its
+// descendants, or a marker on an ancestor would leak. Spliced
 // as text into Runtime.evaluate expression strings that run in the page's
 // JS realm, not this Node process — see extraction.js and mcp/src/index.ts.
 const ANCESTOR_MARKED_FN_SRC = `
@@ -116,11 +115,11 @@ const ANCESTOR_MARKED_FN_SRC = `
 `;
 
 // Page-context source for a helper that clones a node into a fresh, inert
-// document instead of the live one (obra#52 review regression:
-// `el.cloneNode(true)` in the live document still runs the image-loading
-// algorithm for any cloned `<img>` — that algorithm is gated on the node's
-// ownerDocument being "fully active", which a same-document clone still
-// is, not on whether the clone is attached. A document created by
+// document instead of the live one. `el.cloneNode(true)` in the live
+// document still runs the image-loading algorithm for any cloned `<img>` —
+// that algorithm is gated on the node's ownerDocument being "fully
+// active", which a same-document clone still is, not on whether the clone
+// is attached. A document created by
 // `document.implementation.createHTMLDocument` never gets a browsing
 // context, so it is never "fully active" and elements imported into it
 // never fire onload/onerror. `importNode` deep-copies without detaching

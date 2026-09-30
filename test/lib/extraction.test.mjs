@@ -18,7 +18,7 @@ function setup(handlers = {}) {
 // Real-DOM setup (jsdom): evaluates the actual generated expression string
 // against a real document, the same pattern test/lib/select-option.test.mjs
 // uses, instead of stubbing Runtime.evaluate's reply. Needed to prove the
-// ancestor-walk (obra#52 review finding 1) actually works against real DOM
+// ancestor-walk actually works against real DOM
 // ancestry/shadow hosts, not just that extraction.js sends *some*
 // data-sen-secret-shaped expression string.
 function setupJsdom(html) {
@@ -128,7 +128,7 @@ describe('extraction', () => {
   });
 });
 
-// obra#50 follow-up: extractText/getAttribute/getSanitizedHtml each ask the
+// extractText/getAttribute/getSanitizedHtml each ask the
 // page (via the expression they send) whether the resolved element itself
 // carries data-sen-secret, and refuse on a `{ __secretMarked: true }`
 // sentinel reply instead of returning it as if it were an ordinary result.
@@ -179,7 +179,7 @@ describe('extractText / getAttribute / getSanitizedHtml: data-sen-secret guard',
     await getSanitizedHtml(0);
     const call = ps.calls.find(c => c.method === 'Runtime.evaluate');
     assert.match(call.params.expression, /const el = document\.documentElement/);
-    // obra#52 review regression fix: clone via __senInertClone (imports into
+    // Clone via __senInertClone (imports into
     // document.implementation.createHTMLDocument), not el.cloneNode(true) in
     // the live document — a live-document clone still fires onload/onerror
     // on any cloned <img>, since that algorithm keys off the clone's
@@ -257,14 +257,13 @@ describe('extractText / getAttribute / getSanitizedHtml: marker on an ANCESTOR (
     await assert.rejects(() => extractText(0, '#wrap'), /extract refused.*data-sen-secret/);
   });
 
-  // Jesse's scoped-subset decision on obra#52 round 4, item 1: "Keep the
-  // body-marked whole-page guard, and add its missing test." documentElement
-  // (<html>) is the whole-page root cloneAndStrip/getSanitizedHtml resolve
-  // against with no selector; BODY marked directly (not merely a div
-  // somewhere under it, which the WRAPPED fixture above already covers) is
-  // the specific case that stresses "querySelectorAll on a clone never
-  // matches the clone ROOT" -- here the root is documentElement, and body
-  // is a proper descendant of it, so it must still be found and stripped.
+  // documentElement (<html>) is the whole-page root
+  // cloneAndStrip/getSanitizedHtml resolve against with no selector; BODY
+  // marked directly (not merely a div somewhere under it, which the WRAPPED
+  // fixture above already covers) is the specific case that stresses
+  // "querySelectorAll on a clone never matches the clone ROOT" -- here the
+  // root is documentElement, and body is a proper descendant of it, so it
+  // must still be found and stripped.
   it('getSanitizedHtml (whole page) strips the page when <body> ITSELF (not a descendant div) is marked', async () => {
     const dom = new JSDOM(
       '<!DOCTYPE html><html><body data-sen-secret>' +

@@ -7,19 +7,19 @@
 // test/element-selector.test.mjs use jsdom for page-side script coverage
 // without booting a real browser.
 //
-// obra#52 review findings covered here:
-//   1. ancestor marker (via ANCESTOR_MARKED_FN_SRC)
-//   3. same-origin iframes (via HAS_SECRET_MARKER_SCRIPT)
-//   regression. clone-into-live-document firing img handlers (via
-//      INERT_CLONE_FN_SRC) — proven by ownerDocument identity, since
-//      jsdom (like real Chrome, per the review) does not fetch image
-//      resources at all by default, so an onerror/onload event is not
-//      observable here regardless of which document a clone lands in.
-//      The mechanism this asserts — importing into a document that never
-//      has a browsing context, so it can never become "fully active" —
-//      is exactly what suppresses the image-load algorithm per the HTML
-//      Standard; jc's original report (extra GET requests in real
-//      headless Chrome) is the end-to-end proof of the consequence.
+// Covered here:
+//   - ancestor marker (via ANCESTOR_MARKED_FN_SRC)
+//   - same-origin iframes (via HAS_SECRET_MARKER_SCRIPT)
+//   - clone-into-live-document firing img handlers (via
+//     INERT_CLONE_FN_SRC) — proven by ownerDocument identity, since jsdom
+//     does not fetch image resources at all by default, so an
+//     onerror/onload event is not observable here regardless of which
+//     document a clone lands in. The mechanism this asserts — importing
+//     into a document that never has a browsing context, so it can never
+//     become "fully active" — is exactly what suppresses the image-load
+//     algorithm per the HTML Standard; in real headless Chrome, a
+//     live-document clone shows up as extra GET requests for the cloned
+//     images.
 import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
 import { createRequire } from 'node:module';
@@ -47,11 +47,11 @@ describe('HAS_SECRET_MARKER_SCRIPT (real DOM)', () => {
     assert.equal(dom.window.eval(HAS_SECRET_MARKER_SCRIPT), true);
   });
 
-  // obra#52 review finding 3: a marker inside a same-origin iframe (e.g.
-  // 2FA setup rendered in an embedded frame) was invisible to the
-  // top-document-only scan, so eval/extract/attr on the TOP document
-  // never refused even though `frames[0].document...` could still read
-  // the seed straight out of the child frame.
+  // A marker inside a same-origin iframe (e.g. 2FA setup rendered in an
+  // embedded frame) is invisible to a top-document-only scan, so
+  // eval/extract/attr on the TOP document would never refuse even though
+  // `frames[0].document...` can still read the seed straight out of the
+  // child frame.
   it('is true for a marker that exists ONLY inside a same-origin iframe', () => {
     const dom = new JSDOM(
       '<div><span id="x">hi</span></div><iframe id="f"></iframe>',
@@ -82,18 +82,16 @@ describe('HAS_SECRET_MARKER_SCRIPT (real DOM)', () => {
     assert.equal(dom.window.eval(HAS_SECRET_MARKER_SCRIPT), true);
   });
 
-  // Jesse's scoped-subset decision on obra#52 round 4, item 2 / round-3
-  // review finding 6: same-origin <object>/<embed> were invisible to the
-  // scan even though the top frame can read their embedded document just
-  // like it can an iframe's. jsdom does not implement OBJECT's
-  // contentDocument or EMBED's getSVGDocument() at all (both come back
-  // undefined out of the box, unlike a real browser), so this stubs the
-  // getter directly on the element the same way a real embedded document
-  // would answer it, to prove the SCAN LOGIC descends into whatever
-  // embeddedDocOf() returns rather than skipping OBJECT/EMBED tags
+  // Same-origin <object>/<embed> must be scanned: the top frame can read
+  // their embedded document just like it can an iframe's. jsdom does not
+  // implement OBJECT's contentDocument or EMBED's getSVGDocument() at all
+  // (both come back undefined out of the box, unlike a real browser), so
+  // this stubs the getter directly on the element the same way a real
+  // embedded document would answer it, to prove the SCAN LOGIC descends into
+  // whatever embeddedDocOf() returns rather than skipping OBJECT/EMBED tags
   // entirely. See the real-Chrome file:// test in
-  // credential-guard-mcp.test.mjs for the end-to-end proof against an
-  // actual embedded document.
+  // credential-guard-mcp.test.mjs for the end-to-end proof against an actual
+  // embedded document.
   it('is true for a marker inside a same-origin OBJECT embedding an HTML document (via contentDocument)', () => {
     const dom = new JSDOM('<object id="o" type="text/html"></object>', { runScripts: 'dangerously' });
     const inner = new JSDOM('<div data-sen-secret>the-seed</div>');
@@ -124,11 +122,11 @@ describe('HAS_SECRET_MARKER_SCRIPT (real DOM)', () => {
 });
 
 describe('ANCESTOR_MARKED_FN_SRC (real DOM)', () => {
-  // obra#52 review finding 1: marking a WRAPPER around the value element
-  // is the normal pattern (e.g. a backup-codes <ul data-sen-secret>), but
-  // extractText/getAttribute/getSanitizedHtml previously checked only the
-  // resolved element and its descendants — an ancestor marker leaked in
-  // full.
+  // Marking a WRAPPER around the value element is the normal pattern
+  // (e.g. a backup-codes <ul data-sen-secret>), so
+  // extractText/getAttribute/getSanitizedHtml must check ancestors too;
+  // checking only the resolved element and its descendants would leak an
+  // ancestor-marked value in full.
   function evalAncestorMarked(html, id) {
     const dom = new JSDOM(html, { runScripts: 'dangerously' });
     return dom.window.eval(
@@ -177,9 +175,9 @@ describe('ANCESTOR_MARKED_FN_SRC (real DOM)', () => {
 });
 
 describe('INERT_CLONE_FN_SRC (real DOM)', () => {
-  // The regression jc reported: el.cloneNode(true) in the live document
-  // still ran the <img> image-load algorithm for the clone, producing
-  // extra network requests, because that algorithm is gated on the
+  // el.cloneNode(true) in the live document still runs the <img>
+  // image-load algorithm for the clone, producing extra network requests,
+  // because that algorithm is gated on the
   // clone's ownerDocument being "fully active" — true for any node whose
   // ownerDocument is the live page, clone or not — not on whether the
   // clone is attached to anything. A document.implementation.
@@ -198,7 +196,7 @@ describe('INERT_CLONE_FN_SRC (real DOM)', () => {
   });
 
   it('a plain cloneNode(true), by contrast, keeps the live document as ownerDocument', () => {
-    // Documents the exact regression: this is what the pre-fix code did.
+    // The live-document clone the inert clone avoids.
     const dom = new JSDOM('<div id="root"><img id="i"></div>', { runScripts: 'dangerously' });
     const { window } = dom;
     const result = window.eval(

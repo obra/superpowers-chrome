@@ -48,7 +48,7 @@ const TOKEN_PAGE = dataUrl(
 );
 const CLEAN_PAGE = dataUrl('<title>Clean page</title><h1>Plain welcome</h1><button id="b">Go</button>');
 
-// obra#50 follow-up: a bare base32 TOTP seed matches none of the
+// A bare base32 TOTP seed matches none of the
 // TOKEN_PATTERNS in credential-guard.js (no xoxb/ghp/ops_/otpauth prefix),
 // so the only thing that can catch it is the data-sen-secret marker
 // checked LIVE — by the time eval/extract/attr hand back a plain-text or
@@ -70,7 +70,7 @@ const MARKER_BODY_PAGE = dataUrl(
   `<title>Marked body page</title><body data-sen-secret><p>${BASE32_SEED}</p></body>`
 );
 
-// set_attr fixtures (obra#50 follow-up: split-digit TOTP nonce write).
+// set_attr fixtures (split-digit TOTP nonce write).
 // PRIOR_NONCE stands in for whatever value a broker nonce field might
 // already carry (e.g. left over from an earlier, unrelated capture) —
 // the response must never echo it, same as it must never echo BASE32_SEED.
@@ -419,10 +419,9 @@ describe('SUPERPOWERS_CHROME_ALLOW_CREDENTIAL_CAPTURE=1 (real Chrome)', { skip: 
   });
 });
 
-// obra#50 follow-up: the data-sen-secret marker with content that matches
-// no TOKEN_PATTERNS (a bare base32 seed). Screenshot/capture already
-// refused correctly per #49/#50; this covers eval, extract and attr, which
-// didn't.
+// The data-sen-secret marker with content that matches no TOKEN_PATTERNS
+// (a bare base32 seed): eval, extract and attr must refuse it, the same as
+// screenshot/capture.
 describe('data-sen-secret marker with no token-shaped content (real Chrome)', { skip: !CHROME_AVAILABLE && 'Chrome not installed' }, () => {
   let server;
   before(async () => { server = await startServer(); });
@@ -451,8 +450,8 @@ describe('data-sen-secret marker with no token-shaped content (real Chrome)', { 
     assert.match(text, /eval refused.*data-sen-secret/i);
   });
 
-  // Two explicit cases requested in review (obra#50 follow-up): a caller
-  // doesn't have to name the marked element to pull its value out of the page.
+  // Two explicit cases: a caller doesn't have to name the marked element
+  // to pull its value out of the page.
   // eval's guard checks for the marker's presence, not for whether the
   // expression happens to name `#secret` by id, so both must refuse
   // identically to the direct-reference case above.
@@ -531,7 +530,7 @@ describe('data-sen-secret marker with no token-shaped content (real Chrome)', { 
     assert.ok(text.includes(CONTROL_VALUE), text);
   });
 
-  // obra#52 round 4, finding 2: stripping marked DESCENDANTS of <body>
+  // Stripping marked DESCENDANTS of <body>
   // leaves the seed in place when <body> itself carries the marker, so
   // whole-page extraction has to check the root too. markdown and text
   // refuse; html clones documentElement, where <body> is an ordinary
@@ -554,9 +553,9 @@ describe('data-sen-secret marker with no token-shaped content (real Chrome)', { 
     assert.ok(!text.includes('<body'), text);
   });
 
-  // obra#52 round 4, finding 4: the suppression notice and the screenshot
-  // refusal used to recommend eval for value-blind queries even on a
-  // marked page, where the very next eval is refused.
+  // On a marked page, the suppression notice and the screenshot refusal
+  // must not recommend eval for value-blind queries, since the very next
+  // eval there is refused.
   it('the suppression notice and screenshot refusal on a marked page say eval refuses there', async () => {
     const nav = await server.call({ action: 'navigate', payload: MARKER_TEXT_PAGE });
     assert.ok(nav.text.includes(NOTICE), nav.text);
@@ -609,12 +608,11 @@ describe(
   }
 );
 
-// obra#50 follow-up, second round: set_attr is the write-only escape hatch
-// from eval's page-wide fail-closed refusal, added specifically so an
-// agent entering a split-digit one-time code can stamp a broker nonce
-// onto an unmarked digit-input box right after capturing a seed on the
-// same (now marked) page. See skills/browsing/lib/set-attribute.js for
-// the design.
+// set_attr is the write-only escape hatch from eval's page-wide
+// fail-closed refusal, so that an agent entering a split-digit one-time
+// code can stamp a broker nonce onto an unmarked digit-input box right
+// after capturing a seed on the same (now marked) page. See
+// skills/browsing/lib/set-attribute.js for the design.
 describe('set_attr (real Chrome)', { skip: !CHROME_AVAILABLE && 'Chrome not installed' }, () => {
   let server;
   before(async () => { server = await startServer(); });
@@ -654,13 +652,11 @@ describe('set_attr (real Chrome)', { skip: !CHROME_AVAILABLE && 'Chrome not inst
     assert.match(text, /set_attr refused.*data-sen-secret/i);
   });
 
-  // obra#52 review round 2, finding 4 / round 3 hygiene note: this test
-  // used to assert data-sen-secret was refused as a set_attr target name,
-  // but that predates set_attr becoming the write path for the marker
-  // itself (see set-attribute.js's module doc) and had gone stale
-  // asserting the OLD behavior. Replaced with the two cases the documented
-  // contract actually specifies -- marking an unmarked element succeeds,
-  // and re-marking an already-marked one is a no-op, not a refusal --
+  // set_attr is the write path for the marker itself (see
+  // set-attribute.js's module doc). These are the two cases its
+  // documented contract specifies -- marking an unmarked element
+  // succeeds, and re-marking an already-marked one is a no-op, not a
+  // refusal --
   // using #plain and #secret (NOT #box0, which later tests in this
   // describe block still need to be an ordinary data-sen-nonce target).
   it('(c) name=data-sen-secret marks a previously-unmarked element', async () => {
@@ -784,16 +780,16 @@ describe('set_attr (real Chrome)', { skip: !CHROME_AVAILABLE && 'Chrome not inst
   });
 });
 
-// obra#52 review round 3, finding 10: extract markdown's whole-page path
-// runs against an inert clone (document.implementation.createHTMLDocument
-// -- see __senInertClone in secret-marker.js), added to fix a cloneNode
-// image-onload regression. That clone's OWN document has an about:blank
-// URL, so `el.href` (the resolved DOM property) started resolving a
-// relative link against about:blank instead of the real page, silently
-// turning '/relative/path' into an unresolved relative string instead of
-// an absolute URL -- a regression on every ordinary, unmarked page, not
-// just marked ones. Not credential-guard-specific, but lives alongside
-// the other obra#52 regression tests in this file.
+// extract markdown's whole-page path runs against an inert clone
+// (document.implementation.createHTMLDocument -- see __senInertClone in
+// secret-marker.js), so cloned <img> elements never fire onload/onerror.
+// That clone's OWN document has an about:blank URL, so `el.href` (the
+// resolved DOM property) would resolve a relative link against
+// about:blank instead of the real page, silently turning
+// '/relative/path' into an unresolved relative string instead of an
+// absolute URL -- on every ordinary, unmarked page, not just marked ones.
+// Not credential-guard-specific, but it exercises the same inert-clone
+// path as the marker tests in this file.
 describe('extract markdown resolves relative href against the live page (real Chrome)', { skip: !CHROME_AVAILABLE && 'Chrome not installed' }, () => {
   let server;
   let dir;
@@ -825,17 +821,16 @@ describe('extract markdown resolves relative href against the live page (real Ch
   });
 });
 
-// obra#52 review round 3, finding 6 / Jesse's scoped-subset decision, item
-// 2: the live marker scan (HAS_SECRET_MARKER_SCRIPT) only descended into
-// IFRAME/FRAME, so a marker inside a same-origin OBJECT or EMBED was
-// invisible to eval's point check AND to the screenshot/capture guard,
-// even though the top frame can read the embedded document directly.
+// The live marker scan (HAS_SECRET_MARKER_SCRIPT) must descend into
+// same-origin OBJECT and EMBED as well as IFRAME/FRAME: the top frame can
+// read their embedded documents directly, so a marker there has to reach
+// eval's point check AND the screenshot/capture guard.
 //
 // In Chrome, OBJECT gets a contentDocument for both text/html and SVG;
 // EMBED gets none, and getSVGDocument() only covers SVG. A same-origin
-// EMBED of text/html is reachable only through window.frames (round 4,
-// finding 1), so each tag/content-type pair gets its own page here: a
-// shared page would let one tag's scan mask a gap in the other's.
+// EMBED of text/html is reachable only through window.frames, so each
+// tag/content-type pair gets its own page here: a shared page would let
+// one tag's scan mask a gap in the other's.
 //
 // Real file:// pages (not data: URLs -- object/embed same-origin access
 // needs a real hierarchical origin), with --allow-file-access-from-files

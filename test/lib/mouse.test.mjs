@@ -321,8 +321,8 @@ describe('mouse click routes dialog::* selectors', () => {
     const dialogs = {
       getOpen: () => dialogState,
       // mouse.js calls dialogs.clear(sid) when the router signals clearDialog.
-      // JS dialog::accept/dismiss now signal clearDialog (regression fix for
-      // scenario 03 step 6), so the mock must expose .clear.
+      // JS dialog::accept/dismiss signal clearDialog, so the mock must
+      // expose .clear.
       clear: (sid) => { clearedSid = sid; },
     };
     const getPageSession = async () => ps;
