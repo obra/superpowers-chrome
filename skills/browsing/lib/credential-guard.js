@@ -45,8 +45,12 @@ const TOKEN_PATTERNS = [
   'otpauth://[^\\s"\'<>]*[?&;]secret=[A-Za-z0-9=]{16,}',
 ];
 
-// Page marker: an element attribute named exactly data-sen-secret.
-const MARKER_PATTERN = /<[^>]*\sdata-sen-secret(?=[\s=/>])/i;
+// Page marker: an element attribute named exactly data-sen-secret. Single
+// source of truth for the literal — secret-marker.js, extraction.js,
+// set-attribute.js, capture.js and mcp/src/index.ts all import this rather
+// than each spelling the attribute name out themselves.
+const MARKER_ATTR = 'data-sen-secret';
+const MARKER_PATTERN = new RegExp(`<[^>]*\\s${MARKER_ATTR}(?=[\\s=/>])`, 'i');
 
 const REDACTION = '[REDACTED credential-shaped]';
 
@@ -68,14 +72,40 @@ function credentialCaptureAllowed() {
   return process.env.SUPERPOWERS_CHROME_ALLOW_CREDENTIAL_CAPTURE === '1';
 }
 
+// Suppression can come from a token shape (eval still runs, redacted) or
+// from a data-sen-secret marker (eval refuses outright), and callers don't
+// know which, so the advice has to be true for both.
+const CREDENTIAL_ADVICE =
+  'Use the credential broker to capture values. ' +
+  'eval refuses while any element is marked data-sen-secret; otherwise use it only for value-blind queries.';
+
 const CREDENTIAL_SUPPRESSED_NOTICE =
   '⚠️ Page shows credential-shaped content; auto-capture and DOM output suppressed. ' +
-  'Use the credential broker to capture values; use eval only for value-blind queries.';
+  CREDENTIAL_ADVICE;
+
+// eval and extract/attr cannot tell whether their result would carry a
+// data-sen-secret element's value forward — by the time either produces
+// plain text or an attribute string, the marker (a live-DOM-only signal;
+// see lib/secret-marker.js) is gone. So both fail closed on the marker's
+// mere presence rather than trying to inspect the result after the fact.
+// Unlike CREDENTIAL_SUPPRESSED_NOTICE, there is no "value-blind queries are
+// fine" carve-out: a marker means the page has no reliable value shape to
+// scope a carve-out around.
+function secretMarkerRefusal(action) {
+  return (
+    `${action} refused: page has an element marked data-sen-secret. ` +
+    'Use the credential broker to capture its value; ' +
+    'SUPERPOWERS_CHROME_ALLOW_CREDENTIAL_CAPTURE=1 disables this.'
+  );
+}
 
 module.exports = {
+  MARKER_ATTR,
   containsCredentialShaped,
   redactCredentialShaped,
   credentialCaptureAllowed,
+  CREDENTIAL_ADVICE,
   CREDENTIAL_SUPPRESSED_NOTICE,
+  secretMarkerRefusal,
   REDACTION,
 };

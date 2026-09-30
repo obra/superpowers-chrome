@@ -47,6 +47,47 @@ const TOKEN_PAGE = dataUrl(
   '<button id="b">Done</button>'
 );
 const CLEAN_PAGE = dataUrl('<title>Clean page</title><h1>Plain welcome</h1><button id="b">Go</button>');
+
+// A bare base32 TOTP seed matches none of the
+// TOKEN_PATTERNS in credential-guard.js (no xoxb/ghp/ops_/otpauth prefix),
+// so the only thing that can catch it is the data-sen-secret marker
+// checked LIVE — by the time eval/extract/attr hand back a plain-text or
+// attribute result, the marker tag itself is long gone.
+const BASE32_SEED = 'JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP';
+const CONTROL_VALUE = 'not-a-secret-control-value';
+const MARKER_TEXT_PAGE = dataUrl(
+  '<title>Marker page</title><h1>Backup codes</h1>' +
+  `<div id="wrap"><code id="secret" data-sen-secret>${BASE32_SEED}</code>` +
+  `<code id="control">${CONTROL_VALUE}</code></div>`
+);
+const MARKER_INPUT_PAGE = dataUrl(
+  '<title>Marker input page</title><h1>Backup codes</h1>' +
+  `<input id="secret" data-sen-secret value="${BASE32_SEED}">` +
+  `<input id="control" value="${CONTROL_VALUE}">`
+);
+// Marks the root of whole-page extraction itself, not a descendant of it.
+const MARKER_BODY_PAGE = dataUrl(
+  `<title>Marked body page</title><body data-sen-secret><p>${BASE32_SEED}</p></body>`
+);
+
+// set_attr fixtures (split-digit TOTP nonce write).
+// PRIOR_NONCE stands in for whatever value a broker nonce field might
+// already carry (e.g. left over from an earlier, unrelated capture) —
+// the response must never echo it, same as it must never echo BASE32_SEED.
+const PRIOR_NONCE = 'stale-prior-nonce-should-never-leak';
+const SET_ATTR_PAGE = dataUrl(
+  '<title>Split box</title><h1>Backup codes</h1>' +
+  `<code id="secret" data-sen-secret>${BASE32_SEED}</code>` +
+  `<input id="box0" data-sen-nonce="${PRIOR_NONCE}">` +
+  '<span id="plain">unmarked control element</span>'
+);
+const DIGIT_COUNT = 6;
+const DIGITS = '123456';
+const SPLIT_DIGIT_BOX_PAGE = dataUrl(
+  '<title>Split-digit TOTP</title><h1>Enter your 2FA code</h1>' +
+  `<code id="secret" data-sen-secret>${BASE32_SEED}</code>` +
+  Array.from({ length: DIGIT_COUNT }, (_, i) => `<input id="box${i}" maxlength="1">`).join('')
+);
 // Pressing Enter reveals a token (drives the before/after diff capture path).
 const REVEAL_ON_ENTER_PAGE = dataUrl(
   '<title>Reveal page</title><h1>Create token</h1><div id="out"></div>' +
@@ -185,7 +226,44 @@ async function startServer(extraEnv = {}) {
     fs.rmSync(xdg, { recursive: true, force: true });
   }
 
-  return { call, capturedFiles, stop, xdg };
+  return { call, capturedFiles, stop, xdg, port };
+}
+
+/**
+ * Test-oracle-only direct CDP connection — completely bypasses use_browser
+ * (and therefore every guard under test) to read ground-truth live DOM
+ * state. This is NOT something the agent can do (its only channel is
+ * use_browser's guarded action set); it exists purely so the set_attr
+ * end-to-end test below can confirm the digit-box recipe actually worked
+ * without relying on the very eval path that's supposed to stay refused
+ * for the whole scenario.
+ */
+async function readLiveValueDirectly(port, expression) {
+  const listResp = await fetch(`http://127.0.0.1:${port}/json/list`);
+  const targets = await listResp.json();
+  const page = targets.find((t) => t.type === 'page');
+  if (!page) throw new Error('readLiveValueDirectly: no page target found');
+  const ws = new WebSocket(page.webSocketDebuggerUrl);
+  await new Promise((resolve, reject) => {
+    ws.addEventListener('open', () => resolve(), { once: true });
+    ws.addEventListener('error', (e) => reject(new Error(String(e))), { once: true });
+  });
+  try {
+    const id = 1;
+    const resultPromise = new Promise((resolve, reject) => {
+      ws.addEventListener('message', (ev) => {
+        const msg = JSON.parse(ev.data);
+        if (msg.id !== id) return;
+        if (msg.error) reject(new Error(JSON.stringify(msg.error)));
+        else resolve(msg.result);
+      });
+    });
+    ws.send(JSON.stringify({ id, method: 'Runtime.evaluate', params: { expression, returnByValue: true } }));
+    const result = await resultPromise;
+    return result.result.value;
+  } finally {
+    ws.close();
+  }
 }
 
 function assertNoLeak(text) {
@@ -339,4 +417,466 @@ describe('SUPERPOWERS_CHROME_ALLOW_CREDENTIAL_CAPTURE=1 (real Chrome)', { skip: 
     const extracted = await server.call({ action: 'extract', payload: 'text' });
     assert.ok(extracted.text.includes(FAKE_TOKEN), extracted.text);
   });
+});
+
+// The data-sen-secret marker with content that matches no TOKEN_PATTERNS
+// (a bare base32 seed): eval, extract and attr must refuse it, the same as
+// screenshot/capture.
+describe('data-sen-secret marker with no token-shaped content (real Chrome)', { skip: !CHROME_AVAILABLE && 'Chrome not installed' }, () => {
+  let server;
+  before(async () => { server = await startServer(); });
+  after(async () => { await server?.stop(); });
+
+  it('eval on the marked element refuses and never returns the seed', async () => {
+    await server.call({ action: 'navigate', payload: MARKER_TEXT_PAGE });
+    const { text, isError } = await server.call({
+      action: 'eval',
+      payload: "document.getElementById('secret').textContent",
+    });
+    assert.equal(isError, true, text);
+    assert.match(text, /eval refused.*data-sen-secret/i);
+    assert.ok(!text.includes(BASE32_SEED), text);
+  });
+
+  it('eval on an unmarked control element on the same page ALSO refuses (fail closed page-wide)', async () => {
+    // Intentional: eval has no way to know in advance whether an
+    // expression is value-blind, so the marker's mere presence anywhere on
+    // the page blocks eval outright, not just reads of the marked element.
+    const { text, isError } = await server.call({
+      action: 'eval',
+      payload: "document.getElementById('control').textContent",
+    });
+    assert.equal(isError, true, text);
+    assert.match(text, /eval refused.*data-sen-secret/i);
+  });
+
+  // Two explicit cases: a caller doesn't have to name the marked element
+  // to pull its value out of the page.
+  // eval's guard checks for the marker's presence, not for whether the
+  // expression happens to name `#secret` by id, so both must refuse
+  // identically to the direct-reference case above.
+  it("eval of document.body.innerText refuses and the seed appears nowhere in the response", async () => {
+    const { text, isError } = await server.call({ action: 'eval', payload: 'document.body.innerText' });
+    assert.equal(isError, true, text);
+    assert.match(text, /eval refused.*data-sen-secret/i);
+    assert.ok(!text.includes(BASE32_SEED), text);
+  });
+
+  for (const [name, expression] of [
+    [
+      'querySelectorAll("*") + map + join, naming no element by id or marker',
+      "[...document.querySelectorAll('*')].map(e => e.textContent).join('')",
+    ],
+    [
+      'querySelector("[data-sen-secret]") read via split/join instead of a bare .textContent',
+      "document.querySelector('[data-sen-secret]').textContent.split('').join('')",
+    ],
+    [
+      'reassembled via string concatenation from character-indexed reads',
+      "(() => { const s = document.querySelector('[data-sen-secret]').textContent; let out = ''; for (let i = 0; i < s.length; i++) out = out + s[i]; return out; })()",
+    ],
+  ]) {
+    it(`eval of an expression that builds the value without naming the marked element directly refuses (${name})`, async () => {
+      const { text, isError } = await server.call({ action: 'eval', payload: expression });
+      assert.equal(isError, true, text);
+      assert.match(text, /eval refused.*data-sen-secret/i);
+      assert.ok(!text.includes(BASE32_SEED), text);
+    });
+  }
+
+  it('extract text with no selector (whole page) refuses rather than gluing the seed to other text', async () => {
+    const { text, isError } = await server.call({ action: 'extract', payload: 'text' });
+    assert.equal(isError, true, text);
+    assert.match(text, /extract refused.*data-sen-secret/i);
+    assert.ok(!text.includes(BASE32_SEED), text);
+  });
+
+  it('extract text with a selector on the marked element refuses', async () => {
+    const { text, isError } = await server.call({ action: 'extract', selector: '#secret', payload: 'text' });
+    assert.equal(isError, true, text);
+    assert.match(text, /extract refused.*data-sen-secret/i);
+  });
+
+  it('extract text with a selector on the unmarked control element still works', async () => {
+    const { text, isError } = await server.call({ action: 'extract', selector: '#control', payload: 'text' });
+    assert.equal(isError, false, text);
+    assert.equal(text, CONTROL_VALUE);
+  });
+
+  it('extract text on a wrapper containing both elements strips only the marked one', async () => {
+    const { text, isError } = await server.call({ action: 'extract', selector: '#wrap', payload: 'text' });
+    assert.equal(isError, false, text);
+    assert.ok(!text.includes(BASE32_SEED), text);
+    assert.ok(text.includes(CONTROL_VALUE), text);
+  });
+
+  it('extract html strips the marked element and keeps the control element, whole-page and selector forms', async () => {
+    const wrap = await server.call({ action: 'extract', selector: '#wrap', payload: 'html' });
+    assert.equal(wrap.isError, false, wrap.text);
+    assert.ok(!wrap.text.includes(BASE32_SEED), wrap.text);
+    assert.ok(!wrap.text.includes('data-sen-secret'), wrap.text);
+    assert.ok(wrap.text.includes(CONTROL_VALUE), wrap.text);
+
+    const whole = await server.call({ action: 'extract', payload: 'html' });
+    assert.equal(whole.isError, false, whole.text);
+    assert.ok(!whole.text.includes(BASE32_SEED), whole.text);
+    assert.ok(whole.text.includes(CONTROL_VALUE), whole.text);
+  });
+
+  it('extract markdown strips the marked element and keeps the control element', async () => {
+    const { text, isError } = await server.call({ action: 'extract', payload: 'markdown' });
+    assert.equal(isError, false, text);
+    assert.ok(!text.includes(BASE32_SEED), text);
+    assert.ok(text.includes(CONTROL_VALUE), text);
+  });
+
+  // Stripping marked DESCENDANTS of <body>
+  // leaves the seed in place when <body> itself carries the marker, so
+  // whole-page extraction has to check the root too. markdown and text
+  // refuse; html clones documentElement, where <body> is an ordinary
+  // marked descendant and is stripped like any other.
+  for (const format of ['markdown', 'text']) {
+    it(`whole-page extract ${format} refuses when <body> itself carries the marker`, async () => {
+      await server.call({ action: 'navigate', payload: MARKER_BODY_PAGE });
+      const { text, isError } = await server.call({ action: 'extract', payload: format });
+      assert.equal(isError, true, text);
+      assert.match(text, /extract refused.*data-sen-secret/i);
+      assert.ok(!text.includes(BASE32_SEED), text);
+    });
+  }
+
+  it('whole-page extract html strips a marked <body> and returns no seed', async () => {
+    await server.call({ action: 'navigate', payload: MARKER_BODY_PAGE });
+    const { text, isError } = await server.call({ action: 'extract', payload: 'html' });
+    assert.equal(isError, false, text);
+    assert.ok(!text.includes(BASE32_SEED), text);
+    assert.ok(!text.includes('<body'), text);
+  });
+
+  // On a marked page, the suppression notice and the screenshot refusal
+  // must not recommend eval for value-blind queries, since the very next
+  // eval there is refused.
+  it('the suppression notice and screenshot refusal on a marked page say eval refuses there', async () => {
+    const nav = await server.call({ action: 'navigate', payload: MARKER_TEXT_PAGE });
+    assert.ok(nav.text.includes(NOTICE), nav.text);
+    assert.match(nav.text, /eval refuses while any element is marked data-sen-secret/, nav.text);
+
+    const shot = await server.call({ action: 'screenshot', payload: path.join(server.xdg, 'marked.png') });
+    assert.equal(shot.isError, true, shot.text);
+    assert.match(shot.text, /eval refuses while any element is marked data-sen-secret/, shot.text);
+  });
+
+  it('attr on the marked element refuses, even for an attribute that is not the marker itself', async () => {
+    await server.call({ action: 'navigate', payload: MARKER_INPUT_PAGE });
+    const { text, isError } = await server.call({ action: 'attr', selector: '#secret', payload: 'value' });
+    assert.equal(isError, true, text);
+    assert.match(text, /attr refused.*data-sen-secret/i);
+    assert.ok(!text.includes(BASE32_SEED), text);
+  });
+
+  it('attr on the unmarked control element still works', async () => {
+    const { text, isError } = await server.call({ action: 'attr', selector: '#control', payload: 'value' });
+    assert.equal(isError, false, text);
+    assert.equal(text, CONTROL_VALUE);
+  });
+});
+
+describe(
+  'SUPERPOWERS_CHROME_ALLOW_CREDENTIAL_CAPTURE=1 restores eval/extract/attr on a data-sen-secret page (real Chrome)',
+  { skip: !CHROME_AVAILABLE && 'Chrome not installed' },
+  () => {
+    let server;
+    before(async () => { server = await startServer({ SUPERPOWERS_CHROME_ALLOW_CREDENTIAL_CAPTURE: '1' }); });
+    after(async () => { await server?.stop(); });
+
+    it('eval, extract and attr all return the marked value unredacted', async () => {
+      await server.call({ action: 'navigate', payload: MARKER_TEXT_PAGE });
+
+      const ev = await server.call({ action: 'eval', payload: "document.getElementById('secret').textContent" });
+      assert.equal(ev.isError, false, ev.text);
+      assert.ok(ev.text.includes(BASE32_SEED), ev.text);
+
+      const ext = await server.call({ action: 'extract', payload: 'text' });
+      assert.equal(ext.isError, false, ext.text);
+      assert.ok(ext.text.includes(BASE32_SEED), ext.text);
+
+      await server.call({ action: 'navigate', payload: MARKER_INPUT_PAGE });
+      const attr = await server.call({ action: 'attr', selector: '#secret', payload: 'value' });
+      assert.equal(attr.isError, false, attr.text);
+      assert.equal(attr.text, BASE32_SEED);
+    });
+  }
+);
+
+// set_attr is the write-only escape hatch from eval's page-wide
+// fail-closed refusal, so that an agent entering a split-digit one-time
+// code can stamp a broker nonce onto an unmarked digit-input box right
+// after capturing a seed on the same (now marked) page. See
+// skills/browsing/lib/set-attribute.js for the design.
+describe('set_attr (real Chrome)', { skip: !CHROME_AVAILABLE && 'Chrome not installed' }, () => {
+  let server;
+  before(async () => { server = await startServer(); });
+  after(async () => { await server?.stop(); });
+
+  it('(a) sets data-sen-nonce on an unmarked box while a marked seed is on the page, and eval is still refused there', async () => {
+    await server.call({ action: 'navigate', payload: SET_ATTR_PAGE });
+
+    const set = await server.call({
+      action: 'set_attr',
+      selector: '#box0',
+      payload: { name: 'data-sen-nonce', value: 'fresh-nonce-abc' },
+    });
+    assert.equal(set.isError, false, set.text);
+
+    const ev = await server.call({ action: 'eval', payload: "document.getElementById('box0').textContent" });
+    assert.equal(ev.isError, true, ev.text);
+    assert.match(ev.text, /eval refused.*data-sen-secret/i);
+  });
+
+  it('(a, necessity) the equivalent write via eval is refused, which is why set_attr exists', async () => {
+    const { text, isError } = await server.call({
+      action: 'eval',
+      payload: "document.getElementById('box0').setAttribute('data-sen-nonce', 'via-eval')",
+    });
+    assert.equal(isError, true, text);
+    assert.match(text, /eval refused.*data-sen-secret/i);
+  });
+
+  it('(b) set_attr on the marked element itself is refused', async () => {
+    const { text, isError } = await server.call({
+      action: 'set_attr',
+      selector: '#secret',
+      payload: { name: 'data-sen-nonce', value: 'x' },
+    });
+    assert.equal(isError, true, text);
+    assert.match(text, /set_attr refused.*data-sen-secret/i);
+  });
+
+  // set_attr is the write path for the marker itself (see
+  // set-attribute.js's module doc). These are the two cases its
+  // documented contract specifies -- marking an unmarked element
+  // succeeds, and re-marking an already-marked one is a no-op, not a
+  // refusal --
+  // using #plain and #secret (NOT #box0, which later tests in this
+  // describe block still need to be an ordinary data-sen-nonce target).
+  it('(c) name=data-sen-secret marks a previously-unmarked element', async () => {
+    const { text, isError } = await server.call({
+      action: 'set_attr',
+      selector: '#plain',
+      payload: { name: 'data-sen-secret', value: '' },
+    });
+    assert.equal(isError, false, text);
+    const marked = await readLiveValueDirectly(server.port, "document.getElementById('plain').hasAttribute('data-sen-secret')");
+    assert.equal(marked, true);
+  });
+
+  it('(c) name=data-sen-secret re-marking an already-marked element (#secret) is a no-op, not a refusal', async () => {
+    const { text, isError } = await server.call({
+      action: 'set_attr',
+      selector: '#secret',
+      payload: { name: 'data-sen-secret', value: '' },
+    });
+    assert.equal(isError, false, text);
+    assert.ok(!text.includes(BASE32_SEED), text);
+  });
+
+  // The allowlist is a single exact name (data-sen-nonce), not a
+  // data-*/aria-* prefix: page JS and frameworks routinely wire arbitrary
+  // data-*/aria-* attributes to behavior (data-action, aria-controls, and
+  // more a hostile page could invent), so "any data-*/aria-* name" is not
+  // guaranteed inert. These three cover that narrowing explicitly, each
+  // under its own name, per review feedback.
+  it('(c) name=onclick is refused', async () => {
+    const { text, isError } = await server.call({
+      action: 'set_attr',
+      selector: '#box0',
+      payload: { name: 'onclick', value: 'x' },
+    });
+    assert.equal(isError, true, text);
+    assert.match(text, /set_attr refused.*not allowed/i);
+  });
+
+  it('(c) name=href is refused', async () => {
+    const { text, isError } = await server.call({
+      action: 'set_attr',
+      selector: '#box0',
+      payload: { name: 'href', value: 'javascript:alert(1)' },
+    });
+    assert.equal(isError, true, text);
+    assert.match(text, /set_attr refused.*not allowed/i);
+  });
+
+  it('(c) an arbitrary data-* name (data-foo) is refused, not just data-sen-secret', async () => {
+    const { text, isError } = await server.call({
+      action: 'set_attr',
+      selector: '#box0',
+      payload: { name: 'data-foo', value: 'x' },
+    });
+    assert.equal(isError, true, text);
+    assert.match(text, /set_attr refused.*not allowed/i);
+  });
+
+  it("(d) the response contains neither the seed nor the attribute's prior value", async () => {
+    // SET_ATTR_PAGE's #box0 already carries data-sen-nonce=PRIOR_NONCE.
+    const { text, isError } = await server.call({
+      action: 'set_attr',
+      selector: '#box0',
+      payload: { name: 'data-sen-nonce', value: 'brand-new-nonce-xyz' },
+    });
+    assert.equal(isError, false, text);
+    assert.ok(!text.includes(BASE32_SEED), text);
+    assert.ok(!text.includes(PRIOR_NONCE), text);
+    // Not even the just-written value is echoed back.
+    assert.ok(!text.includes('brand-new-nonce-xyz'), text);
+  });
+
+  it('(e) end-to-end split-digit recipe: set_attr the nonce, then type digits, with the seed never appearing in any response', async () => {
+    await server.call({ action: 'navigate', payload: SPLIT_DIGIT_BOX_PAGE });
+
+    // (e, necessity) attempting the recipe's first step via eval instead of
+    // set_attr fails, same as case (a) above — this is what set_attr fixes.
+    const evalAttempt = await server.call({
+      action: 'eval',
+      payload: "document.getElementById('box0').setAttribute('data-sen-nonce', 'via-eval')",
+    });
+    assert.equal(evalAttempt.isError, true, evalAttempt.text);
+    assert.match(evalAttempt.text, /eval refused.*data-sen-secret/i);
+
+    // The real recipe: set_attr instead of eval.
+    const setNonce = await server.call({
+      action: 'set_attr',
+      selector: '#box0',
+      payload: { name: 'data-sen-nonce', value: 'recipe-nonce-001' },
+    });
+    assert.equal(setNonce.isError, false, setNonce.text);
+    assert.ok(!setNonce.text.includes(BASE32_SEED), setNonce.text);
+
+    // Type one digit into each box.
+    const typeResponses = [];
+    for (let i = 0; i < DIGIT_COUNT; i++) {
+      const r = await server.call({ action: 'type', selector: `#box${i}`, payload: DIGITS[i] });
+      typeResponses.push(r);
+      assert.equal(r.isError, false, r.text);
+    }
+
+    // Ground truth check, via a direct CDP connection that bypasses
+    // use_browser entirely (see readLiveValueDirectly's doc comment) —
+    // the only way to confirm the recipe actually worked, since every
+    // use_browser read action is (correctly) still refusing or redacting
+    // on this page.
+    const joined = await readLiveValueDirectly(
+      server.port,
+      `Array.from({length:${DIGIT_COUNT}}, (_, i) => document.getElementById('box'+i).value).join('')`
+    );
+    assert.equal(joined, DIGITS);
+    const nonce = await readLiveValueDirectly(server.port, "document.getElementById('box0').getAttribute('data-sen-nonce')");
+    assert.equal(nonce, 'recipe-nonce-001');
+
+    // Nothing returned by any use_browser call along the way carried the
+    // seed.
+    for (const r of [evalAttempt, setNonce, ...typeResponses]) {
+      assert.ok(!r.text.includes(BASE32_SEED), r.text);
+    }
+  });
+});
+
+// extract markdown's whole-page path runs against an inert clone
+// (document.implementation.createHTMLDocument -- see __senInertClone in
+// secret-marker.js), so cloned <img> elements never fire onload/onerror.
+// That clone's OWN document has an about:blank URL, so `el.href` (the
+// resolved DOM property) would resolve a relative link against
+// about:blank instead of the real page, silently turning
+// '/relative/path' into an unresolved relative string instead of an
+// absolute URL -- on every ordinary, unmarked page, not just marked ones.
+// Not credential-guard-specific, but it exercises the same inert-clone
+// path as the marker tests in this file.
+describe('extract markdown resolves relative href against the live page (real Chrome)', { skip: !CHROME_AVAILABLE && 'Chrome not installed' }, () => {
+  let server;
+  let dir;
+
+  before(async () => {
+    server = await startServer();
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'href-regress-'));
+    const file = path.join(dir, 'page.html');
+    fs.writeFileSync(file, '<title>Href page</title><a href="/relative/path">Link text</a><a href="">Empty link</a>');
+    await server.call({ action: 'navigate', payload: `file://${file}` });
+  });
+  after(async () => {
+    await server?.stop();
+    if (dir) fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('resolves a relative href to an absolute URL instead of leaving it unresolved', async () => {
+    const { text, isError } = await server.call({ action: 'extract', payload: 'markdown' });
+    assert.equal(isError, false, text);
+    assert.match(text, /\[Link text\]\(file:\/\/\/relative\/path\)/, text);
+    assert.ok(!text.includes('(/relative/path)'), `href must not be left unresolved: ${text}`);
+  });
+
+  it('resolves an empty href to the page URL, the way el.href does', async () => {
+    const { text, isError } = await server.call({ action: 'extract', payload: 'markdown' });
+    assert.equal(isError, false, text);
+    const pageUrl = `file://${path.join(dir, 'page.html')}`;
+    assert.ok(text.includes(`[Empty link](${pageUrl})`), text);
+  });
+});
+
+// The live marker scan (HAS_SECRET_MARKER_SCRIPT) must descend into
+// same-origin OBJECT and EMBED as well as IFRAME/FRAME: the top frame can
+// read their embedded documents directly, so a marker there has to reach
+// eval's point check AND the screenshot/capture guard.
+//
+// In Chrome, OBJECT gets a contentDocument for both text/html and SVG;
+// EMBED gets none, and getSVGDocument() only covers SVG. A same-origin
+// EMBED of text/html is reachable only through window.frames, so each
+// tag/content-type pair gets its own page here: a shared page would let
+// one tag's scan mask a gap in the other's.
+//
+// Real file:// pages (not data: URLs -- object/embed same-origin access
+// needs a real hierarchical origin), with --allow-file-access-from-files
+// so a file:// page can load a file:// subresource at all.
+describe('eval and screenshot see a marker inside a same-origin OBJECT/EMBED (real Chrome)', { skip: !CHROME_AVAILABLE && 'Chrome not installed' }, () => {
+  let server;
+  let dir;
+  const EMBED_PAGES = {
+    'OBJECT text/html': '<object type="text/html" data="inner.html" width="50" height="50"></object>',
+    'EMBED text/html': '<embed type="text/html" src="inner.html" width="50" height="50">',
+    'OBJECT SVG': '<object type="image/svg+xml" data="inner.svg" width="50" height="50"></object>',
+    'EMBED SVG': '<embed type="image/svg+xml" src="inner.svg" width="50" height="50">',
+  };
+
+  before(async () => {
+    server = await startServer({ CHROME_EXTRA_ARGS: '--allow-file-access-from-files' });
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'object-embed-'));
+    fs.writeFileSync(
+      path.join(dir, 'inner.svg'),
+      `<svg xmlns="http://www.w3.org/2000/svg"><text data-sen-secret="">${BASE32_SEED}</text></svg>`
+    );
+    fs.writeFileSync(path.join(dir, 'inner.html'), `<p data-sen-secret>${BASE32_SEED}</p>`);
+  });
+  after(async () => {
+    await server?.stop();
+    if (dir) fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  for (const [label, tag] of Object.entries(EMBED_PAGES)) {
+    const file = `${label.replace(/\W+/g, '-')}.html`;
+
+    it(`${label}: eval refuses although the top document has no marker itself`, async () => {
+      fs.writeFileSync(path.join(dir, file), `<title>${label}</title>${tag}`);
+      await server.call({ action: 'navigate', payload: `file://${path.join(dir, file)}` });
+      const { text, isError } = await server.call({ action: 'eval', payload: '1 + 1' });
+      assert.equal(isError, true, text);
+      assert.match(text, /eval refused.*data-sen-secret/i);
+      assert.ok(!text.includes(BASE32_SEED), text);
+    });
+
+    it(`${label}: screenshot refuses and writes no file`, async () => {
+      const shot = path.join(server.xdg, `${file}.png`);
+      const { text, isError } = await server.call({ action: 'screenshot', payload: shot });
+      assert.equal(isError, true, text);
+      assert.match(text, /screenshot refused/i);
+      assert.equal(fs.existsSync(shot), false);
+    });
+  }
 });

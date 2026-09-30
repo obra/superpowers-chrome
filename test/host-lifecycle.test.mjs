@@ -61,9 +61,10 @@ function waitForExit(proc, timeoutMs) {
 
 describe('host lifecycle', () => {
   // The leak this guards against: the SDK's stdio transport subscribes only to
-  // stdin's 'data' and 'error', so EOF on the pipe used to reach nothing and the
-  // process outlived its host indefinitely — holding a profile lock, which
-  // pushed the next server onto `<profile>-2` and a second Chrome.
+  // stdin's 'data' and 'error', so without our own handler EOF on the pipe
+  // reaches nothing and the process outlives its host indefinitely — holding a
+  // profile lock, which pushes the next server onto `<profile>-2` and a second
+  // Chrome.
   it('exits when the host closes stdin', async () => {
     const { proc, getStderr } = await spawnServer();
 

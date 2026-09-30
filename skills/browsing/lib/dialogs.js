@@ -22,6 +22,7 @@ class DialogRefusedError extends Error {
 
 const PAGE_TARGET_ACTIONS = new Set([
   'navigate', 'click', 'type', 'extract', 'screenshot', 'eval', 'select', 'attr',
+  'set_attr',
   'await_element', 'await_text', 'hover', 'drag_drop', 'mouse_move', 'scroll',
   'double_click', 'right_click', 'file_upload', 'keyboard_press',
   'set_viewport', 'clear_viewport', 'get_viewport',
