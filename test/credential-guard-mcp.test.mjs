@@ -151,6 +151,14 @@ const ALERT_ON_INPUT_PAGE = dataUrl(
 // Submitting the form (never actually navigates: the handler calls
 // preventDefault) proves the live fields still hold what was typed after
 // auto-capture has run against them repeatedly.
+//
+// Scope note (round 2 / jc review): "no capture file... containing either
+// value" below means the .html/.md/-diff.txt text artifacts. The OTP field
+// is type="text" (one-time codes are meant to be visible), so the digits
+// the user typed are visible pixels in the .png screenshots these same
+// actions write -- screenshots aren't string-scrubbed, and were never
+// claimed to be. Only the password field (type="password") is masked in
+// its own screenshot by the browser's own rendering.
 const PLAIN_PASSWORD = 'Correct-Horse-Battery42';
 const PLAIN_OTP = '654321';
 const SECRET_FORM_PAGE = dataUrl(
@@ -175,6 +183,50 @@ const SECRET_FORM_PAGE = dataUrl(
   "  window.__submitted = document.getElementById('pw').value + ':' + document.getElementById('otp').value;" +
   "});" +
   '</script>'
+);
+
+// Round 2 (jc review) coverage gaps: a password field toggled to show its
+// value (type switched from password to text), a mixed-case multi-token
+// autocomplete value, and a hidden mirror input that carries the secret in
+// an attribute the visible field never has itself.
+const PLAIN_PASSWORD2 = 'sw0rdfish-42-Xyz';
+const PLAIN_OTP2 = '111222';
+const ROUND2_FORM_PAGE = dataUrl(
+  '<title>Sign in (round 2)</title>' +
+  '<input id="pw2" type="password">' +
+  '<input id="pw2Mirror" type="hidden">' +
+  '<button id="toggle2" type="button">Show password</button>' +
+  // Mixed case, multi-token autocomplete value (a real-world "section-2fa
+  // one-time-code" style value), deliberately spelled with mixed case.
+  '<input id="otp2" type="text" autocomplete="Section-2FA One-Time-Code">' +
+  '<script>' +
+  // The hidden mirror has no type=password, no sensitive autocomplete, and
+  // no data-sen-secret marker of its own -- only value-based redaction can
+  // catch it.
+  "document.getElementById('pw2').addEventListener('input', e => " +
+  "document.getElementById('pw2Mirror').setAttribute('value', e.target.value));" +
+  // "Show password" toggle: flips type to text, and (like many real
+  // implementations) also mirrors the value into a non-data-* attribute
+  // once revealed, so attribute-based scrubbing keyed on the ORIGINAL
+  // type=password selector can't reach it either.
+  "document.getElementById('toggle2').addEventListener('click', () => {" +
+  "  const pw2 = document.getElementById('pw2');" +
+  "  pw2.type = (pw2.type === 'password') ? 'text' : 'password';" +
+  "  pw2.setAttribute('title', pw2.value);" +
+  '});' +
+  "document.getElementById('otp2').addEventListener('input', e => " +
+  "e.target.setAttribute('data-initial-value', e.target.value));" +
+  '</script>'
+);
+
+// A page whose <img> increments a counter every time its onerror handler
+// fires. The src is a data: URI that is not valid image data, so the
+// browser always fails to decode it and fires onerror -- no network wait.
+const IMG_ERROR_PROBE_PAGE = dataUrl(
+  '<title>Img probe</title>' +
+  '<img src="data:image/png;base64,not-a-real-image" ' +
+  'onerror="window.__senImgErrorCount = (window.__senImgErrorCount || 0) + 1">' +
+  '<button id="b">Go</button>'
 );
 
 /**
@@ -919,8 +971,16 @@ describe('password and one-time-code fields mirrored into attributes (real Chrom
   before(async () => { server = await startServer(); });
   after(async () => { await server?.stop(); });
 
-  function htmlAndMdFiles() {
-    return server.capturedFiles().filter((f) => f.endsWith('.html') || f.endsWith('.md'));
+  // .html, .md and -diff.txt are the text artifacts the scrub actually
+  // covers (see the scope note above); .png is deliberately excluded.
+  // Round 2 / jc review: the previous version of this helper only checked
+  // .html/.md, so -diff.txt -- one of the three artifact kinds the fix
+  // changes (see capturePageArtifacts's before/after diff path in
+  // capture.js) -- was never actually exercised by this test.
+  function textCaptureFiles() {
+    return server.capturedFiles().filter(
+      (f) => f.endsWith('.html') || f.endsWith('.md') || f.endsWith('-diff.txt')
+    );
   }
 
   it('never writes the mirrored value to disk, and the live fields (and form submission) still see it', async () => {
@@ -931,7 +991,7 @@ describe('password and one-time-code fields mirrored into attributes (real Chrom
 
     // Neither the password's nor the one-time code's mirrored attribute
     // copy may have reached any capture file written so far.
-    const files = htmlAndMdFiles();
+    const files = textCaptureFiles();
     assert.ok(files.length > 0, 'expected some capture files to have been written');
     for (const file of files) {
       const written = fs.readFileSync(file, 'utf8');
@@ -954,10 +1014,103 @@ describe('password and one-time-code fields mirrored into attributes (real Chrom
 
     // Re-check every capture file written by the whole sequence (including
     // the eval and click actions above, each of which auto-captures too).
-    for (const file of htmlAndMdFiles()) {
+    for (const file of textCaptureFiles()) {
       const written = fs.readFileSync(file, 'utf8');
       assert.ok(!written.includes(PLAIN_PASSWORD), `password leaked into ${file}:\n${written}`);
       assert.ok(!written.includes(PLAIN_OTP), `one-time code leaked into ${file}:\n${written}`);
     }
+  });
+});
+
+describe('round 2 coverage gaps: show-password toggle and hidden mirror (real Chrome)', { skip: !CHROME_AVAILABLE && 'Chrome not installed' }, () => {
+  let server;
+  before(async () => { server = await startServer(); });
+  after(async () => { await server?.stop(); });
+
+  function textCaptureFiles() {
+    return server.capturedFiles().filter(
+      (f) => f.endsWith('.html') || f.endsWith('.md') || f.endsWith('-diff.txt')
+    );
+  }
+
+  it('keeps redacting after a show-password toggle, a hidden mirror input, and a mixed-case multi-token autocomplete value', async () => {
+    await server.call({ action: 'navigate', payload: ROUND2_FORM_PAGE });
+
+    await server.call({ action: 'type', selector: '#pw2', payload: PLAIN_PASSWORD2 });
+    await server.call({ action: 'type', selector: '#otp2', payload: PLAIN_OTP2 });
+
+    // Nothing leaked yet, from the password (mirrored into a hidden input)
+    // or the mixed-case-multi-token-autocomplete OTP field.
+    let files = textCaptureFiles();
+    assert.ok(files.length > 0, 'expected some capture files to have been written');
+    for (const file of files) {
+      const written = fs.readFileSync(file, 'utf8');
+      assert.ok(!written.includes(PLAIN_PASSWORD2), `password leaked into ${file} (pre-toggle):\n${written}`);
+      assert.ok(!written.includes(PLAIN_OTP2), `one-time code leaked into ${file}:\n${written}`);
+    }
+
+    // Show-password toggle: flips #pw2's type to text, and mirrors the
+    // value into its `title` attribute -- neither of which a scrub keyed
+    // only on the *current* type=password selector would catch.
+    await server.call({ action: 'click', selector: '#toggle2' });
+
+    const typeAfterToggle = await server.call({ action: 'eval', payload: "document.getElementById('pw2').type" });
+    assert.match(typeAfterToggle.text, /text/, typeAfterToggle.text);
+
+    files = textCaptureFiles();
+    assert.ok(files.length > 0, 'expected capture files after the toggle click');
+    for (const file of files) {
+      const written = fs.readFileSync(file, 'utf8');
+      assert.ok(!written.includes(PLAIN_PASSWORD2), `password leaked into ${file} (post-toggle):\n${written}`);
+    }
+
+    // The live fields (and the hidden mirror, and the revealed title
+    // attribute) still hold the real values -- the scrub never touches
+    // the live document.
+    const pwLive = await server.call({ action: 'eval', payload: "document.getElementById('pw2').value" });
+    assert.match(pwLive.text, new RegExp(PLAIN_PASSWORD2), pwLive.text);
+    const mirrorLive = await server.call({ action: 'eval', payload: "document.getElementById('pw2Mirror').value" });
+    assert.match(mirrorLive.text, new RegExp(PLAIN_PASSWORD2), mirrorLive.text);
+    const titleLive = await server.call({ action: 'eval', payload: "document.getElementById('pw2').title" });
+    assert.match(titleLive.text, new RegExp(PLAIN_PASSWORD2), titleLive.text);
+
+    // One more action after the toggle, to prove the redaction keeps
+    // working (via the WeakSet tag), not just on the single capture that
+    // happened to run while the field was still type=password.
+    await server.call({ action: 'eval', payload: '1 + 1' });
+    for (const file of textCaptureFiles()) {
+      const written = fs.readFileSync(file, 'utf8');
+      assert.ok(!written.includes(PLAIN_PASSWORD2), `password leaked into ${file} (final check):\n${written}`);
+    }
+  });
+});
+
+describe('the scrub never re-fires page handlers or reloads resources (real Chrome)', { skip: !CHROME_AVAILABLE && 'Chrome not installed' }, () => {
+  let server;
+  before(async () => { server = await startServer(); });
+  after(async () => { await server?.stop(); });
+
+  it('does not increment an <img> onerror counter across repeated auto-captures', async () => {
+    // Regression guard for the obra#52 pattern: a live-document
+    // cloneNode(true) still runs the image-loading algorithm for a cloned
+    // <img> (gated on "fully active", which a same-document clone still
+    // is), so every auto-capture re-fires onload/onerror. An inert clone
+    // via document.implementation.createHTMLDocument never does.
+    await server.call({ action: 'navigate', payload: IMG_ERROR_PROBE_PAGE });
+
+    const afterNavigate = await server.call({ action: 'eval', payload: 'window.__senImgErrorCount' });
+    const countAfterNavigate = Number(afterNavigate.text.match(/\d+/)?.[0]);
+    assert.ok(countAfterNavigate >= 1, `expected the broken image to have failed at least once: ${afterNavigate.text}`);
+
+    // Every one of these drives at least one auto-capture (getHtmlWithScrub
+    // runs on each). If the clone ever re-attached to (or re-ran image
+    // loading within) the live document, the counter would climb.
+    await server.call({ action: 'click', selector: '#b' });
+    await server.call({ action: 'eval', payload: '1 + 1' });
+    await server.call({ action: 'click', selector: '#b' });
+
+    const final = await server.call({ action: 'eval', payload: 'window.__senImgErrorCount' });
+    const finalCount = Number(final.text.match(/\d+/)?.[0]);
+    assert.equal(finalCount, countAfterNavigate, 'the image error handler must not re-fire on auto-capture');
   });
 });
