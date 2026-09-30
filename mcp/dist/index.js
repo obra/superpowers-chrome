@@ -21300,6 +21300,17 @@ function formatCaptureFiles(actionResult) {
   ];
 }
 function formatActionResponse(actionResult, actionDescription) {
+  if (actionResult.midFlight) {
+    const dialogDesc = actionResult.artifacts?.markdown || (actionResult.dialog ? `Dialog opened: ${actionResult.dialog.kind}` : "Dialog opened");
+    const suppressedNotice = actionResult.actionResult?.credentialSuppressed ? `
+
+${credentialGuard.CREDENTIAL_SUPPRESSED_NOTICE}` : "";
+    return `${actionDescription}
+
+Dialog is now open \u2014 page is waiting for user input.${suppressedNotice}
+
+${dialogDesc}`;
+  }
   const response = [
     `${actionDescription}`,
     `Current URL: ${actionResult.url || "unknown"}`,
@@ -21323,6 +21334,11 @@ function formatActionResponse(actionResult, actionDescription) {
     }
   }
   return response.join("\n");
+}
+function formatEvalDescription(expression, evalResult) {
+  const value = evalResult.midFlight ? evalResult.actionResult?.result : evalResult.result;
+  return `Evaluated: ${expression}
+Result: ${value}`;
 }
 function formatCaptureResponse(action, details, captureOrNull, dialog, artifacts, credentialSuppressed) {
   if (!captureOrNull) {
@@ -21662,8 +21678,7 @@ async function executeBrowserAction(params) {
         throw new Error("eval requires payload with JavaScript code");
       }
       const evalResult = await chromeLib.evaluateWithCapture(tabIndex, expression);
-      return formatActionResponse(evalResult, `Evaluated: ${expression}
-Result: ${evalResult.result}`);
+      return formatActionResponse(evalResult, formatEvalDescription(expression, evalResult));
     }
     case "attr" /* ATTR */: {
       const p = parsePayload(payload, "attr");
@@ -22331,6 +22346,7 @@ export {
   formatCaptureFiles,
   formatCaptureResponse,
   formatDialogRefusal,
+  formatEvalDescription,
   parsePayload,
   redactUnlessAllowed,
   resolveConsoleSince,

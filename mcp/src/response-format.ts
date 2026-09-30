@@ -53,6 +53,21 @@ export function formatCaptureFiles(actionResult: any): string[] {
  * Format action response with capture information
  */
 export function formatActionResponse(actionResult: any, actionDescription: string): string {
+  if (actionResult.midFlight) {
+    // The action itself opened a dialog (withDialogAwarenessForSession's
+    // AFTER-dialog branch in dialogs.js): `actionResult` here is the wrapper
+    // shape `{ midFlight, actionResult, dialog, artifacts }`, not the click/
+    // select/eval result directly. Render the dialog the same way
+    // formatCaptureResponse's null-capture branch does, instead of reading
+    // url/pageSize/capturePrefix off a top level where they don't exist.
+    const dialogDesc = actionResult.artifacts?.markdown
+      || (actionResult.dialog ? `Dialog opened: ${actionResult.dialog.kind}` : 'Dialog opened');
+    const suppressedNotice = actionResult.actionResult?.credentialSuppressed
+      ? `\n\n${credentialGuard.CREDENTIAL_SUPPRESSED_NOTICE}`
+      : '';
+    return `${actionDescription}\n\nDialog is now open — page is waiting for user input.${suppressedNotice}\n\n${dialogDesc}`;
+  }
+
   const response = [
     `${actionDescription}`,
     `Current URL: ${actionResult.url || 'unknown'}`,
@@ -81,6 +96,16 @@ export function formatActionResponse(actionResult: any, actionDescription: strin
   }
 
   return response.join('\n');
+}
+
+/**
+ * Describe an eval call. On the midFlight wrapper (the eval opened a
+ * dialog) the evaluated value lives on the wrapped actionResult, not the
+ * top level.
+ */
+export function formatEvalDescription(expression: string, evalResult: any): string {
+  const value = evalResult.midFlight ? evalResult.actionResult?.result : evalResult.result;
+  return `Evaluated: ${expression}\nResult: ${value}`;
 }
 
 /**

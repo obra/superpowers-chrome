@@ -26,6 +26,7 @@ import {
   formatCaptureFiles,
   formatActionResponse,
   formatCaptureResponse,
+  formatEvalDescription,
   redactUnlessAllowed,
 } from "./response-format.js";
 
@@ -35,7 +36,7 @@ import {
 // makes the helpers reachable from the bundled entry point too, without
 // requiring tests to boot a browser or an MCP server).
 export { parsePayload, resolveStrictStructuredPayload, tryParseJsonObject, tryParseCoords, describeUnusableScrollPayload, resolveConsoleSince, tryParseIntegerValue, PAYLOAD_SPECS } from "./payload.js";
-export { formatDialogRefusal, formatCaptureFiles, formatActionResponse, formatCaptureResponse, redactUnlessAllowed } from "./response-format.js";
+export { formatDialogRefusal, formatCaptureFiles, formatActionResponse, formatCaptureResponse, formatEvalDescription, redactUnlessAllowed } from "./response-format.js";
 
 // Get the directory and import chrome-ws-lib
 const __filename = fileURLToPath(import.meta.url);
@@ -487,7 +488,7 @@ async function executeBrowserAction(params: UseBrowserInput): Promise<string> {
         throw new Error("eval requires payload with JavaScript code");
       }
       const evalResult = await chromeLib.evaluateWithCapture(tabIndex, expression);
-      return formatActionResponse(evalResult, `Evaluated: ${expression}\nResult: ${evalResult.result}`);
+      return formatActionResponse(evalResult, formatEvalDescription(expression, evalResult));
     }
 
     case BrowserAction.ATTR: {
