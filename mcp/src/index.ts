@@ -29,6 +29,7 @@ import {
   formatEvalDescription,
   redactUnlessAllowed,
 } from "./response-format.js";
+import { resolveHeadless } from "./launch-options.js";
 
 // Re-exported for tests (mcp/src/payload.ts and mcp/src/response-format.ts
 // have no side effects and are also importable directly from
@@ -70,22 +71,15 @@ function hasDisplay(): boolean {
 // Parse command line arguments for headless mode and port
 // --headless: Force headless mode
 // --headed: Force headed mode (will fail if no display)
+// CHROME_WS_HEADLESS=1|0: the same choice where the command line is fixed
 // --port=N: Use specific CDP port (overrides dynamic allocation)
 // Default: headless if no display available, headed otherwise
-const forceHeadless = process.argv.includes('--headless');
-const forceHeaded = process.argv.includes('--headed');
 const portArg = process.argv.find(a => a.startsWith('--port='));
 const explicitPort = portArg ? parseInt(portArg.split('=')[1], 10) : undefined;
 
-let headlessMode: boolean;
-if (forceHeadless) {
-  headlessMode = true;
-} else if (forceHeaded) {
-  headlessMode = false;
-} else {
-  // Auto-detect: headless if no display available
-  headlessMode = !hasDisplay();
-}
+const launchMode = resolveHeadless(process.argv, process.env, hasDisplay,
+  (message) => console.error(message));
+const headlessMode: boolean = launchMode.headless;
 
 // Set to true when Chrome auto-restarted due to an external kill.
 // Consumed (and cleared) by executeBrowserAction on the first action after restart.
@@ -1349,9 +1343,7 @@ async function main() {
   // Connect server to transport
   await server.connect(transport);
 
-  const modeReason = forceHeadless ? 'forced via --headless' :
-                     forceHeaded ? 'forced via --headed' :
-                     headlessMode ? 'auto-detected no display' : 'display available';
+  const modeReason = launchMode.reason;
   const portInfo = explicitPort ? `, port: ${explicitPort} (via --port)` : '';
   console.error(`Chrome MCP server running via stdio (${headlessMode ? 'headless' : 'headed'} mode, ${modeReason}${portInfo})`);
 }
