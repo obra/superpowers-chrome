@@ -21377,6 +21377,23 @@ function redactUnlessAllowed(text) {
   return credentialGuard.credentialCaptureAllowed() ? text : credentialGuard.redactCredentialShaped(text);
 }
 
+// src/launch-options.ts
+var TRUE_VALUES = /* @__PURE__ */ new Set(["1", "true", "yes", "on"]);
+var FALSE_VALUES = /* @__PURE__ */ new Set(["0", "false", "no", "off"]);
+function resolveHeadless(argv, env, hasDisplay2, warn = () => {
+}) {
+  if (argv.includes("--headless")) return { headless: true, reason: "forced via --headless" };
+  if (argv.includes("--headed")) return { headless: false, reason: "forced via --headed" };
+  const raw = env.CHROME_WS_HEADLESS;
+  if (raw !== void 0 && raw.trim() !== "") {
+    const value = raw.trim().toLowerCase();
+    if (TRUE_VALUES.has(value)) return { headless: true, reason: "set by CHROME_WS_HEADLESS" };
+    if (FALSE_VALUES.has(value)) return { headless: false, reason: "set by CHROME_WS_HEADLESS" };
+    warn(`CHROME_WS_HEADLESS=${JSON.stringify(raw)} is not one of 1/0, true/false, yes/no, on/off; ignoring it`);
+  }
+  return hasDisplay2() ? { headless: false, reason: "display available" } : { headless: true, reason: "auto-detected no display" };
+}
+
 // src/index.ts
 var __filename2 = fileURLToPath2(import.meta.url);
 var __dirname2 = dirname2(__filename2);
@@ -21395,18 +21412,15 @@ function hasDisplay() {
     return !!(process.env.DISPLAY || process.env.WAYLAND_DISPLAY);
   }
 }
-var forceHeadless = process.argv.includes("--headless");
-var forceHeaded = process.argv.includes("--headed");
 var portArg = process.argv.find((a) => a.startsWith("--port="));
 var explicitPort = portArg ? parseInt(portArg.split("=")[1], 10) : void 0;
-var headlessMode;
-if (forceHeadless) {
-  headlessMode = true;
-} else if (forceHeaded) {
-  headlessMode = false;
-} else {
-  headlessMode = !hasDisplay();
-}
+var launchMode = resolveHeadless(
+  process.argv,
+  process.env,
+  hasDisplay,
+  (message) => console.error(message)
+);
+var headlessMode = launchMode.headless;
 var chromeWasRestarted = false;
 var BrowserAction = /* @__PURE__ */ ((BrowserAction2) => {
   BrowserAction2["NAVIGATE"] = "navigate";
@@ -22331,7 +22345,7 @@ async function main() {
     );
   };
   await server.connect(transport);
-  const modeReason = forceHeadless ? "forced via --headless" : forceHeaded ? "forced via --headed" : headlessMode ? "auto-detected no display" : "display available";
+  const modeReason = launchMode.reason;
   const portInfo = explicitPort ? `, port: ${explicitPort} (via --port)` : "";
   console.error(`Chrome MCP server running via stdio (${headlessMode ? "headless" : "headed"} mode, ${modeReason}${portInfo})`);
 }

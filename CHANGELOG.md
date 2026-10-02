@@ -4,6 +4,12 @@ All notable changes to the superpowers-chrome MCP project.
 
 ## [Unreleased]
 
+### Added
+- `CHROME_WS_HEADLESS` environment variable (`1`/`true`/`yes`/`on` for headless, `0`/`false`/`no`/`off` for headed) for the MCP server, matching `CHROME_WS_PORT`, `CHROME_WS_PROFILE` and `CHROME_WS_BROWSER`. The plugin-installed server in Claude Code runs with the plugin's fixed arguments, so `--headless` couldn't be passed there and the server always opened a visible window on a desktop. `--headless`/`--headed` still take precedence; an unrecognized value is reported on stderr and ignored, leaving display auto-detection as before. The startup line names what decided the mode.
+
+### Tests
+- `test/launch-options.test.mjs` (new): flag precedence, accepted values, the unchanged default, the warning for an unrecognized value, and the logged reason. The resolution moved to `mcp/src/launch-options.ts` (compiled to `mcp/dist/launch-options.js`) so it can be tested without booting Chrome.
+
 ## [3.0.8] - 2026-09-26 - data-sen-secret marking: an accident guard, not a boundary
 
 ### Added

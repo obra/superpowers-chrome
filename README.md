@@ -157,6 +157,12 @@ Ultra-lightweight MCP server with a single `use_browser` tool. Perfect for minim
 }
 ```
 
+Where you can't change the command line — the plugin-installed server in
+Claude Code starts with the plugin's own arguments — set `CHROME_WS_HEADLESS=1`
+in the environment instead (`0` forces headed). A `--headless`/`--headed` flag
+still wins over the variable, and with neither, the server picks headless only
+when no display is available.
+
 **Option 2: Git Clone + Local Path (Current)**
 ```bash
 git clone https://github.com/obra/superpowers-chrome.git
