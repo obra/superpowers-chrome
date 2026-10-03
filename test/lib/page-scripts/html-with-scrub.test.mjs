@@ -131,27 +131,61 @@ describe('page-scripts/html-with-scrub', () => {
   });
 
   it('matches autocomplete case-insensitively and by substring, including a multi-token value', () => {
+    // Mirror each value into an attribute (a hidden sibling, the way a
+    // page's own input handler would) so the secret actually appears in
+    // `raw` -- setting only the .value property leaves outerHTML
+    // unchanged, which would make the assertions below pass even with
+    // scrubbing disabled entirely (jc round 2, finding 4).
     const dom = makeDom(
       '<html><body>' +
       '<input id="a" autocomplete="New-Password">' +
+      '<input id="a-mirror" type="hidden">' +
       '<input id="b" autocomplete="section-2fa one-time-code">' +
+      '<input id="b-mirror" type="hidden">' +
       '</body></html>'
     );
     const { document } = dom.window;
     document.getElementById('a').value = 'Sup3r-Secret-Pw';
+    document.getElementById('a-mirror').setAttribute('value', 'Sup3r-Secret-Pw');
     document.getElementById('b').value = '654321';
+    document.getElementById('b-mirror').setAttribute('value', '654321');
 
     const value = runScrub(dom);
+    assert.match(value.raw, /Sup3r-Secret-Pw/);
+    assert.match(value.raw, /654321/);
     assert.doesNotMatch(value.scrubbed, /Sup3r-Secret-Pw/);
     assert.doesNotMatch(value.scrubbed, /654321/);
   });
 
-  it('redacts a value from any cc-* autocomplete field', () => {
-    const dom = makeDom('<html><body><input id="ccn" autocomplete="cc-number"></body></html>');
-    dom.window.document.getElementById('ccn').value = '4242424242424242';
+  it('redacts a value from a cc-number autocomplete field', () => {
+    // Mirror the value into an attribute (a hidden sibling, the way a
+    // page's own input handler would) so the secret actually appears in
+    // `raw` — setting only the .value property leaves outerHTML
+    // unchanged, which would make this assertion pass even with
+    // scrubbing disabled entirely.
+    const dom = makeDom(
+      '<html><body><input id="ccn" autocomplete="cc-number"><input id="mirror" type="hidden"></body></html>'
+    );
+    const { document } = dom.window;
+    document.getElementById('ccn').value = '4242424242424242';
+    document.getElementById('mirror').setAttribute('value', '4242424242424242');
 
     const value = runScrub(dom);
+    assert.match(value.raw, /4242424242424242/);
     assert.doesNotMatch(value.scrubbed, /4242424242424242/);
+  });
+
+  it('redacts a value from a cc-csc autocomplete field', () => {
+    const dom = makeDom(
+      '<html><body><input id="csc" autocomplete="cc-csc"><input id="mirror" type="hidden"></body></html>'
+    );
+    const { document } = dom.window;
+    document.getElementById('csc').value = '1234';
+    document.getElementById('mirror').setAttribute('value', '1234');
+
+    const value = runScrub(dom);
+    assert.match(value.raw, /value="1234"/);
+    assert.doesNotMatch(value.scrubbed, /1234/);
   });
 
   it('does not touch an ordinary field whose value merely resembles a sensitive one', () => {
@@ -163,5 +197,89 @@ describe('page-scripts/html-with-scrub', () => {
     // not an autocomplete token — the field itself isn't sensitive, so
     // outerHTML's normal (unmirrored) attribute reflection is untouched.
     assert.match(value.scrubbed, /new-password reset guide/);
+  });
+
+  // -- Round 3 (jc review) --------------------------------------------
+
+  it('does not touch a cc-exp-month/cc-exp-year/cc-name/cc-type field: too broad a family to redact by value', () => {
+    // The old `[autocomplete*="cc-" i]` wildcard matched the whole cc-*
+    // family, including fields whose value is a short, common token (an
+    // expiry month/year, a cardholder name) with no business being
+    // substring-redacted across the page. Narrowed to cc-number/cc-csc,
+    // the only two where a literal-value redaction makes sense.
+    const dom = makeDom(
+      '<html><body><select id="exp" autocomplete="cc-exp-month"><option value="1" selected>1</option></select></body></html>'
+    );
+    const value = runScrub(dom);
+    assert.equal(value.raw, value.scrubbed);
+  });
+
+  it("does not substring-redact a value shorter than the minimum length, to avoid mangling unrelated markup (jc round 2, finding 1)", () => {
+    // Reproduces jc's checkout-page report: a short sensitive value (here
+    // a 1-character password, standing in for a short cc-exp-month/
+    // cc-exp-year/split-OTP-digit value) must not be split/joined across
+    // the whole serialized document -- that mangles tag names, prices,
+    // and styles that merely happen to contain the same short string.
+    const dom = makeDom(
+      '<html><body><title>Checkout 1</title><input id="pw" type="password">' +
+      '<h1>Order 100</h1><p>Total: $12.00</p><div style="width:100px"></div></body></html>'
+    );
+    dom.window.document.getElementById('pw').value = '1';
+
+    const value = runScrub(dom);
+    assert.match(value.scrubbed, /<title>Checkout 1<\/title>/);
+    assert.match(value.scrubbed, /<h1>Order 100<\/h1>/);
+    assert.match(value.scrubbed, /Total: \$12\.00/);
+    assert.match(value.scrubbed, /width:100px/);
+  });
+
+  it('still redacts a value at or above the minimum length', () => {
+    const dom = makeDom(
+      '<html><body><input id="pw" type="password"><input id="mirror" type="hidden"></body></html>'
+    );
+    const { document } = dom.window;
+    document.getElementById('pw').value = 'abcd';
+    document.getElementById('mirror').setAttribute('value', 'abcd');
+
+    const value = runScrub(dom);
+    assert.match(value.raw, /value="abcd"/);
+    assert.doesNotMatch(value.scrubbed, /abcd/);
+  });
+
+  it("redacts a password mirrored into an attribute even when & and \" force it into an HTML-entity-escaped form (jc round 2, finding 2)", () => {
+    // outerHTML escapes & and " in an attribute value (&amp;/&quot;), so
+    // the literal .value the user typed never appears verbatim in the
+    // serialized attribute -- only its entity-escaped form does.
+    const dom = makeDom(
+      '<html><body><input id="pw" type="password"><input id="mirror" type="hidden"></body></html>'
+    );
+    const { document } = dom.window;
+    const secret = 'Sup3r&Secret"Pw';
+    document.getElementById('pw').value = secret;
+    document.getElementById('mirror').setAttribute('value', secret);
+
+    const value = runScrub(dom);
+    // Sanity check on the test fixture itself: confirms the raw HTML
+    // really does contain the escaped form, not the literal secret.
+    assert.match(value.raw, /Sup3r&amp;Secret&quot;Pw/);
+    assert.doesNotMatch(value.scrubbed, /Sup3r/);
+    assert.doesNotMatch(value.scrubbed, /Secret/);
+  });
+
+  it('redacts a password mirrored into text content even when < and > force it into an HTML-entity-escaped form (jc round 2, finding 2)', () => {
+    // outerHTML escapes < and > in text-node content (&lt;/&gt;), a
+    // different escaping than attribute serialization uses.
+    const dom = makeDom(
+      '<html><body><input id="pw" type="password"><span id="mirror"></span></body></html>'
+    );
+    const { document } = dom.window;
+    const secret = 'Sup3r<Secret>Pw';
+    document.getElementById('pw').value = secret;
+    document.getElementById('mirror').textContent = secret;
+
+    const value = runScrub(dom);
+    assert.match(value.raw, /Sup3r&lt;Secret&gt;Pw/);
+    assert.doesNotMatch(value.scrubbed, /Sup3r/);
+    assert.doesNotMatch(value.scrubbed, /Secret/);
   });
 });

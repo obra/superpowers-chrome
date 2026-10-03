@@ -157,10 +157,14 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
   }
 
   // outerHTML in two flavors: `raw` (fed to the credential-shape scan,
-  // unchanged) and `scrubbed` (what actually gets written to disk). See
-  // page-scripts/html-with-scrub.js for why the two must differ: a plain
-  // password or one-time code mirrored into an attribute by the page's own
-  // change handler has no shape the scan can recognize.
+  // unchanged) and `scrubbed` (what actually gets written to disk as
+  // HTML). See page-scripts/html-with-scrub.js for why the two must
+  // differ: a plain password or one-time code mirrored into an attribute
+  // by the page's own change handler has no shape the scan can recognize.
+  // `secretValues` is the same live-typed-value list html-with-scrub.js
+  // redacted out of `scrubbed` -- redactSecretValues() below applies it to
+  // the markdown artifact too, which is generated separately from the
+  // live DOM and never passes through html-with-scrub.js's clone/scrub.
   async function getHtmlWithScrub(tabIndexOrWsUrl) {
     const ps = await getPageSession(tabIndexOrWsUrl);
     const result = await ps.send('Runtime.evaluate', {
@@ -169,7 +173,23 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
     });
     throwIfExceptionDetails(result);
     const value = result.result.value || {};
-    return { raw: value.raw || '', scrubbed: value.scrubbed || '' };
+    return { raw: value.raw || '', scrubbed: value.scrubbed || '', secretValues: value.secretValues || [] };
+  }
+
+  // Redacts every value html-with-scrub.js collected (see above) out of a
+  // plain-text artifact, the same literal-substring way html-with-scrub.js
+  // redacts them out of the HTML artifact. Markdown is plain extracted
+  // text (page-scripts/markdown.js uses .textContent, not outerHTML), so
+  // unlike the HTML case there is no separate HTML-entity-escaped form to
+  // also match here (jc round 2, finding 3).
+  function redactSecretValues(text, secretValues) {
+    if (!text) return text;
+    let result = text;
+    for (const v of secretValues) {
+      if (!v) continue;
+      result = result.split(v).join('[REDACTED]');
+    }
+    return result;
   }
 
   // True when auto-capture must not copy this page's content anywhere.
@@ -284,7 +304,7 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
     // point before the last artifact means no artifact survives.
     const shot = await screenshotUnlessCredentialShaped(tabIndexOrWsUrl, screenshotPath);
 
-    const [{ raw: html, scrubbed: scrubbedHtml }, markdown, pageSize, domSummary, renderedText] = await Promise.all([
+    const [{ raw: html, scrubbed: scrubbedHtml, secretValues }, markdown, pageSize, domSummary, renderedText] = await Promise.all([
       getHtmlWithScrub(tabIndexOrWsUrl),
       generateMarkdown(tabIndexOrWsUrl),
       getPageSize(tabIndexOrWsUrl),
@@ -305,9 +325,11 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
     }
 
     // Write the scrubbed HTML, not the raw HTML the scan above just used:
-    // see page-scripts/html-with-scrub.js for why they differ.
+    // see page-scripts/html-with-scrub.js for why they differ. Markdown is
+    // generated separately, straight from the live DOM, so it needs its
+    // own redaction pass with the same secretValues (jc round 2, finding 3).
     fs.writeFileSync(htmlPath, scrubbedHtml || '');
-    fs.writeFileSync(markdownPath, markdown || '');
+    fs.writeFileSync(markdownPath, redactSecretValues(markdown, secretValues) || '');
     fs.writeFileSync(consoleLogPath, '# Console Log\n# TODO: Console logging not yet implemented\n');
 
     return {
@@ -472,7 +494,7 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
     const afterScreenshotPath = path.join(dir, `${prefix}-after.png`);
     const afterShot = beforeSuppressed ? null : await screenshotUnlessCredentialShaped(pinnedTab, afterScreenshotPath);
 
-    const [{ raw: afterHtml, scrubbed: afterScrubbedHtml }, markdown, pageSize, domSummary, afterRenderedText] = await Promise.all([
+    const [{ raw: afterHtml, scrubbed: afterScrubbedHtml, secretValues }, markdown, pageSize, domSummary, afterRenderedText] = await Promise.all([
       getHtmlWithScrub(pinnedTab),
       generateMarkdown(pinnedTab),
       getPageSize(pinnedTab),
@@ -514,7 +536,11 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
     fs.writeFileSync(beforeHtmlPath, beforeScrubbedHtml || '');
     fs.writeFileSync(afterHtmlPath, afterScrubbedHtml || '');
     fs.writeFileSync(diffPath, diff);
-    fs.writeFileSync(markdownPath, markdown || '');
+    // Markdown is generated from the AFTER page straight off the live DOM
+    // (never through html-with-scrub.js's clone/scrub), so it needs its
+    // own redaction pass with the AFTER-side secretValues (jc round 2,
+    // finding 3).
+    fs.writeFileSync(markdownPath, redactSecretValues(markdown, secretValues) || '');
 
     return {
       actionResult,

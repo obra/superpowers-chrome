@@ -219,6 +219,42 @@ const ROUND2_FORM_PAGE = dataUrl(
   '</script>'
 );
 
+// Round 3 (jc review) findings: no minimum length for value-redaction
+// (short values mangle unrelated markup), entity-escaped values slip
+// through, and the .md artifact is generated straight from the live DOM
+// so a value echoed into visible text reached it unredacted.
+const PLAIN_SHORT3 = '12';
+const PLAIN_PASSWORD3 = 'Sup3r&Secret"Pw';
+const PLAIN_OTP3 = '987654';
+const ROUND3_FORM_PAGE = dataUrl(
+  '<title>Checkout 1</title>' +
+  '<h1>Order 100</h1>' +
+  '<p id="totalText">Total: $12.00</p>' +
+  '<div id="box" style="width:100px"></div>' +
+  // A short value (standing in for a cc-exp-month/cc-exp-year/split-OTP-
+  // digit field): must not be substring-redacted across the whole page,
+  // which would mangle the title/heading/price/style above (all of which
+  // merely happen to contain the same short digits).
+  '<input id="short3" type="password">' +
+  // A password containing & and ", mirrored into a hidden input's
+  // `value` attribute -- outerHTML entity-escapes that attribute, so the
+  // literal value never appears verbatim in the serialized HTML.
+  '<input id="pw3" type="password">' +
+  '<input id="pw3Mirror" type="hidden">' +
+  // A one-time code whose value gets echoed into ordinary page TEXT
+  // (a "verifying..." status message) -- the kind of thing the markdown
+  // extractor picks up directly from the live DOM, never through the
+  // HTML clone/scrub.
+  '<input id="otp3" type="text" autocomplete="one-time-code">' +
+  '<p id="echoP"></p>' +
+  '<script>' +
+  "document.getElementById('pw3').addEventListener('input', e => " +
+  "document.getElementById('pw3Mirror').setAttribute('value', e.target.value));" +
+  "document.getElementById('otp3').addEventListener('input', e => " +
+  "document.getElementById('echoP').textContent = 'Verifying code ' + e.target.value);" +
+  '</script>'
+);
+
 // A page whose <img> increments a counter every time its onerror handler
 // fires. The src is a data: URI that is not valid image data, so the
 // browser always fails to decode it and fires onerror -- no network wait.
@@ -1081,6 +1117,69 @@ describe('round 2 coverage gaps: show-password toggle and hidden mirror (real Ch
     for (const file of textCaptureFiles()) {
       const written = fs.readFileSync(file, 'utf8');
       assert.ok(!written.includes(PLAIN_PASSWORD2), `password leaked into ${file} (final check):\n${written}`);
+    }
+  });
+});
+
+describe('round 3 coverage gaps: length floor, entity escaping, markdown redaction (real Chrome)', { skip: !CHROME_AVAILABLE && 'Chrome not installed' }, () => {
+  let server;
+  before(async () => { server = await startServer(); });
+  after(async () => { await server?.stop(); });
+
+  function textCaptureFiles() {
+    return server.capturedFiles().filter(
+      (f) => f.endsWith('.html') || f.endsWith('.md') || f.endsWith('-diff.txt')
+    );
+  }
+
+  it('does not mangle unrelated short markup when a short value is typed into a sensitive field (jc round 2, finding 1)', async () => {
+    await server.call({ action: 'navigate', payload: ROUND3_FORM_PAGE });
+    await server.call({ action: 'type', selector: '#short3', payload: PLAIN_SHORT3 });
+
+    const files = textCaptureFiles();
+    assert.ok(files.length > 0, 'expected some capture files to have been written');
+    for (const file of files) {
+      const written = fs.readFileSync(file, 'utf8');
+      if (file.endsWith('.html')) {
+        assert.ok(written.includes('Checkout 1'), `title mangled in ${file}:\n${written}`);
+        assert.ok(written.includes('Order 100'), `heading mangled in ${file}:\n${written}`);
+        assert.ok(written.includes('Total: $12.00'), `price mangled in ${file}:\n${written}`);
+        assert.ok(written.includes('width:100px'), `style mangled in ${file}:\n${written}`);
+      }
+    }
+  });
+
+  it('redacts a password mirrored into an attribute even when & and " force an HTML-entity-escaped form (jc round 2, finding 2)', async () => {
+    await server.call({ action: 'navigate', payload: ROUND3_FORM_PAGE });
+    await server.call({ action: 'type', selector: '#pw3', payload: PLAIN_PASSWORD3 });
+
+    const files = textCaptureFiles();
+    assert.ok(files.length > 0, 'expected some capture files to have been written');
+    for (const file of files) {
+      const written = fs.readFileSync(file, 'utf8');
+      assert.ok(!written.includes('Sup3r'), `password leaked into ${file}:\n${written}`);
+      assert.ok(!written.includes('Secret'), `password leaked into ${file}:\n${written}`);
+    }
+  });
+
+  it('redacts a one-time code echoed into page text from the .md artifact, not just .html (jc round 2, finding 3)', async () => {
+    await server.call({ action: 'navigate', payload: ROUND3_FORM_PAGE });
+    await server.call({ action: 'type', selector: '#otp3', payload: PLAIN_OTP3 });
+
+    const mdFiles = server.capturedFiles().filter((f) => f.endsWith('.md'));
+    assert.ok(mdFiles.length > 0, 'expected some .md files to have been written');
+    for (const file of mdFiles) {
+      const written = fs.readFileSync(file, 'utf8');
+      assert.ok(!written.includes(PLAIN_OTP3), `one-time code leaked into ${file}:\n${written}`);
+    }
+    // The same echo also reaches the .html text content (not just an
+    // attribute), which the value-based redaction pass over the whole
+    // serialized string already covers -- confirms the .md gap isn't
+    // just the .html fix leaking through by coincidence.
+    const htmlFiles = server.capturedFiles().filter((f) => f.endsWith('.html'));
+    for (const file of htmlFiles) {
+      const written = fs.readFileSync(file, 'utf8');
+      assert.ok(!written.includes(PLAIN_OTP3), `one-time code leaked into ${file}:\n${written}`);
     }
   });
 });

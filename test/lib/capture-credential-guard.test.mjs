@@ -69,7 +69,31 @@ const PASSWORD_MIRRORED_PAGE = {
     '<html><body><h1>Sign in</h1>' +
     '<input type="password">' +
     '</body></html>',
+  secretValues: [PLAIN_SECRET],
   markdown: '# Sign in',
+  domSummary: 'Sign in\nInteractive: 0 buttons, 1 inputs, 0 links\nHeadings: "Sign in"\nLayout: body',
+  renderedText: '',
+};
+
+// Same mirrored password, but also echoed into page text that the
+// markdown extractor (page-scripts/markdown.js) picks up independently of
+// html-with-scrub.js's clone/scrub (jc round 2, finding 3): the .md file
+// is generated straight from the live DOM, never through that clone, so
+// the html-with-scrub secretValues list is capture.js's only way to catch
+// this in the .md artifact too.
+const PASSWORD_MIRRORED_TO_MARKDOWN_PAGE = {
+  html:
+    '<html><body><h1>Sign in</h1>' +
+    `<input type="password" value="${PLAIN_SECRET}">` +
+    `<p>Verifying password: ${PLAIN_SECRET}</p>` +
+    '</body></html>',
+  scrubbedHtml:
+    '<html><body><h1>Sign in</h1>' +
+    '<input type="password">' +
+    '<p>Verifying password: [REDACTED]</p>' +
+    '</body></html>',
+  secretValues: [PLAIN_SECRET],
+  markdown: `# Sign in\n\nVerifying password: ${PLAIN_SECRET}`,
   domSummary: 'Sign in\nInteractive: 0 buttons, 1 inputs, 0 links\nHeadings: "Sign in"\nLayout: body',
   renderedText: '',
 };
@@ -155,7 +179,8 @@ function setup({
       if (expr === htmlWithScrubScript) {
         // scrubbedHtml defaults to html for pages with nothing to scrub.
         const scrubbed = page.scrubbedHtml !== undefined ? page.scrubbedHtml : page.html;
-        return { result: { value: { raw: page.html, scrubbed } } };
+        const secretValues = page.secretValues || [];
+        return { result: { value: { raw: page.html, scrubbed, secretValues } } };
       }
       if (expr.includes('window.innerWidth')) {
         return { result: { value: { width: 800, height: 600, documentWidth: 800, documentHeight: 600 } } };
@@ -249,6 +274,20 @@ describe('capturePageArtifacts credential guard', () => {
     const written = fs.readFileSync(result.files.html, 'utf8');
     assert.ok(!written.includes(PLAIN_SECRET), `password leaked into .html: ${written}`);
     assert.equal(written, PASSWORD_MIRRORED_PAGE.scrubbedHtml);
+  });
+
+  it('also redacts a password from the .md artifact, not just .html (jc round 2, finding 3)', async () => {
+    // generateMarkdown walks the live DOM independently of
+    // html-with-scrub.js's clone/scrub, so a value echoed into visible
+    // text would otherwise reach the .md file in clear even though the
+    // same bytes are redacted from .html.
+    const { capturePageArtifacts, calls } = setup({ before: PASSWORD_MIRRORED_TO_MARKDOWN_PAGE });
+    const result = await capturePageArtifacts(0, 'navigate');
+
+    assert.ok(!result.credentialSuppressed);
+    assert.equal(calls.screenshot, 1);
+    const writtenMd = fs.readFileSync(result.files.markdown, 'utf8');
+    assert.ok(!writtenMd.includes(PLAIN_SECRET), `password leaked into .md: ${writtenMd}`);
   });
 
   it(`${ENV}=1 restores capture of a credential-shaped page`, async () => {
@@ -441,6 +480,18 @@ describe('captureActionWithDiff credential guard', () => {
       '001-keypress-before.png', '001-keypress-diff.txt', '001-keypress.md',
     ]);
     assert.equal(result.capture.domSummary, CLEAN_PAGE.domSummary);
+  });
+
+  it('also redacts a password from the .md artifact written by the before/after pair (jc round 2, finding 3)', async () => {
+    const { captureActionWithDiff, act } = setup({
+      before: CLEAN_PAGE,
+      after: PASSWORD_MIRRORED_TO_MARKDOWN_PAGE,
+    });
+    const result = await captureActionWithDiff(0, 'keypress', act, 0);
+
+    assert.ok(!result.capture.credentialSuppressed);
+    const writtenMd = fs.readFileSync(result.capture.files.markdown, 'utf8');
+    assert.ok(!writtenMd.includes(PLAIN_SECRET), `password leaked into .md: ${writtenMd}`);
   });
 
   it(`${ENV}=1 restores the before/after capture`, async () => {
