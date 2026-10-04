@@ -10,18 +10,18 @@ const { INERT_CLONE_FN_SRC } = require('../secret-marker');
 //     so existing shape/marker detection (a token typed into a field, or a
 //     data-sen-secret marker) keeps working exactly as before.
 //   - `scrubbed` is what actually gets written to disk as HTML. It is
-//     built two ways at once (round 2, see below): the matched field's own
+//     built two ways at once (see below): the matched field's own
 //     `value` and `data-*`/`aria-*` attributes are stripped in an INERT
 //     clone, and separately every live-typed value collected from those
-//     fields (plus fields found only by self-mirror, see round 4 below) --
-//     plus its HTML-entity-escaped forms, see round 3 below -- is redacted
+//     fields (plus fields found only by self-mirror, see below) --
+//     plus its HTML-entity-escaped forms, see below -- is redacted
 //     wherever it appears in the resulting string.
-//   - `secretValues` is the plain array of those same live-typed values
-//     (round 3 / jc review, finding 3), so capture.js can apply the same
+//   - `secretValues` is the plain array of those same live-typed values,
+//     so capture.js can apply the same
 //     redaction to the markdown artifact, which is generated separately
 //     from the live DOM and never passes through this clone/scrub.
 //
-// Why redact by value, not just by attribute (round 2 / jc review):
+// Why redact by value, not just by attribute:
 // selector-and-attribute scrubbing only strips the matched element's own
 // mirrored copy. It cannot see a mirror onto a DIFFERENT element (a hidden
 // input a page's JS keeps in sync with the visible field) or onto a
@@ -33,8 +33,8 @@ const { INERT_CLONE_FN_SRC } = require('../secret-marker');
 // which also covers the hidden-mirror-input and other-attribute cases
 // without needing a selector for the mirror itself.
 //
-// Why an inert clone, not `cloneNode(true)` on the live document (round 2 /
-// jc review, obra#52 hit the same regression): `el.cloneNode(true)` in the
+// Why an inert clone, not `cloneNode(true)` on the live document:
+// `el.cloneNode(true)` in the
 // live document still runs the image-loading algorithm for any cloned
 // <img> -- that algorithm is gated on the node's ownerDocument being
 // "fully active", which a same-document clone still is, regardless of
@@ -48,8 +48,7 @@ const { INERT_CLONE_FN_SRC } = require('../secret-marker');
 // helper extraction.js splices in for eval/extract/attr) instead of
 // duplicating this pattern a third time.
 //
-// Detection signals for "this field's value must be redacted" (round 2 /
-// jc review, gaps in the original selector):
+// Detection signals for "this field's value must be redacted":
 //   - input[type="password" i]: the ordinary case. Case-insensitive
 //     because the `type` content attribute is matched against its keyword
 //     ASCII-case-insensitively by the spec anyway, so a page that spells
@@ -78,8 +77,7 @@ const { INERT_CLONE_FN_SRC } = require('../secret-marker');
 // shape/marker scan on `raw` and its whole capture is suppressed --
 // scrubbing its text here would just be dead code for that path.
 //
-// Minimum length for value-based redaction (round 3 / jc review, finding
-// 1): splitting/joining a short string across the *entire* serialized
+// Minimum length for value-based redaction: splitting/joining a short string across the *entire* serialized
 // document risks corrupting unrelated markup that merely happens to
 // contain the same bytes -- a one-digit value matches inside tag names
 // ("h1"), prices ("$12.00"), and inline styles ("width:100px") anywhere on
@@ -90,7 +88,7 @@ const { INERT_CLONE_FN_SRC } = require('../secret-marker');
 // cc-csc fields use a floor of 3 instead, because most card security
 // codes are three digits.
 //
-// Entity-escaped forms (round 3 / jc review, finding 2): outerHTML
+// Entity-escaped forms: outerHTML
 // entity-escapes `&`/`"`/`<`/`>` when serializing an attribute value, and
 // `&`/`<`/`>` (not `"`) when serializing text-node content, and U+00A0
 // as `&nbsp;` in both -- so the
@@ -99,7 +97,7 @@ const { INERT_CLONE_FN_SRC } = require('../secret-marker');
 // variants of every secret value are redacted alongside the raw one.
 //
 // Self-mirror detection, finding a sensitive field with no recognized type
-// or autocomplete at all (round 4): the selectors above all key off the
+// or autocomplete at all: the selectors above all key off the
 // FIELD -- a type, an autocomplete token, an explicit marker -- and a page
 // that mirrors a typed value without ever tagging the field that way is
 // invisible to every one of them. Google's 2-step verification page is a
@@ -129,7 +127,7 @@ module.exports = `
     const raw = document.documentElement.outerHTML;
 
     // Shortest value that gets substring-redacted across the whole
-    // document -- see module comment above (round 3 / jc review, finding 1).
+    // document -- see module comment above.
     const MIN_SECRET_VALUE_LENGTH = 4;
     // Card security codes are 3 digits on most cards (4 on Amex), so they
     // get a floor of 3: a 3-digit CSC mirrored elsewhere must still be
@@ -189,8 +187,7 @@ module.exports = `
     // redacted -- the substring pass below already covers any attribute on
     // any element once a value is in \`secretValues\`.
     //
-    // Two exclusions keep ordinary controls from being flagged (jc review
-    // of round 4): input types nobody types into (a submit button's value
+    // Two exclusions keep ordinary controls from being flagged: input types nobody types into (a submit button's value
     // is its label, a radio's value is fixed by the page), and attributes
     // that name or label a field, which a page's value-sync JS does not
     // mirror into, so a match there is a coincidence (\`<input type="submit"
@@ -237,8 +234,7 @@ module.exports = `
       }
     }
 
-    // outerHTML's two entity-escaping rules (round 3 / jc review, finding
-    // 2): an attribute value escapes &/"/</> and U+00A0; text-node content
+    // outerHTML's two entity-escaping rules: an attribute value escapes &/"/</> and U+00A0; text-node content
     // escapes &/</> and U+00A0 but not ". Redacting all three forms
     // (literal, attribute-escaped, text-escaped) of each secret value
     // covers both.
@@ -255,8 +251,7 @@ module.exports = `
     }
 
     // secretValues is exposed alongside raw/scrubbed so capture.js can
-    // apply the same redaction to the markdown artifact (round 3 / jc
-    // review, finding 3): generateMarkdown walks the live DOM separately
+    // apply the same redaction to the markdown artifact: generateMarkdown walks the live DOM separately
     // and is never run through this clone/scrub, so without this a value
     // echoed into visible text would be redacted from .html but written
     // to .md in clear. Not meaningfully more exposure than raw already
