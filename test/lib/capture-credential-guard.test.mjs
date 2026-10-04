@@ -14,6 +14,7 @@ const { attachCapture } = require('../../skills/browsing/lib/capture.js');
 const markdownScript = require('../../skills/browsing/lib/page-scripts/markdown.js');
 const domSummaryScript = require('../../skills/browsing/lib/page-scripts/dom-summary.js');
 const { HAS_SECRET_MARKER_SCRIPT } = require('../../skills/browsing/lib/secret-marker.js');
+const htmlWithScrubScript = require('../../skills/browsing/lib/page-scripts/html-with-scrub.js');
 
 // Fake tokens are assembled from prefix + body at runtime so no complete
 // token-shaped literal sits in the source (GitHub push protection rejects
@@ -50,6 +51,53 @@ const MARKER_PAGE = {
   renderedText: '',
 };
 
+// A plain password typed into a password field, mirrored by the page's own
+// change handler into the `value` attribute and a `data-initial-value`
+// attribute (a common as-you-type-validation pattern). It has no token
+// shape, so containsCredentialShaped never matches it — this page must NOT
+// be suppressed — but the mirrored copy must not reach disk either.
+// `scrubbedHtml` is what page-scripts/html-with-scrub.js's clone pass
+// would produce for this markup: the same document with `value` and every
+// `data-*` attribute stripped from the password input.
+const PLAIN_SECRET = 'Sup3r-Secret-Pw';
+const PASSWORD_MIRRORED_PAGE = {
+  html:
+    '<html><body><h1>Sign in</h1>' +
+    `<input type="password" value="${PLAIN_SECRET}" data-initial-value="${PLAIN_SECRET}">` +
+    '</body></html>',
+  scrubbedHtml:
+    '<html><body><h1>Sign in</h1>' +
+    '<input type="password">' +
+    '</body></html>',
+  secretValues: [PLAIN_SECRET],
+  markdown: '# Sign in',
+  domSummary: 'Sign in\nInteractive: 0 buttons, 1 inputs, 0 links\nHeadings: "Sign in"\nLayout: body',
+  renderedText: '',
+};
+
+// Same mirrored password, but also echoed into page text that the
+// markdown extractor (page-scripts/markdown.js) picks up independently of
+// html-with-scrub.js's clone/scrub (jc round 2, finding 3): the .md file
+// is generated straight from the live DOM, never through that clone, so
+// the html-with-scrub secretValues list is capture.js's only way to catch
+// this in the .md artifact too.
+const PASSWORD_MIRRORED_TO_MARKDOWN_PAGE = {
+  html:
+    '<html><body><h1>Sign in</h1>' +
+    `<input type="password" value="${PLAIN_SECRET}">` +
+    `<p>Verifying password: ${PLAIN_SECRET}</p>` +
+    '</body></html>',
+  scrubbedHtml:
+    '<html><body><h1>Sign in</h1>' +
+    '<input type="password">' +
+    '<p>Verifying password: [REDACTED]</p>' +
+    '</body></html>',
+  secretValues: [PLAIN_SECRET],
+  markdown: `# Sign in\n\nVerifying password: ${PLAIN_SECRET}`,
+  domSummary: 'Sign in\nInteractive: 0 buttons, 1 inputs, 0 links\nHeadings: "Sign in"\nLayout: body',
+  renderedText: '',
+};
+
 // A native dialog (alert/confirm/prompt/beforeunload) whose message is
 // page/JS-controlled and can carry a credential-shaped string. See
 // dialogs-render.js's renderSyntheticArtifacts for the payload shape.
@@ -71,6 +119,27 @@ const DIALOG_BENIGN = {
     defaultPrompt: '',
     hasBrowserHandler: false,
   },
+};
+
+// An alert() that echoes the password the page last held in a password
+// field. Plain text, no token shape, so it is not suppressed.
+const DIALOG_ECHOING_PASSWORD = {
+  kind: 'alert',
+  payload: {
+    message: `Password ${PLAIN_SECRET} rejected`,
+    url: 'https://example.test',
+    defaultPrompt: '',
+    hasBrowserHandler: false,
+  },
+};
+
+// Markdown longer than the 50000-char artifact cap, with the password
+// straddling the cut: truncating before redaction would leave a clear
+// prefix of it in the .md file.
+const MARKDOWN_CAP = 50000;
+const PASSWORD_AT_MARKDOWN_CUT_PAGE = {
+  ...PASSWORD_MIRRORED_TO_MARKDOWN_PAGE,
+  markdown: `${'x'.repeat(MARKDOWN_CAP - 5)}${PLAIN_SECRET} and more text after it`,
 };
 
 const ENV = 'SUPERPOWERS_CHROME_ALLOW_CREDENTIAL_CAPTURE';
@@ -128,6 +197,12 @@ function setup({
       if (expr === markdownScript) return { result: { value: page.markdown } };
       if (expr === domSummaryScript) return { result: { value: page.domSummary } };
       if (expr === 'document.body.innerText') return { result: { value: page.renderedText } };
+      if (expr === htmlWithScrubScript) {
+        // scrubbedHtml defaults to html for pages with nothing to scrub.
+        const scrubbed = page.scrubbedHtml !== undefined ? page.scrubbedHtml : page.html;
+        const secretValues = page.secretValues || [];
+        return { result: { value: { raw: page.html, scrubbed, secretValues } } };
+      }
       if (expr.includes('window.innerWidth')) {
         return { result: { value: { width: 800, height: 600, documentWidth: 800, documentHeight: 600 } } };
       }
@@ -206,6 +281,44 @@ describe('capturePageArtifacts credential guard', () => {
     assert.equal(calls.screenshot, 1);
     assert.equal(result.domSummary, CLEAN_PAGE.domSummary);
     assert.equal(fs.readFileSync(result.files.html, 'utf8'), CLEAN_PAGE.html);
+  });
+
+  it('scrubs a password field mirrored into an attribute, without suppressing the whole page', async () => {
+    // No token shape here, so the page is NOT suppressed (files ARE written,
+    // unlike the credential-shaped cases above) — but the mirrored copy of
+    // the password must not be one of the bytes written.
+    const { capturePageArtifacts, calls } = setup({ before: PASSWORD_MIRRORED_PAGE });
+    const result = await capturePageArtifacts(0, 'navigate');
+
+    assert.ok(!result.credentialSuppressed);
+    assert.equal(calls.screenshot, 1);
+    const written = fs.readFileSync(result.files.html, 'utf8');
+    assert.ok(!written.includes(PLAIN_SECRET), `password leaked into .html: ${written}`);
+    assert.equal(written, PASSWORD_MIRRORED_PAGE.scrubbedHtml);
+  });
+
+  it('also redacts a password from the .md artifact, not just .html (jc round 2, finding 3)', async () => {
+    // generateMarkdown walks the live DOM independently of
+    // html-with-scrub.js's clone/scrub, so a value echoed into visible
+    // text would otherwise reach the .md file in clear even though the
+    // same bytes are redacted from .html.
+    const { capturePageArtifacts, calls } = setup({ before: PASSWORD_MIRRORED_TO_MARKDOWN_PAGE });
+    const result = await capturePageArtifacts(0, 'navigate');
+
+    assert.ok(!result.credentialSuppressed);
+    assert.equal(calls.screenshot, 1);
+    const writtenMd = fs.readFileSync(result.files.markdown, 'utf8');
+    assert.ok(!writtenMd.includes(PLAIN_SECRET), `password leaked into .md: ${writtenMd}`);
+  });
+
+  it('redacts the .md artifact before truncating it, so a password at the cut leaves no clear prefix', async () => {
+    const { capturePageArtifacts } = setup({ before: PASSWORD_AT_MARKDOWN_CUT_PAGE });
+    const result = await capturePageArtifacts(0, 'navigate');
+
+    const writtenMd = fs.readFileSync(result.files.markdown, 'utf8');
+    assert.ok(writtenMd.length <= MARKDOWN_CAP, `markdown not capped: ${writtenMd.length} chars`);
+    assert.ok(!writtenMd.includes(PLAIN_SECRET.slice(0, 5)), 'a prefix of the password leaked into .md');
+    assert.ok(writtenMd.startsWith('x'.repeat(MARKDOWN_CAP - 5)), 'the text before the secret is kept');
   });
 
   it(`${ENV}=1 restores capture of a credential-shaped page`, async () => {
@@ -400,6 +513,27 @@ describe('captureActionWithDiff credential guard', () => {
     assert.equal(result.capture.domSummary, CLEAN_PAGE.domSummary);
   });
 
+  it('also redacts a password from the .md artifact written by the before/after pair (jc round 2, finding 3)', async () => {
+    const { captureActionWithDiff, act } = setup({
+      before: CLEAN_PAGE,
+      after: PASSWORD_MIRRORED_TO_MARKDOWN_PAGE,
+    });
+    const result = await captureActionWithDiff(0, 'keypress', act, 0);
+
+    assert.ok(!result.capture.credentialSuppressed);
+    const writtenMd = fs.readFileSync(result.capture.files.markdown, 'utf8');
+    assert.ok(!writtenMd.includes(PLAIN_SECRET), `password leaked into .md: ${writtenMd}`);
+  });
+
+  it('redacts the before/after .md artifact before truncating it', async () => {
+    const { captureActionWithDiff, act } = setup({ before: CLEAN_PAGE, after: PASSWORD_AT_MARKDOWN_CUT_PAGE });
+    const result = await captureActionWithDiff(0, 'keypress', act, 0);
+
+    const writtenMd = fs.readFileSync(result.capture.files.markdown, 'utf8');
+    assert.ok(writtenMd.length <= MARKDOWN_CAP, `markdown not capped: ${writtenMd.length} chars`);
+    assert.ok(!writtenMd.includes(PLAIN_SECRET.slice(0, 5)), 'a prefix of the password leaked into .md');
+  });
+
   it(`${ENV}=1 restores the before/after capture`, async () => {
     process.env[ENV] = '1';
     const { captureActionWithDiff, state, act } = setup({ before: CLEAN_PAGE, after: TOKEN_PAGE });
@@ -434,6 +568,26 @@ describe('capturePageArtifacts dialog short-circuit credential guard', () => {
     assert.deepEqual(sessionFiles(state).sort(),
       ['001-navigate-console.txt', '001-navigate.html', '001-navigate.md']);
     assert.ok(result.markdown.includes(DIALOG_BENIGN.payload.message));
+  });
+
+  it("redacts a dialog that echoes a password with the most recent scrub's secret values", async () => {
+    // Capture the page while the password field holds the value, then a
+    // dialog opens that repeats it. The dialog path cannot read the page,
+    // so it redacts with what the last scrub collected.
+    const { capturePageArtifacts, state, dialogRef } = setup({ before: PASSWORD_MIRRORED_PAGE });
+    await capturePageArtifacts(0, 'type');
+    dialogRef.current = DIALOG_ECHOING_PASSWORD;
+    const result = await capturePageArtifacts(0, 'click');
+
+    assert.ok(!result.credentialSuppressed);
+    const writtenMd = fs.readFileSync(result.files.markdown, 'utf8');
+    assert.ok(writtenMd.includes('[REDACTED] rejected'), `dialog .md not redacted: ${writtenMd}`);
+    for (const file of sessionFiles(state)) {
+      if (file.endsWith('.png')) continue;
+      const text = fs.readFileSync(path.join(state.sessionDir, file), 'utf8');
+      assert.ok(!text.includes(PLAIN_SECRET), `password leaked into ${file}`);
+    }
+    assert.ok(!result.markdown.includes(PLAIN_SECRET), 'password leaked into the returned dialog markdown');
   });
 
   it(`${ENV}=1 restores capture of a dialog with a credential-shaped message`, async () => {
@@ -489,6 +643,20 @@ describe('captureActionWithDiff after-dialog short-circuit credential guard', ()
       ['001-click-before.png', '002-click-console.txt', '002-click.html', '002-click.md']);
   });
 
+  it("redacts an after-dialog that echoes a password with the BEFORE scrub's secret values", async () => {
+    const { captureActionWithDiff, state, act } = setup({
+      before: PASSWORD_MIRRORED_PAGE,
+      dialog: null,
+      dialogAfterAction: DIALOG_ECHOING_PASSWORD,
+    });
+    const result = await captureActionWithDiff(0, 'click', act, 0);
+
+    assert.ok(!result.credentialSuppressed);
+    const writtenMd = fs.readFileSync(path.join(state.sessionDir, '002-click.md'), 'utf8');
+    assert.ok(writtenMd.includes('[REDACTED] rejected'), `dialog .md not redacted: ${writtenMd}`);
+    assert.ok(!result.artifacts.markdown.includes(PLAIN_SECRET), 'password leaked into the returned dialog artifacts');
+  });
+
   it(`${ENV}=1 restores the after-dialog capture of a credential-shaped message`, async () => {
     process.env[ENV] = '1';
     const { captureActionWithDiff, state, act } = setup({
@@ -501,6 +669,14 @@ describe('captureActionWithDiff after-dialog short-circuit credential guard', ()
     assert.ok(!result.credentialSuppressed);
     assert.equal(sessionFiles(state).length, 4);
     assert.ok(result.artifacts.markdown.includes(FAKE_TOKEN));
+  });
+});
+
+describe('generateMarkdown', () => {
+  it('caps the markdown at 50000 chars', async () => {
+    const { generateMarkdown } = setup({ before: PASSWORD_AT_MARKDOWN_CUT_PAGE });
+    const md = await generateMarkdown(0);
+    assert.equal(md.length, MARKDOWN_CAP);
   });
 });
 

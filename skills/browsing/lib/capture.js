@@ -6,8 +6,12 @@ const { throwIfExceptionDetails } = require('./cdp-utils');
 const markdownScript = require('./page-scripts/markdown');
 const domSummaryScript = require('./page-scripts/dom-summary');
 const renderedTextScript = require('./page-scripts/rendered-text');
+const htmlWithScrubScript = require('./page-scripts/html-with-scrub');
 const { containsCredentialShaped, credentialCaptureAllowed, secretMarkerRefusal } = require('./credential-guard');
 const { pageHasSecretMarker } = require('./secret-marker');
+
+// Size cap for the markdown artifact.
+const MARKDOWN_MAX_CHARS = 50000;
 
 // Only these DOM-summary lines are returned for a suppressed capture: they
 // are element counts and landmark structure. The title and headings lines
@@ -61,6 +65,12 @@ function ensureProcessHandlersRegistered() {
  */
 function attachCapture({ state, getPageSession, getHtml, screenshot, actions, dialogs }) {
   const { renderSyntheticArtifacts } = require('./dialogs-render.js');
+
+  // Secret values collected by the most recent html-with-scrub pass. A
+  // dialog suspends the page, so the dialog short-circuits cannot run a
+  // scrub of their own; they redact with these instead.
+  let lastSecretValues = [];
+
   function initializeSession() {
     if (!state.sessionDir) {
       // ~/.cache/superpowers/browser/YYYY-MM-DD/session-{timestamp}
@@ -132,8 +142,11 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
 
   // Render the page to markdown for token-efficient consumption. Includes
   // images >= 100x100 in a header summary; inlines image references >= 50x50
-  // with size info; skips smaller icons.
-  async function generateMarkdown(tabIndexOrWsUrl) {
+  // with size info; skips smaller icons. The page script returns the full
+  // text; callers cap it at MARKDOWN_MAX_CHARS. Auto-capture caps it only
+  // after redactSecretValues, so a secret straddling the cut is redacted
+  // whole instead of leaving a clear prefix.
+  async function generateFullMarkdown(tabIndexOrWsUrl) {
     const ps = await getPageSession(tabIndexOrWsUrl);
     const result = await ps.send('Runtime.evaluate', {
       expression: markdownScript,
@@ -141,6 +154,14 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
     });
     throwIfExceptionDetails(result);
     return result.result.value;
+  }
+
+  async function generateMarkdown(tabIndexOrWsUrl) {
+    return capMarkdown(await generateFullMarkdown(tabIndexOrWsUrl));
+  }
+
+  function capMarkdown(markdown) {
+    return typeof markdown === 'string' ? markdown.slice(0, MARKDOWN_MAX_CHARS) : markdown;
   }
 
   // Rendered text the HTML scan can't see: innerText (joins split inline
@@ -153,6 +174,53 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
     });
     throwIfExceptionDetails(result);
     return result.result.value;
+  }
+
+  // outerHTML in two flavors: `raw` (fed to the credential-shape scan,
+  // unchanged) and `scrubbed` (what actually gets written to disk as
+  // HTML). See page-scripts/html-with-scrub.js for why the two must
+  // differ: a plain password or one-time code mirrored into an attribute
+  // by the page's own change handler has no shape the scan can recognize.
+  // `secretValues` is the same live-typed-value list html-with-scrub.js
+  // redacted out of `scrubbed` -- redactSecretValues() below applies it to
+  // the markdown artifact too, which is generated separately from the
+  // live DOM and never passes through html-with-scrub.js's clone/scrub.
+  async function getHtmlWithScrub(tabIndexOrWsUrl) {
+    const ps = await getPageSession(tabIndexOrWsUrl);
+    const result = await ps.send('Runtime.evaluate', {
+      expression: htmlWithScrubScript,
+      returnByValue: true
+    });
+    throwIfExceptionDetails(result);
+    const value = result.result.value || {};
+    lastSecretValues = value.secretValues || [];
+    return { raw: value.raw || '', scrubbed: value.scrubbed || '', secretValues: lastSecretValues };
+  }
+
+  // Redacts every value html-with-scrub.js collected (see above) out of a
+  // plain-text artifact, the same literal-substring way html-with-scrub.js
+  // redacts them out of the HTML artifact. Markdown is plain extracted
+  // text (page-scripts/markdown.js uses .textContent, not outerHTML), so
+  // unlike the HTML case there is no separate HTML-entity-escaped form to
+  // also match here (jc round 2, finding 3).
+  function redactSecretValues(text, secretValues) {
+    if (!text) return text;
+    let result = text;
+    for (const v of secretValues) {
+      if (!v) continue;
+      result = result.split(v).join('[REDACTED]');
+    }
+    return result;
+  }
+
+  // The synthetic dialog artifacts, redacted with the last scrub's values:
+  // a page can echo a typed password or code into alert()/confirm().
+  function redactDialogArtifacts(artifacts) {
+    return {
+      markdown: redactSecretValues(artifacts.markdown, lastSecretValues),
+      html: redactSecretValues(artifacts.html, lastSecretValues),
+      consoleSnapshot: redactSecretValues(artifacts.consoleSnapshot, lastSecretValues),
+    };
   }
 
   // True when auto-capture must not copy this page's content anywhere.
@@ -216,7 +284,7 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
     if (dialogs) {
       const open = dialogs.getOpen(ps.sessionId);
       if (open) {
-        const artifacts = renderSyntheticArtifacts(open);
+        const rendered = renderSyntheticArtifacts(open);
         const prefix = createCapturePrefix(actionType);
         const dir = state.sessionDir;
         // The dialog's message (and, for prompt, its default value) is
@@ -225,7 +293,7 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
         // like the on-page path below: no files, a credentialSuppressed
         // marker, no payload — `open` itself carries the message, so only
         // its `kind` (the one field a caller actually reads) survives.
-        if (mustSuppress(artifacts.markdown, artifacts.html, artifacts.consoleSnapshot)) {
+        if (mustSuppress(rendered.markdown, rendered.html, rendered.consoleSnapshot)) {
           return {
             capturePrefix: prefix,
             sessionDir: dir,
@@ -234,6 +302,7 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
             credentialSuppressed: true,
           };
         }
+        const artifacts = redactDialogArtifacts(rendered);
         writeIfDir(dir, `${prefix}.md`, artifacts.markdown);
         writeIfDir(dir, `${prefix}.html`, artifacts.html);
         writeIfDir(dir, `${prefix}-console.txt`, artifacts.consoleSnapshot);
@@ -267,9 +336,9 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
     // point before the last artifact means no artifact survives.
     const shot = await screenshotUnlessCredentialShaped(tabIndexOrWsUrl, screenshotPath);
 
-    const [html, markdown, pageSize, domSummary, renderedText] = await Promise.all([
-      getHtml(tabIndexOrWsUrl),
-      generateMarkdown(tabIndexOrWsUrl),
+    const [{ raw: html, scrubbed: scrubbedHtml, secretValues }, markdown, pageSize, domSummary, renderedText] = await Promise.all([
+      getHtmlWithScrub(tabIndexOrWsUrl),
+      generateFullMarkdown(tabIndexOrWsUrl),
       getPageSize(tabIndexOrWsUrl),
       generateDomSummary(tabIndexOrWsUrl),
       getRenderedText(tabIndexOrWsUrl)
@@ -287,8 +356,12 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
       };
     }
 
-    fs.writeFileSync(htmlPath, html || '');
-    fs.writeFileSync(markdownPath, markdown || '');
+    // Write the scrubbed HTML, not the raw HTML the scan above just used:
+    // see page-scripts/html-with-scrub.js for why they differ. Markdown is
+    // generated separately, straight from the live DOM, so it needs its
+    // own redaction pass with the same secretValues (jc round 2, finding 3).
+    fs.writeFileSync(htmlPath, scrubbedHtml || '');
+    fs.writeFileSync(markdownPath, capMarkdown(redactSecretValues(markdown, secretValues)) || '');
     fs.writeFileSync(consoleLogPath, '# Console Log\n# TODO: Console logging not yet implemented\n');
 
     return {
@@ -396,8 +469,8 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
     const focusInfo = await saveFocus();
     const beforeShot = await screenshotUnlessCredentialShaped(pinnedTab, beforeScreenshotPath);
     await restoreFocus(focusInfo);
-    const [beforeHtml, beforeRenderedText] = await Promise.all([
-      getHtml(pinnedTab),
+    const [{ raw: beforeHtml, scrubbed: beforeScrubbedHtml }, beforeRenderedText] = await Promise.all([
+      getHtmlWithScrub(pinnedTab),
       getRenderedText(pinnedTab)
     ]);
     const beforeSuppressed = !beforeShot || mustSuppress(beforeHtml, beforeRenderedText);
@@ -411,7 +484,8 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
     if (dialogs) {
       const openAfter = dialogs.getOpen(ps.sessionId);
       if (openAfter) {
-        const artifacts = renderSyntheticArtifacts(openAfter);
+        const rendered = renderSyntheticArtifacts(openAfter);
+        const artifacts = redactDialogArtifacts(rendered);
         const afterPrefix = createCapturePrefix(actionType);
         const dir = state.sessionDir;
         // Same guard as capturePageArtifacts's dialog short-circuit above: the
@@ -424,7 +498,7 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
         // reaches the agent. `credentialSuppressed: true` tells that layer to
         // add the ⚠️ notice alongside the (redacted) artifacts, instead of
         // dropping them.
-        if (mustSuppress(artifacts.markdown, artifacts.html, artifacts.consoleSnapshot)) {
+        if (mustSuppress(rendered.markdown, rendered.html, rendered.consoleSnapshot)) {
           return {
             actionResult,
             capture: null,
@@ -453,9 +527,9 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
     const afterScreenshotPath = path.join(dir, `${prefix}-after.png`);
     const afterShot = beforeSuppressed ? null : await screenshotUnlessCredentialShaped(pinnedTab, afterScreenshotPath);
 
-    const [afterHtml, markdown, pageSize, domSummary, afterRenderedText] = await Promise.all([
-      getHtml(pinnedTab),
-      generateMarkdown(pinnedTab),
+    const [{ raw: afterHtml, scrubbed: afterScrubbedHtml, secretValues }, markdown, pageSize, domSummary, afterRenderedText] = await Promise.all([
+      getHtmlWithScrub(pinnedTab),
+      generateFullMarkdown(pinnedTab),
       getPageSize(pinnedTab),
       generateDomSummary(pinnedTab),
       getRenderedText(pinnedTab)
@@ -481,17 +555,25 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
       };
     }
 
-    const diff = generateHtmlDiff(beforeHtml, afterHtml);
+    // Diff and disk writes use the scrubbed HTML, not the raw HTML the
+    // scans above just used: see page-scripts/html-with-scrub.js for why
+    // they differ. Diffing the raw pair would reprint a scrubbed field's
+    // mirrored attribute as an ADDED/REMOVED line.
+    const diff = generateHtmlDiff(beforeScrubbedHtml, afterScrubbedHtml);
 
     const beforeHtmlPath = path.join(dir, `${prefix}-before.html`);
     const afterHtmlPath = path.join(dir, `${prefix}-after.html`);
     const diffPath = path.join(dir, `${prefix}-diff.txt`);
     const markdownPath = path.join(dir, `${prefix}.md`);
 
-    fs.writeFileSync(beforeHtmlPath, beforeHtml || '');
-    fs.writeFileSync(afterHtmlPath, afterHtml || '');
+    fs.writeFileSync(beforeHtmlPath, beforeScrubbedHtml || '');
+    fs.writeFileSync(afterHtmlPath, afterScrubbedHtml || '');
     fs.writeFileSync(diffPath, diff);
-    fs.writeFileSync(markdownPath, markdown || '');
+    // Markdown is generated from the AFTER page straight off the live DOM
+    // (never through html-with-scrub.js's clone/scrub), so it needs its
+    // own redaction pass with the AFTER-side secretValues (jc round 2,
+    // finding 3).
+    fs.writeFileSync(markdownPath, capMarkdown(redactSecretValues(markdown, secretValues)) || '');
 
     return {
       actionResult,

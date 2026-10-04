@@ -80,6 +80,7 @@ module.exports = `
       }
     }
 
-    return results.join('\\n').slice(0, 50000); // Limit size
+    // Not truncated here: capture.js caps it after redacting secret values.
+    return results.join('\\n');
   })()
 `;

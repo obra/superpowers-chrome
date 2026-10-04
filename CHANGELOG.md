@@ -4,6 +4,22 @@ All notable changes to the superpowers-chrome MCP project.
 
 ## [Unreleased]
 
+## [3.0.9] - 2026-09-28 - Password and one-time-code fields no longer copied to disk when a page mirrors them
+
+### Security
+- A page's own JavaScript often mirrors a field's live value into an attribute (`setAttribute('data-initial-value', value)` for as-you-type validation), a hidden input, or visible text. Auto-capture wrote that copy to the `.html`, `.md`, and `-diff.txt` files in the session dir. A plain password or a 6-digit code has no shape the credential-shape detector recognizes, so nothing caught it. This is about accidental exposure to disk, not a defense against a hostile page.
+- Captured artifacts are now scrubbed. On an inert clone of the page (`document.implementation.createHTMLDocument` + `importNode`, so no page handler re-fires), `value` and every `data-*` attribute are stripped from `input[type="password"]` (case-insensitive, and remembered on that element after a show-password toggle changes its type), from any field whose `autocomplete` contains `current-password`, `new-password`, `one-time-code`, `cc-number`, or `cc-csc`, and from `data-sen-secret`-marked elements.
+- The live typed value of each of those fields, plus its HTML-entity-escaped forms (including `&nbsp;`), is replaced with `[REDACTED]` wherever it appears in the `.html`, `.md`, and `-diff.txt` artifacts. Values shorter than 4 characters (3 for `cc-csc`) are not redacted this way. The markdown is redacted before it is capped at 50000 characters, so a value at the cut leaves no prefix behind.
+- Dialog captures (`alert`/`confirm`/`prompt` text) are redacted with the values from the most recent page capture.
+- Redaction is a string replace over the serialized capture, so a secret that also appears as ordinary page text (a password of `password`) replaces that text too. The artifact is degraded but nothing leaks.
+- Known gaps, documented in the README: split one-digit OTP boxes feeding an aggregate hidden input, a field cleared on submit whose mirror remains, and a show-password toggle that swaps in a new element still write the secret to disk. Screenshots are pixels and are not scrubbed.
+- Session dirs are normally removed when the server exits, but one left behind by a crash may still hold a mirrored value captured by 3.0.8 or earlier. Delete old session dirs under `superpowers/browser/` in the cache dir (`$XDG_CACHE_HOME`, else `~/.cache` on Linux, `~/Library/Caches` on macOS, `%LOCALAPPDATA%` on Windows).
+
+### Tests
+- `test/lib/page-scripts/html-with-scrub.test.mjs` (jsdom): attribute stripping, value redaction across hidden mirrors, show-password type toggles, case-insensitive and multi-token `autocomplete`, the narrowed `cc-*` list, the length floors (including a 3-digit `cc-csc`), entity-escaped forms in attributes and text (`&quot;`, `&lt;`, `&nbsp;`), and an inert clone that never touches the live document.
+- `test/lib/capture-credential-guard.test.mjs`: mirrored passwords are scrubbed from `.html` and `.md` in both capture paths without suppressing the page, dialog captures that echo a password are redacted, and markdown is redacted before it is capped.
+- `test/credential-guard-mcp.test.mjs` (real Chrome): typed passwords and one-time codes mirrored by page handlers never reach a `.html`/`.md`/`-diff.txt` file, the live form still submits the right values, `<img>` handlers don't re-fire across captures, and short values don't mangle an unrelated checkout page.
+
 ## [3.0.8] - 2026-09-26 - data-sen-secret marking: an accident guard, not a boundary
 
 ### Added
