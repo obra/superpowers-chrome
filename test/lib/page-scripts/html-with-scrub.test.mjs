@@ -201,16 +201,20 @@ describe('page-scripts/html-with-scrub', () => {
 
   // -- Round 3 (jc review) --------------------------------------------
 
-  it('does not touch a cc-exp-month/cc-exp-year/cc-name/cc-type field: too broad a family to redact by value', () => {
-    // The old `[autocomplete*="cc-" i]` wildcard matched the whole cc-*
-    // family, including fields whose value is a short, common token (an
-    // expiry month/year, a cardholder name) with no business being
-    // substring-redacted across the page. Narrowed to cc-number/cc-csc,
-    // the only two where a literal-value redaction makes sense.
+  it('does not redact a cc-exp-year value: the cc-* family beyond cc-number/cc-csc is not value-sensitive', () => {
+    // A blanket `[autocomplete*="cc-" i]` match would collect the 4-digit
+    // expiry year (it clears the length floor) and redact every copy of
+    // those digits on the page, such as a copyright year.
     const dom = makeDom(
-      '<html><body><select id="exp" autocomplete="cc-exp-month"><option value="1" selected>1</option></select></body></html>'
+      '<html><body><select id="exp" autocomplete="cc-exp-year">' +
+      '<option value="2025">2025</option><option value="2026">2026</option></select>' +
+      '<p>&copy; 2026 Example Shop</p></body></html>'
     );
+    dom.window.document.getElementById('exp').value = '2026';
+
     const value = runScrub(dom);
+    assert.match(value.scrubbed, /<option value="2026">2026<\/option>/);
+    assert.match(value.scrubbed, /2026 Example Shop/);
     assert.equal(value.raw, value.scrubbed);
   });
 
@@ -266,20 +270,51 @@ describe('page-scripts/html-with-scrub', () => {
     assert.doesNotMatch(value.scrubbed, /Secret/);
   });
 
-  it('redacts a password mirrored into text content even when < and > force it into an HTML-entity-escaped form (jc round 2, finding 2)', () => {
-    // outerHTML escapes < and > in text-node content (&lt;/&gt;), a
-    // different escaping than attribute serialization uses.
+  it('redacts a password mirrored into text content, where " stays literal but &, < and > are entity-escaped', () => {
+    // outerHTML escapes &, < and > in text-node content but leaves " as is,
+    // so neither the literal secret nor its attribute-escaped form appears.
     const dom = makeDom(
       '<html><body><input id="pw" type="password"><span id="mirror"></span></body></html>'
     );
     const { document } = dom.window;
-    const secret = 'Sup3r<Secret>Pw';
+    const secret = 'Sup3r<Secret>"Pw&';
     document.getElementById('pw').value = secret;
     document.getElementById('mirror').textContent = secret;
 
     const value = runScrub(dom);
-    assert.match(value.raw, /Sup3r&lt;Secret&gt;Pw/);
+    assert.match(value.raw, /Sup3r&lt;Secret&gt;"Pw&amp;/);
     assert.doesNotMatch(value.scrubbed, /Sup3r/);
     assert.doesNotMatch(value.scrubbed, /Secret/);
+  });
+
+  it('redacts a password containing a non-breaking space, which outerHTML serializes as &nbsp;', () => {
+    const dom = makeDom(
+      '<html><body><input id="pw" type="password"><input id="mirror" type="hidden"><span id="echo"></span></body></html>'
+    );
+    const { document } = dom.window;
+    const secret = 'Horse\u00a0Battery9';
+    document.getElementById('pw').value = secret;
+    document.getElementById('mirror').setAttribute('value', secret);
+    document.getElementById('echo').textContent = secret;
+
+    const value = runScrub(dom);
+    assert.match(value.raw, /value="Horse&nbsp;Battery9"/);
+    assert.match(value.raw, /<span id="echo">Horse&nbsp;Battery9<\/span>/);
+    assert.doesNotMatch(value.scrubbed, /Battery9/);
+  });
+
+  it('redacts a 3-digit card security code, below the general length floor', () => {
+    // Visa/Mastercard/Discover CSCs are three digits; cc-csc gets its own
+    // floor of 3 so its mirror is still redacted.
+    const dom = makeDom(
+      '<html><body><input id="csc" autocomplete="cc-csc"><input id="mirror" type="hidden"></body></html>'
+    );
+    const { document } = dom.window;
+    document.getElementById('csc').value = '737';
+    document.getElementById('mirror').setAttribute('value', 'cvv:737');
+
+    const value = runScrub(dom);
+    assert.match(value.raw, /value="cvv:737"/);
+    assert.doesNotMatch(value.scrubbed, /737/);
   });
 });

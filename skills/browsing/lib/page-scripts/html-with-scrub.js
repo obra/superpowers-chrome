@@ -86,10 +86,13 @@ const { INERT_CLONE_FN_SRC } = require('../secret-marker');
 // length, a field's own value/data-* attributes are still stripped (an
 // exact attribute removal, not a substring scan, so it can't mangle
 // anything else), but the value is not redacted wherever it occurs.
+// cc-csc fields use a floor of 3 instead, because most card security
+// codes are three digits.
 //
 // Entity-escaped forms (round 3 / jc review, finding 2): outerHTML
 // entity-escapes `&`/`"`/`<`/`>` when serializing an attribute value, and
-// `&`/`<`/`>` (not `"`) when serializing text-node content -- so the
+// `&`/`<`/`>` (not `"`) when serializing text-node content, and U+00A0
+// as `&nbsp;` in both -- so the
 // literal .value a user typed often never appears verbatim in the
 // serialized output, only one of its escaped forms does. Both escaped
 // variants of every secret value are redacted alongside the raw one.
@@ -100,6 +103,12 @@ module.exports = `
     // Shortest value that gets substring-redacted across the whole
     // document -- see module comment above (round 3 / jc review, finding 1).
     const MIN_SECRET_VALUE_LENGTH = 4;
+    // Card security codes are 3 digits on most cards (4 on Amex), so they
+    // get a floor of 3: a 3-digit CSC mirrored elsewhere must still be
+    // redacted, at the cost of also replacing those digits in unrelated
+    // markup.
+    const CC_CSC_SELECTOR = '[autocomplete*="cc-csc" i]';
+    const MIN_CC_CSC_VALUE_LENGTH = 3;
 
     const PASSWORD_TYPE_SELECTOR = 'input[type="password" i]';
     const AUTOCOMPLETE_SELECTOR = [
@@ -107,7 +116,7 @@ module.exports = `
       '[autocomplete*="new-password" i]',
       '[autocomplete*="one-time-code" i]',
       '[autocomplete*="cc-number" i]',
-      '[autocomplete*="cc-csc" i]',
+      CC_CSC_SELECTOR,
     ].join(', ');
     const MARKER_SELECTOR = '[' + ${JSON.stringify(MARKER_ATTR)} + ']';
 
@@ -144,7 +153,8 @@ module.exports = `
     // the exact-attribute-removal pass below regardless of length.
     const secretValues = new Set();
     for (const el of valueSensitiveEls) {
-      if (el.value && el.value.length >= MIN_SECRET_VALUE_LENGTH) secretValues.add(el.value);
+      const minLength = el.matches(CC_CSC_SELECTOR) ? MIN_CC_CSC_VALUE_LENGTH : MIN_SECRET_VALUE_LENGTH;
+      if (el.value && el.value.length >= minLength) secretValues.add(el.value);
     }
 
     // Inert clone: see module comment above for why this, not cloneNode.
@@ -159,11 +169,12 @@ module.exports = `
     }
 
     // outerHTML's two entity-escaping rules (round 3 / jc review, finding
-    // 2): an attribute value escapes &/"/</>; text-node content escapes
-    // &/</> but not ". Redacting all three forms (literal, attribute-
-    // escaped, text-escaped) of each secret value covers both.
-    const escapeForAttribute = (s) => s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-    const escapeForText = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    // 2): an attribute value escapes &/"/</> and U+00A0; text-node content
+    // escapes &/</> and U+00A0 but not ". Redacting all three forms
+    // (literal, attribute-escaped, text-escaped) of each secret value
+    // covers both.
+    const escapeForAttribute = (s) => s.replace(/&/g, '&amp;').replace(/\\u00a0/g, '&nbsp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const escapeForText = (s) => s.replace(/&/g, '&amp;').replace(/\\u00a0/g, '&nbsp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
     let scrubbed = clone.outerHTML;
     for (const v of secretValues) {
