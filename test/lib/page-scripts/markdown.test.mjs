@@ -44,9 +44,9 @@ describe('page-scripts/markdown', () => {
     assert.match(md, /!\[Image: "Logo" - 200x100\]\(.*x\.png\)/);
   });
 
-  it('caps output at 50000 chars', () => {
+  it('returns the full markdown uncapped, so capture.js can redact before it truncates', () => {
     const giantHtml = '<html><body>' + '<p>x</p>'.repeat(100000) + '</body></html>';
     const md = evalScript(giantHtml);
-    assert.ok(md.length <= 50000);
+    assert.ok(md.length > 50000);
   });
 });

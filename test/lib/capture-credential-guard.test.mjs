@@ -121,6 +121,27 @@ const DIALOG_BENIGN = {
   },
 };
 
+// An alert() that echoes the password the page last held in a password
+// field. Plain text, no token shape, so it is not suppressed.
+const DIALOG_ECHOING_PASSWORD = {
+  kind: 'alert',
+  payload: {
+    message: `Password ${PLAIN_SECRET} rejected`,
+    url: 'https://example.test',
+    defaultPrompt: '',
+    hasBrowserHandler: false,
+  },
+};
+
+// Markdown longer than the 50000-char artifact cap, with the password
+// straddling the cut: truncating before redaction would leave a clear
+// prefix of it in the .md file.
+const MARKDOWN_CAP = 50000;
+const PASSWORD_AT_MARKDOWN_CUT_PAGE = {
+  ...PASSWORD_MIRRORED_TO_MARKDOWN_PAGE,
+  markdown: `${'x'.repeat(MARKDOWN_CAP - 5)}${PLAIN_SECRET} and more text after it`,
+};
+
 const ENV = 'SUPERPOWERS_CHROME_ALLOW_CREDENTIAL_CAPTURE';
 
 // Fresh XDG cache per test so each gets its own, initially empty, session dir.
@@ -288,6 +309,16 @@ describe('capturePageArtifacts credential guard', () => {
     assert.equal(calls.screenshot, 1);
     const writtenMd = fs.readFileSync(result.files.markdown, 'utf8');
     assert.ok(!writtenMd.includes(PLAIN_SECRET), `password leaked into .md: ${writtenMd}`);
+  });
+
+  it('redacts the .md artifact before truncating it, so a password at the cut leaves no clear prefix', async () => {
+    const { capturePageArtifacts } = setup({ before: PASSWORD_AT_MARKDOWN_CUT_PAGE });
+    const result = await capturePageArtifacts(0, 'navigate');
+
+    const writtenMd = fs.readFileSync(result.files.markdown, 'utf8');
+    assert.ok(writtenMd.length <= MARKDOWN_CAP, `markdown not capped: ${writtenMd.length} chars`);
+    assert.ok(!writtenMd.includes(PLAIN_SECRET.slice(0, 5)), 'a prefix of the password leaked into .md');
+    assert.ok(writtenMd.startsWith('x'.repeat(MARKDOWN_CAP - 5)), 'the text before the secret is kept');
   });
 
   it(`${ENV}=1 restores capture of a credential-shaped page`, async () => {
@@ -494,6 +525,15 @@ describe('captureActionWithDiff credential guard', () => {
     assert.ok(!writtenMd.includes(PLAIN_SECRET), `password leaked into .md: ${writtenMd}`);
   });
 
+  it('redacts the before/after .md artifact before truncating it', async () => {
+    const { captureActionWithDiff, act } = setup({ before: CLEAN_PAGE, after: PASSWORD_AT_MARKDOWN_CUT_PAGE });
+    const result = await captureActionWithDiff(0, 'keypress', act, 0);
+
+    const writtenMd = fs.readFileSync(result.capture.files.markdown, 'utf8');
+    assert.ok(writtenMd.length <= MARKDOWN_CAP, `markdown not capped: ${writtenMd.length} chars`);
+    assert.ok(!writtenMd.includes(PLAIN_SECRET.slice(0, 5)), 'a prefix of the password leaked into .md');
+  });
+
   it(`${ENV}=1 restores the before/after capture`, async () => {
     process.env[ENV] = '1';
     const { captureActionWithDiff, state, act } = setup({ before: CLEAN_PAGE, after: TOKEN_PAGE });
@@ -528,6 +568,26 @@ describe('capturePageArtifacts dialog short-circuit credential guard', () => {
     assert.deepEqual(sessionFiles(state).sort(),
       ['001-navigate-console.txt', '001-navigate.html', '001-navigate.md']);
     assert.ok(result.markdown.includes(DIALOG_BENIGN.payload.message));
+  });
+
+  it("redacts a dialog that echoes a password with the most recent scrub's secret values", async () => {
+    // Capture the page while the password field holds the value, then a
+    // dialog opens that repeats it. The dialog path cannot read the page,
+    // so it redacts with what the last scrub collected.
+    const { capturePageArtifacts, state, dialogRef } = setup({ before: PASSWORD_MIRRORED_PAGE });
+    await capturePageArtifacts(0, 'type');
+    dialogRef.current = DIALOG_ECHOING_PASSWORD;
+    const result = await capturePageArtifacts(0, 'click');
+
+    assert.ok(!result.credentialSuppressed);
+    const writtenMd = fs.readFileSync(result.files.markdown, 'utf8');
+    assert.ok(writtenMd.includes('[REDACTED] rejected'), `dialog .md not redacted: ${writtenMd}`);
+    for (const file of sessionFiles(state)) {
+      if (file.endsWith('.png')) continue;
+      const text = fs.readFileSync(path.join(state.sessionDir, file), 'utf8');
+      assert.ok(!text.includes(PLAIN_SECRET), `password leaked into ${file}`);
+    }
+    assert.ok(!result.markdown.includes(PLAIN_SECRET), 'password leaked into the returned dialog markdown');
   });
 
   it(`${ENV}=1 restores capture of a dialog with a credential-shaped message`, async () => {
@@ -583,6 +643,20 @@ describe('captureActionWithDiff after-dialog short-circuit credential guard', ()
       ['001-click-before.png', '002-click-console.txt', '002-click.html', '002-click.md']);
   });
 
+  it("redacts an after-dialog that echoes a password with the BEFORE scrub's secret values", async () => {
+    const { captureActionWithDiff, state, act } = setup({
+      before: PASSWORD_MIRRORED_PAGE,
+      dialog: null,
+      dialogAfterAction: DIALOG_ECHOING_PASSWORD,
+    });
+    const result = await captureActionWithDiff(0, 'click', act, 0);
+
+    assert.ok(!result.credentialSuppressed);
+    const writtenMd = fs.readFileSync(path.join(state.sessionDir, '002-click.md'), 'utf8');
+    assert.ok(writtenMd.includes('[REDACTED] rejected'), `dialog .md not redacted: ${writtenMd}`);
+    assert.ok(!result.artifacts.markdown.includes(PLAIN_SECRET), 'password leaked into the returned dialog artifacts');
+  });
+
   it(`${ENV}=1 restores the after-dialog capture of a credential-shaped message`, async () => {
     process.env[ENV] = '1';
     const { captureActionWithDiff, state, act } = setup({
@@ -595,6 +669,14 @@ describe('captureActionWithDiff after-dialog short-circuit credential guard', ()
     assert.ok(!result.credentialSuppressed);
     assert.equal(sessionFiles(state).length, 4);
     assert.ok(result.artifacts.markdown.includes(FAKE_TOKEN));
+  });
+});
+
+describe('generateMarkdown', () => {
+  it('caps the markdown at 50000 chars', async () => {
+    const { generateMarkdown } = setup({ before: PASSWORD_AT_MARKDOWN_CUT_PAGE });
+    const md = await generateMarkdown(0);
+    assert.equal(md.length, MARKDOWN_CAP);
   });
 });
 
