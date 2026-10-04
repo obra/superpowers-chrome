@@ -17,6 +17,12 @@ describe('page-scripts/html-with-scrub', () => {
     return dom.window.eval(htmlWithScrubScript);
   }
 
+  // secretValues is an array from the jsdom window's realm, which
+  // deepStrictEqual won't match against a literal from this one.
+  function secretValuesOf(value) {
+    return Array.from(value.secretValues);
+  }
+
   function evalScript(html) {
     const dom = makeDom(html);
     return { value: runScrub(dom), dom };
@@ -43,6 +49,132 @@ describe('page-scripts/html-with-scrub', () => {
     );
     assert.match(value.raw, /123456/);
     assert.doesNotMatch(value.scrubbed, /123456/);
+  });
+
+  it('redacts a self-mirrored field with no recognized type or autocomplete (Google 2-step totpPin)', () => {
+    // Google's 2-step verification page: a plain <input> with no
+    // type="password" and no autocomplete token this module recognizes,
+    // but the page's own JS copies the typed code into data-initial-value
+    // verbatim. None of the existing selectors (type, autocomplete, the
+    // data-sen-secret marker) flag this field, so it must be found by
+    // comparing the live .value against the field's own attributes.
+    const dom = makeDom('<html><body><input id="totpPin" data-initial-value=""></body></html>');
+    const { document } = dom.window;
+    const totpPin = document.getElementById('totpPin');
+    totpPin.value = '123456';
+    totpPin.setAttribute('data-initial-value', '123456');
+
+    const value = runScrub(dom);
+    assert.match(value.raw, /data-initial-value="123456"/);
+    // This field is found only by self-mirror, not by CSS selector (no
+    // type/autocomplete to match), so there is no selector to re-match in
+    // the clone and exact-remove the attribute by name the way a password
+    // or one-time-code field's data-* gets removed above -- the attribute
+    // name survives, but the value-substring pass redacts its content.
+    assert.doesNotMatch(value.scrubbed, /123456/);
+    assert.match(value.scrubbed, /data-initial-value="\[REDACTED\]"/);
+
+    // The live document must be untouched.
+    assert.equal(totpPin.getAttribute('data-initial-value'), '123456');
+  });
+
+  it('does not self-mirror-flag a field whose value merely matches an unrelated attribute elsewhere', () => {
+    // The self-mirror signal only looks at a field's OWN attributes; an
+    // unrelated element on the page that happens to share text is not
+    // enough to flag the field.
+    const dom = makeDom(
+      '<html><body><input id="name" value="Ada"><div id="other" data-display-name="Ada Sen"></div></body></html>'
+    );
+    const { document } = dom.window;
+    document.getElementById('name').value = 'Ada Sen';
+
+    const value = runScrub(dom);
+    assert.match(value.raw, /data-display-name="Ada Sen"/);
+    assert.deepEqual(secretValuesOf(value), []);
+    assert.equal(value.scrubbed, value.raw);
+  });
+
+  it('does not self-mirror-flag a submit button whose value matches its own type and name', () => {
+    // Nobody types into a submit button; its value is a label. Treating it
+    // as a secret source would string-replace "submit" across the page.
+    const { value } = evalScript(
+      '<html><body><form action="/submit"><input type="submit" name="submit" value="submit"></form><p>Press submit</p></body></html>'
+    );
+    assert.deepEqual(secretValuesOf(value), []);
+    assert.equal(value.scrubbed, value.raw);
+  });
+
+  it("does not self-mirror-flag Google's search button, whose value matches its aria-label", () => {
+    const { value } = evalScript(
+      '<html><body><input class="gNO89b" value="Google Search" aria-label="Google Search" name="btnK" role="button" tabindex="0" type="submit"><p>Google Search</p></body></html>'
+    );
+    assert.deepEqual(secretValuesOf(value), []);
+    assert.equal(value.scrubbed, value.raw);
+  });
+
+  it('does not self-mirror-flag a radio whose value matches its own id', () => {
+    // A radio's value is fixed by the page, not typed; flagging it would
+    // rewrite "female" to "fe[REDACTED]" across the capture.
+    const { value } = evalScript(
+      '<html><body><input type="radio" id="male" name="gender" value="male"><label for="male">male</label>' +
+        '<input type="radio" id="female" name="gender" value="female"><a href="/female-only">female</a></body></html>'
+    );
+    assert.deepEqual(secretValuesOf(value), []);
+    assert.equal(value.scrubbed, value.raw);
+  });
+
+  it('does not self-mirror-flag an input type nobody types into, even when its value matches a data-* attribute', () => {
+    // The identity-attribute exclusion alone doesn't cover this: data-label
+    // and data-state are ordinary mirror targets for a typed field.
+    const { value } = evalScript(
+      '<html><body><input type="button" value="Continue" data-label="Continue">' +
+        '<input type="checkbox" value="subscribed" data-state="subscribed">' +
+        '<input type="hidden" value="checkout" data-step="checkout"><p>Continue to checkout</p></body></html>'
+    );
+    assert.deepEqual(secretValuesOf(value), []);
+    assert.equal(value.scrubbed, value.raw);
+  });
+
+  it('does not self-mirror-flag a text field whose value only matches its own label or identity attributes', () => {
+    // type, name, id, aria-label, title, placeholder, for and class name or
+    // label a field; a page's value-sync JS does not mirror into them, so a
+    // match there is a coincidence, not a mirror.
+    const dom = makeDom(
+      '<html><body><input id="query" type="text" name="query" class="query" aria-label="Search" title="Search" placeholder="Search"><p>Search query</p></body></html>'
+    );
+    const field = dom.window.document.getElementById('query');
+    field.value = 'Search';
+    let value = runScrub(dom);
+    assert.deepEqual(secretValuesOf(value), []);
+    assert.equal(value.scrubbed, value.raw);
+
+    field.value = 'query';
+    value = runScrub(dom);
+    assert.deepEqual(secretValuesOf(value), []);
+    assert.equal(value.scrubbed, value.raw);
+  });
+
+  it('still self-mirror-flags a text field mirrored into a non-identity attribute', () => {
+    const dom = makeDom(
+      '<html><body><input id="code" type="text" name="code" data-x=""><p>Ok</p></body></html>'
+    );
+    const field = dom.window.document.getElementById('code');
+    field.value = 'hunter22';
+    field.setAttribute('data-x', 'hunter22');
+
+    const value = runScrub(dom);
+    assert.deepEqual(secretValuesOf(value), ['hunter22']);
+    assert.doesNotMatch(value.scrubbed, /hunter22/);
+    assert.match(value.scrubbed, /data-x="\[REDACTED\]"/);
+  });
+
+  it('strips aria-* attributes, not just data-*, from a matched sensitive field', () => {
+    const { value } = evalScript(
+      '<html><body><input id="pw" type="password" value="s3cr3t" aria-describedby="s3cr3t"></body></html>'
+    );
+    assert.match(value.raw, /aria-describedby="s3cr3t"/);
+    assert.doesNotMatch(value.scrubbed, /s3cr3t/);
+    assert.doesNotMatch(value.scrubbed, /aria-describedby/);
   });
 
   it('strips value and data-* from any element carrying data-sen-secret, even a non-input', () => {
