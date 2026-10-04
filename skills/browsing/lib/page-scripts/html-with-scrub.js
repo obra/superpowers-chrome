@@ -112,7 +112,11 @@ const { INERT_CLONE_FN_SRC } = require('../secret-marker');
 // them), a field is also flagged sensitive if its own live `.value`
 // PROPERTY exactly matches ANY of its own attributes other than `value`
 // itself -- not a fixed name list (`data-*`, `aria-*`), whichever
-// attribute the page actually mirrors into. Once flagged this way, the
+// attribute the page actually mirrors into. Two exclusions keep ordinary
+// controls out: input types nobody types into (submit, button, reset,
+// checkbox, radio, hidden, image) are never a source, and attributes that
+// name or label a field (type, name, id, aria-label, title, placeholder,
+// for, class) are not compared. Once flagged this way, the
 // field's value is collected into `secretValues` exactly like any other
 // sensitive field, so the substring pass below (which is already
 // attribute- and element-agnostic) redacts it wherever it occurs. This is
@@ -184,10 +188,22 @@ module.exports = `
     // elements get treated as a VALUE SOURCE, not where a found value gets
     // redacted -- the substring pass below already covers any attribute on
     // any element once a value is in \`secretValues\`.
+    //
+    // Two exclusions keep ordinary controls from being flagged (jc review
+    // of round 4): input types nobody types into (a submit button's value
+    // is its label, a radio's value is fixed by the page), and attributes
+    // that name or label a field, which a page's value-sync JS does not
+    // mirror into, so a match there is a coincidence (\`<input type="submit"
+    // name="submit" value="submit">\`, a radio with \`id="male"
+    // value="male"\`, Google's search button with an \`aria-label\` equal to
+    // its value).
+    const NON_TYPED_INPUT_TYPES = new Set(['submit', 'button', 'reset', 'checkbox', 'radio', 'hidden', 'image']);
+    const NON_MIRROR_ATTRIBUTES = new Set(['value', 'type', 'name', 'id', 'aria-label', 'title', 'placeholder', 'for', 'class']);
     for (const el of document.querySelectorAll('input, textarea')) {
       if (valueSensitiveEls.has(el) || !el.value) continue;
+      if (NON_TYPED_INPUT_TYPES.has(el.type)) continue;
       for (const name of el.getAttributeNames()) {
-        if (name === 'value') continue;
+        if (NON_MIRROR_ATTRIBUTES.has(name)) continue;
         if (el.getAttribute(name) === el.value) {
           valueSensitiveEls.add(el);
           break;
