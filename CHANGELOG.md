@@ -4,6 +4,9 @@ All notable changes to the superpowers-chrome MCP project.
 
 ## [Unreleased]
 
+### Security
+- A field with no `type="password"` and no recognized `autocomplete` token was invisible to #55's redaction entirely, so a page mirroring its typed value into an attribute wrote that value to disk unredacted -- in any attribute, not just `value`/`data-*`. Google's 2-step verification page is a concrete case: its one-time-code field (`#totpPin`) copies the typed code into `data-initial-value`, which isn't `type="password"` or autocomplete-tagged. Such a field is now also found by comparing its live `.value` against its own other attributes (a self-mirror), so the existing value-redaction pass -- already attribute- and element-agnostic -- catches it. The exact-attribute-removal pass (for fields found by type/autocomplete/marker) now also strips `aria-*` attributes, not just `data-*`. #55's length floor is unchanged.
+
 ## [3.0.9] - 2026-09-28 - Password and one-time-code fields no longer copied to disk when a page mirrors them
 
 ### Security

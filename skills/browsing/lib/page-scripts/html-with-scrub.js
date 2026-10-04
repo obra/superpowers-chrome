@@ -11,8 +11,9 @@ const { INERT_CLONE_FN_SRC } = require('../secret-marker');
 //     data-sen-secret marker) keeps working exactly as before.
 //   - `scrubbed` is what actually gets written to disk as HTML. It is
 //     built two ways at once (round 2, see below): the matched field's own
-//     `value` and `data-*` attributes are stripped in an INERT clone, and
-//     separately every live-typed value collected from those fields --
+//     `value` and `data-*`/`aria-*` attributes are stripped in an INERT
+//     clone, and separately every live-typed value collected from those
+//     fields (plus fields found only by self-mirror, see round 4 below) --
 //     plus its HTML-entity-escaped forms, see round 3 below -- is redacted
 //     wherever it appears in the resulting string.
 //   - `secretValues` is the plain array of those same live-typed values
@@ -96,6 +97,29 @@ const { INERT_CLONE_FN_SRC } = require('../secret-marker');
 // literal .value a user typed often never appears verbatim in the
 // serialized output, only one of its escaped forms does. Both escaped
 // variants of every secret value are redacted alongside the raw one.
+//
+// Self-mirror detection, finding a sensitive field with no recognized type
+// or autocomplete at all (round 4): the selectors above all key off the
+// FIELD -- a type, an autocomplete token, an explicit marker -- and a page
+// that mirrors a typed value without ever tagging the field that way is
+// invisible to every one of them. Google's 2-step verification page is a
+// concrete case: its one-time-code input has no `type="password"` and no
+// `autocomplete` value this module recognizes, but the page's own JS
+// copies the typed code verbatim into `data-initial-value` -- the exact
+// "as-you-type validation UI" pattern the module comment above already
+// expects, just on a field this module couldn't otherwise flag. Rather
+// than add more type/autocomplete tokens (there is no bounded list of
+// them), a field is also flagged sensitive if its own live `.value`
+// PROPERTY exactly matches ANY of its own attributes other than `value`
+// itself -- not a fixed name list (`data-*`, `aria-*`), whichever
+// attribute the page actually mirrors into. Once flagged this way, the
+// field's value is collected into `secretValues` exactly like any other
+// sensitive field, so the substring pass below (which is already
+// attribute- and element-agnostic) redacts it wherever it occurs. This is
+// restricted to `input`/`textarea` -- elements with a `.value` to compare
+// in the first place, not every element on the page -- and only widens
+// which fields count as a value SOURCE; it does not change where a found
+// value gets redacted.
 module.exports = `
   (() => {
     const raw = document.documentElement.outerHTML;
@@ -142,6 +166,35 @@ module.exports = `
       if (window.__senWasPasswordInputs.has(el)) valueSensitiveEls.add(el);
     }
 
+    // A field whose type/autocomplete matches none of the above still
+    // leaks its typed value if the page's own JS mirrors that value onto
+    // one of the field's OWN attributes -- PR55's "as-you-type validation
+    // UI" pattern (module comment above), just without a recognized type
+    // or autocomplete token to flag the field in the first place. Google's
+    // 2-step verification page is a concrete case: its one-time-code field
+    // is a plain \`<input>\` with no \`type="password"\` and no
+    // \`autocomplete\` value the list above recognizes, but the page's own
+    // JS copies the typed code verbatim into \`data-initial-value\`.
+    // Detected here by comparing the live \`.value\` PROPERTY against
+    // every one of the element's own attributes -- not a fixed name list
+    // (\`data-*\`, \`aria-*\`), any attribute a page chooses to mirror into
+    // -- and unioning in any element with an exact match. Scoped to
+    // \`input\`/\`textarea\` (elements with a \`.value\` to compare in the
+    // first place), not every element on the page: this widens which
+    // elements get treated as a VALUE SOURCE, not where a found value gets
+    // redacted -- the substring pass below already covers any attribute on
+    // any element once a value is in \`secretValues\`.
+    for (const el of document.querySelectorAll('input, textarea')) {
+      if (valueSensitiveEls.has(el) || !el.value) continue;
+      for (const name of el.getAttributeNames()) {
+        if (name === 'value') continue;
+        if (el.getAttribute(name) === el.value) {
+          valueSensitiveEls.add(el);
+          break;
+        }
+      }
+    }
+
     // Collect the live typed value -- the .value PROPERTY, which is what a
     // user actually typed, not the \`value\` ATTRIBUTE outerHTML normally
     // serializes (they diverge the moment a user edits the field; a
@@ -164,7 +217,7 @@ module.exports = `
     for (const el of clone.querySelectorAll(ATTR_SCRUB_SELECTOR)) {
       el.removeAttribute('value');
       for (const name of el.getAttributeNames()) {
-        if (name.indexOf('data-') === 0) el.removeAttribute(name);
+        if (name.indexOf('data-') === 0 || name.indexOf('aria-') === 0) el.removeAttribute(name);
       }
     }
 

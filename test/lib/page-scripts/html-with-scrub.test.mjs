@@ -45,6 +45,56 @@ describe('page-scripts/html-with-scrub', () => {
     assert.doesNotMatch(value.scrubbed, /123456/);
   });
 
+  it('redacts a self-mirrored field with no recognized type or autocomplete (Google 2-step totpPin)', () => {
+    // Google's 2-step verification page: a plain <input> with no
+    // type="password" and no autocomplete token this module recognizes,
+    // but the page's own JS copies the typed code into data-initial-value
+    // verbatim. None of the existing selectors (type, autocomplete, the
+    // data-sen-secret marker) flag this field, so it must be found by
+    // comparing the live .value against the field's own attributes.
+    const dom = makeDom('<html><body><input id="totpPin" data-initial-value=""></body></html>');
+    const { document } = dom.window;
+    const totpPin = document.getElementById('totpPin');
+    totpPin.value = '123456';
+    totpPin.setAttribute('data-initial-value', '123456');
+
+    const value = runScrub(dom);
+    assert.match(value.raw, /data-initial-value="123456"/);
+    // This field is found only by self-mirror, not by CSS selector (no
+    // type/autocomplete to match), so there is no selector to re-match in
+    // the clone and exact-remove the attribute by name the way a password
+    // or one-time-code field's data-* gets removed above -- the attribute
+    // name survives, but the value-substring pass redacts its content.
+    assert.doesNotMatch(value.scrubbed, /123456/);
+    assert.match(value.scrubbed, /data-initial-value="\[REDACTED\]"/);
+
+    // The live document must be untouched.
+    assert.equal(totpPin.getAttribute('data-initial-value'), '123456');
+  });
+
+  it('does not self-mirror-flag a field whose value merely matches an unrelated attribute elsewhere', () => {
+    // The self-mirror signal only looks at a field's OWN attributes; an
+    // unrelated element on the page that happens to share text is not
+    // enough to flag the field.
+    const dom = makeDom(
+      '<html><body><input id="name" value="Ada"><div id="other" title="Ada"></div></body></html>'
+    );
+    const { document } = dom.window;
+    document.getElementById('name').value = 'Ada Sen';
+
+    const value = runScrub(dom);
+    assert.equal(value.scrubbed, value.raw);
+  });
+
+  it('strips aria-* attributes, not just data-*, from a matched sensitive field', () => {
+    const { value } = evalScript(
+      '<html><body><input id="pw" type="password" value="s3cr3t" aria-describedby="s3cr3t"></body></html>'
+    );
+    assert.match(value.raw, /aria-describedby="s3cr3t"/);
+    assert.doesNotMatch(value.scrubbed, /s3cr3t/);
+    assert.doesNotMatch(value.scrubbed, /aria-describedby/);
+  });
+
   it('strips value and data-* from any element carrying data-sen-secret, even a non-input', () => {
     const { value } = evalScript(
       '<html><body><ul data-sen-secret data-backup-codes="1234 5678"><li>1234 5678</li></ul></body></html>'
