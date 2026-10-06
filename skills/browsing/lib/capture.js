@@ -864,6 +864,12 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
     evaluateWithCapture,
     extractPageText,
     setAttributeWithCapture,
+    // Round 4 (jc finding 6): exported so mcp/src/index.ts's explicit
+    // `screenshot` action can determine WHY screenshotUnlessCredentialShaped
+    // returned null (a sensitive URL vs. credential-shaped content) and
+    // give each its own refusal message, without changing that function's
+    // existing (heavily tested) null/path return contract.
+    getPageUrl,
   };
 }
 

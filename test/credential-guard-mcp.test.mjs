@@ -1298,4 +1298,23 @@ describe('URL-pattern suppression (sensitive-url.js, real Chrome)', { skip: !CHR
       assert.ok(!written.includes(Buffer.from(BASE32_SEED)), `seed leaked into ${file}`);
     }
   });
+
+  // Round 4 (jc finding 6): an explicit `screenshot` action refused
+  // because of URL suppression must say so, not the generic
+  // credential-shape message -- the two reasons have different remedies
+  // (SENSITIVE_URL_PATTERNS/ALLOW_CREDENTIAL_CAPTURE vs. the credential
+  // broker advice).
+  it('an explicit screenshot action on the same sensitive URL reports the URL-specific reason, not "credential-shaped content"', async () => {
+    await server.call({
+      action: 'navigate',
+      payload: `file://${path.join(dir, 'account', 'settings', '2fa_app', 'index.html')}`,
+    });
+    const shot = path.join(server.xdg, 'explicit-sensitive-url.png');
+    const { text, isError } = await server.call({ action: 'screenshot', payload: shot });
+    assert.equal(isError, true, text);
+    assert.match(text, /screenshot refused/i);
+    assert.match(text, /known-sensitive pattern/i, `wrong refusal reason: ${text}`);
+    assert.doesNotMatch(text, /credential-shaped content/i, `wrong refusal reason: ${text}`);
+    assert.equal(fs.existsSync(shot), false);
+  });
 });

@@ -21388,6 +21388,7 @@ var require3 = createRequire2(import.meta.url);
 var chromeLib = require3(join2(__dirname2, "../../skills/browsing/chrome-ws-lib.js")).createSession();
 var credentialGuard2 = require3(join2(__dirname2, "../../skills/browsing/lib/credential-guard.js"));
 var secretMarker = require3(join2(__dirname2, "../../skills/browsing/lib/secret-marker.js"));
+var sensitiveUrl2 = require3(join2(__dirname2, "../../skills/browsing/lib/sensitive-url.js"));
 var SERVER_VERSION = require3(join2(__dirname2, "../package.json")).version;
 function hasDisplay() {
   const platform = process.platform;
@@ -21642,8 +21643,12 @@ async function executeBrowserAction(params) {
       }
       const fullpage = p.fullpage ?? false;
       const selectorForScreenshot = topSelector ?? (typeof p.selector === "string" ? p.selector : void 0);
+      const urlSensitive = !credentialGuard2.credentialCaptureAllowed() && sensitiveUrl2.urlLooksSensitive(await chromeLib.getPageUrl(tabIndex));
       const savedPath = await chromeLib.screenshotUnlessCredentialShaped(tabIndex, filepath, selectorForScreenshot, fullpage);
       if (!savedPath) {
+        if (urlSensitive) {
+          throw new Error(`screenshot refused: ${sensitiveUrl2.URL_SUPPRESSED_NOTICE}`);
+        }
         throw new Error(
           "screenshot refused: page shows credential-shaped content. " + credentialGuard2.CREDENTIAL_ADVICE
         );

@@ -45,6 +45,7 @@ const require = createRequire(import.meta.url);
 const chromeLib = require(join(__dirname, "../../skills/browsing/chrome-ws-lib.js")).createSession();
 const credentialGuard = require(join(__dirname, "../../skills/browsing/lib/credential-guard.js"));
 const secretMarker = require(join(__dirname, "../../skills/browsing/lib/secret-marker.js"));
+const sensitiveUrl = require(join(__dirname, "../../skills/browsing/lib/sensitive-url.js"));
 const SERVER_VERSION = require(join(__dirname, "../package.json")).version;
 
 /**
@@ -444,8 +445,21 @@ async function executeBrowserAction(params: UseBrowserInput): Promise<string> {
       }
       const fullpage = p.fullpage ?? false;
       const selectorForScreenshot = topSelector ?? (typeof p.selector === 'string' ? p.selector : undefined);
+      // Round 4 (jc finding 6): determine WHY a refusal happened before
+      // calling screenshotUnlessCredentialShaped, so the error message can
+      // say which -- that function returns a bare null for both a
+      // sensitive URL and credential-shaped content, and always reporting
+      // "page shows credential-shaped content" was simply wrong for the
+      // URL case (and never mentioned SENSITIVE_URL_PATTERNS or
+      // ALLOW_CREDENTIAL_CAPTURE). This mirrors the same pre-check pattern
+      // capture.js's own auto-capture call sites already use.
+      const urlSensitive = !credentialGuard.credentialCaptureAllowed() &&
+        sensitiveUrl.urlLooksSensitive(await chromeLib.getPageUrl(tabIndex));
       const savedPath = await chromeLib.screenshotUnlessCredentialShaped(tabIndex, filepath, selectorForScreenshot, fullpage);
       if (!savedPath) {
+        if (urlSensitive) {
+          throw new Error(`screenshot refused: ${sensitiveUrl.URL_SUPPRESSED_NOTICE}`);
+        }
         throw new Error(
           "screenshot refused: page shows credential-shaped content. " +
           credentialGuard.CREDENTIAL_ADVICE

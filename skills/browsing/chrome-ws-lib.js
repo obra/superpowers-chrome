@@ -295,6 +295,7 @@ function createSession({ host, port, _testFakes } = {}) {
     evaluateWithCapture,
     extractPageText,
     setAttributeWithCapture,
+    getPageUrl,
   } = attachCapture({
     state,
     getPageSession,
@@ -444,6 +445,7 @@ function createSession({ host, port, _testFakes } = {}) {
 
     // Credential-shaped content guard (see lib/credential-guard.js)
     screenshotUnlessCredentialShaped,
+    getPageUrl,
 
     // Dynamic port allocation and per-profile meta.json
     getActivePort,
