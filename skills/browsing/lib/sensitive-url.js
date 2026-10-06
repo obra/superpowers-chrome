@@ -80,7 +80,16 @@
  */
 
 const DEFAULT_SENSITIVE_URL_PATTERNS = [
-  /\/2fa/i,
+  // Anchored on the LEFT by the literal "/" (always true for any path
+  // segment start) and on the RIGHT by a negative lookahead against a
+  // following letter/digit -- a word-boundary on the open suffix side,
+  // not a full segment anchor. This matches a whole segment ("/settings/2fa")
+  // or a segment PREFIX followed by a non-alphanumeric separator or end
+  // of string ("/2fa_app", "/2fa/setup"), but not a prefix glued directly
+  // to more letters with no separator at all ("/2fast"). See module
+  // comment for why the suffix stays otherwise open (real routes like
+  // Slack's /2fa_app and the accepted /blog/2fa-is-dead-style tradeoff).
+  /\/2fa(?![a-zA-Z0-9])/i,
   // Unanchored, like /2fa above -- see module comment for the GitHub/
   // GitLab/1Password real routes this needs the open suffix for.
   /\/two[-_]?factor/i,
@@ -90,15 +99,20 @@ const DEFAULT_SENSITIVE_URL_PATTERNS = [
   // Segment-anchored, unlike every other word here: an unanchored "mfa"
   // prefix also matched "/docs/mfa-best-practices" -- see module comment.
   /(^|\/)mfa(\/|$)/i,
-  /\/totp/i,
+  // Same word-boundary-on-the-open-suffix-side treatment as /2fa above --
+  // "/totpal" must not match "/totp".
+  /\/totp(?![a-zA-Z0-9])/i,
   /\/security\/keys(\/|$)/i,
-  // No slash requirement -- may appear as a hash anchor or mid-slug.
-  /security[-_]?keys/i,
+  // No slash requirement -- may appear as a hash anchor or mid-slug -- but
+  // word-boundary on BOTH sides (neither side has a "/" to anchor on):
+  // "/security-keyset-docs" must not match "security-keys".
+  /(?<![a-zA-Z0-9])security[-_]?keys(?![a-zA-Z0-9])/i,
   /(^|\/)recovery[-_]?codes?(\/|$)/i,
   /(^|\/)backup[-_]?codes?(\/|$)/i,
   // AWS/Google-style account-recovery and login-challenge routes.
   /login[-_]?verification/i,
-  /security[-_]?info/i,
+  // Word-boundary on both sides, same reasoning as security-keys above.
+  /(?<![a-zA-Z0-9])security[-_]?info(?![a-zA-Z0-9])/i,
 ];
 
 // Comma-separated list of EXTRA regex source strings (case-insensitive),

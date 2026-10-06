@@ -60,6 +60,46 @@ describe('sensitive-url', () => {
     assert.equal(urlLooksSensitive('file:///tmp/fixture/account/settings/2fa_app/index.html'), true);
   });
 
+  // jc finding 8: /2fa, /totp, security-keys and security-info were still
+  // unanchored PREFIXES (no word-boundary check at all on the open suffix
+  // side), so each one also matched a longer, unrelated word that merely
+  // happens to start with the same letters, with no separator of any
+  // kind in between.
+  describe('word-boundary false positives (jc finding 8): a longer unrelated word must not match', () => {
+    const falsePositives = [
+      ['/2fast', '2fa'],
+      ['/totpal', 'totp'],
+      ['/security-keyset-docs', 'security-keys'],
+      ['/security-informant', 'security-info'],
+    ];
+    for (const [path, word] of falsePositives) {
+      it(`${path} does not match (not a real ${word} route, just a longer word)`, () => {
+        assert.equal(urlLooksSensitive(`https://example.test${path}`), false, path);
+      });
+    }
+  });
+
+  // The word-boundary fix must not regress the segment-or-segment-prefix
+  // shape the task calls out explicitly, nor the real routes that need an
+  // open (separator-joined) suffix.
+  describe('word-boundary fix keeps matching real segment/segment-prefix routes', () => {
+    const stillMatches = [
+      '/settings/2fa', // whole final segment
+      '/2fa/setup', // segment prefix followed by "/"
+      '/account/settings/2fa_app', // segment prefix followed by "_" (Slack's real route)
+      '/totp/verify',
+    ];
+    for (const path of stillMatches) {
+      it(`${path} still matches`, () => {
+        assert.equal(urlLooksSensitive(`https://example.test${path}`), true, path);
+      });
+    }
+
+    it('a security-keys hash anchor with no leading slash still matches (word boundary allows a non-alphanumeric left edge)', () => {
+      assert.equal(urlLooksSensitive('https://example.test/settings#security-keys'), true);
+    });
+  });
+
   for (const path of [
     '/account/settings/2fa_app',
     '/settings/two-factor',
