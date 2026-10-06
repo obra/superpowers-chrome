@@ -51,13 +51,48 @@ describe('page-scripts/html-with-scrub', () => {
     assert.doesNotMatch(value.scrubbed, /123456/);
   });
 
-  it('redacts a self-mirrored field with no recognized type or autocomplete (Google 2-step totpPin)', () => {
+  it('redacts a self-mirrored field with no recognized type or autocomplete, isolated from the default secret-pattern detection', () => {
     // Google's 2-step verification page: a plain <input> with no
     // type="password" and no autocomplete token this module recognizes,
     // but the page's own JS copies the typed code into data-initial-value
     // verbatim. None of the existing selectors (type, autocomplete, the
     // data-sen-secret marker) flag this field, so it must be found by
     // comparing the live .value against the field's own attributes.
+    // Google's real field is id="totpPin", which the default
+    // secret-pattern detection added below *also* independently catches
+    // (it contains "otp"); see the next test for that stronger,
+    // attribute-removing outcome. This test uses a pattern-safe id
+    // ("verificationCode" contains none of the secret-looking words) to
+    // isolate and keep testing the self-mirror-only mechanism's own,
+    // weaker guarantee on its own.
+    const dom = makeDom('<html><body><input id="verificationCode" data-initial-value=""></body></html>');
+    const { document } = dom.window;
+    const field = document.getElementById('verificationCode');
+    field.value = '123456';
+    field.setAttribute('data-initial-value', '123456');
+
+    const value = runScrub(dom);
+    assert.match(value.raw, /data-initial-value="123456"/);
+    // This field is found only by self-mirror, not by CSS selector (no
+    // type/autocomplete to match) and not by the default secret-pattern
+    // detection (its id doesn't match), so there is no selector to
+    // re-match in the clone and exact-remove the attribute by name the
+    // way a password or one-time-code field's data-* gets removed above
+    // -- the attribute name survives, but the value-substring pass
+    // redacts its content.
+    assert.doesNotMatch(value.scrubbed, /123456/);
+    assert.match(value.scrubbed, /data-initial-value="\[REDACTED\]"/);
+
+    // The live document must be untouched.
+    assert.equal(field.getAttribute('data-initial-value'), '123456');
+  });
+
+  it("also catches Google's real totpPin id via the default secret-pattern detection, stripping the attribute by name", () => {
+    // Same page as above, but with Google's actual field id. "totpPin"
+    // contains "otp", so looksSecretByPattern flags it independently of
+    // self-mirror detection -- and because that gives the clone a
+    // selector to re-match (unlike the self-mirror-only case above), the
+    // attribute is fully removed, not just value-redacted.
     const dom = makeDom('<html><body><input id="totpPin" data-initial-value=""></body></html>');
     const { document } = dom.window;
     const totpPin = document.getElementById('totpPin');
@@ -66,13 +101,8 @@ describe('page-scripts/html-with-scrub', () => {
 
     const value = runScrub(dom);
     assert.match(value.raw, /data-initial-value="123456"/);
-    // This field is found only by self-mirror, not by CSS selector (no
-    // type/autocomplete to match), so there is no selector to re-match in
-    // the clone and exact-remove the attribute by name the way a password
-    // or one-time-code field's data-* gets removed above -- the attribute
-    // name survives, but the value-substring pass redacts its content.
     assert.doesNotMatch(value.scrubbed, /123456/);
-    assert.match(value.scrubbed, /data-initial-value="\[REDACTED\]"/);
+    assert.doesNotMatch(value.scrubbed, /data-initial-value/);
 
     // The live document must be untouched.
     assert.equal(totpPin.getAttribute('data-initial-value'), '123456');
@@ -448,5 +478,134 @@ describe('page-scripts/html-with-scrub', () => {
     const value = runScrub(dom);
     assert.match(value.raw, /value="cvv:737"/);
     assert.doesNotMatch(value.scrubbed, /737/);
+  });
+});
+
+// Default secret-pattern detection: redact on first sight, no
+// data-sen-secret marking and no click required -- the real gap this
+// closes is a page that puts a secret in the DOM at load time (Slack's
+// hidden #init_key_code on its 2FA setup page), before an agent could
+// ever have marked anything.
+describe('page-scripts/html-with-scrub: default secret-pattern detection', () => {
+  function makeDom(html) {
+    return new JSDOM(html, { runScripts: 'dangerously' });
+  }
+  function runScrub(dom) {
+    return dom.window.eval(htmlWithScrubScript);
+  }
+  function evalScript(html) {
+    const dom = makeDom(html);
+    return { value: runScrub(dom), dom };
+  }
+
+  const FAKE_SEED = 'JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP';
+
+  it("redacts Slack's real case: a hidden input carrying the seed as its value attribute", () => {
+    const { value } = evalScript(
+      `<html><body><input type="hidden" id="init_key_code" value="${FAKE_SEED}"></body></html>`
+    );
+    assert.match(value.raw, new RegExp(FAKE_SEED));
+    assert.doesNotMatch(value.scrubbed, new RegExp(FAKE_SEED));
+    assert.doesNotMatch(value.scrubbed, /init_key_code.*value=/);
+  });
+
+  it("redacts the same seed held as a hidden leaf element's text content, not an input value", () => {
+    const dom = makeDom(
+      `<html><body><span id="init_key_code" style="display:none">${FAKE_SEED}</span></body></html>`
+    );
+    const value = runScrub(dom);
+    assert.match(value.raw, new RegExp(FAKE_SEED));
+    assert.doesNotMatch(value.scrubbed, new RegExp(FAKE_SEED));
+    assert.match(value.scrubbed, /<span id="init_key_code"[^>]*>\[REDACTED\]<\/span>/);
+  });
+
+  it('redacts a seed mirrored elsewhere on the page too, via the collected secretValues substring pass', () => {
+    const dom = makeDom(
+      `<html><body><input type="hidden" id="init_key_code" value="${FAKE_SEED}">` +
+      `<div id="debugPanel" data-last-seed="${FAKE_SEED}"></div></body></html>`
+    );
+    const value = runScrub(dom);
+    assert.doesNotMatch(value.scrubbed, new RegExp(FAKE_SEED));
+    assert.ok(value.secretValues.includes(FAKE_SEED));
+  });
+
+  for (const [label, id] of [
+    ['secret', 'mySecretValue'], ['totp', 'totpSeed'], ['otp', 'otpCode'],
+    ['2fa', 'setup2faKey'], ['mfa', 'mfaSetupCode'], ['key_code', 'init_key_code'],
+    ['seed', 'walletSeed'], ['recovery', 'recoveryPhrase'], ['backup_code', 'backup_code_1'],
+    ['api_key', 'apiKeyValue'], ['token', 'authToken'],
+  ]) {
+    it(`matches the "${label}" pattern via element id`, () => {
+      const dom = makeDom(`<html><body><span id="${id}">${FAKE_SEED}</span></body></html>`);
+      const value = runScrub(dom);
+      assert.doesNotMatch(value.scrubbed, new RegExp(FAKE_SEED), `id="${id}" should have matched`);
+    });
+  }
+
+  it('matches via autocomplete="one-time-code" on a plain, otherwise-unflagged element id/name', () => {
+    // Already covered for value-bearing fields by the existing
+    // AUTOCOMPLETE_SELECTOR, but confirms it still works for a field this
+    // module's pattern list alone would not have flagged (no secret-ish
+    // id/name/class).
+    const dom = makeDom(
+      `<html><body><input id="field7" name="field7" autocomplete="one-time-code" value="654321"></body></html>`
+    );
+    const value = runScrub(dom);
+    assert.doesNotMatch(value.scrubbed, /654321/);
+  });
+
+  it('matches via class and aria-label too, not just id/name', () => {
+    const domClass = makeDom(`<html><body><span class="totp-seed-display">${FAKE_SEED}</span></body></html>`);
+    assert.doesNotMatch(runScrub(domClass).scrubbed, new RegExp(FAKE_SEED));
+
+    const domAria = makeDom(`<html><body><span aria-label="api_key">${FAKE_SEED}</span></body></html>`);
+    assert.doesNotMatch(runScrub(domAria).scrubbed, new RegExp(FAKE_SEED));
+  });
+
+  it('strips data-* and aria-* attributes from a matched element unconditionally, like other categories', () => {
+    const { value } = evalScript(
+      `<html><body><div id="totpWrapper" data-seed="${FAKE_SEED}" aria-describedby="hint"></div></body></html>`
+    );
+    assert.match(value.raw, new RegExp(FAKE_SEED));
+    assert.doesNotMatch(value.scrubbed, /data-seed/);
+  });
+
+  it('does NOT over-redact an ordinary login form (username field, labels, submit button)', () => {
+    // Negative test: nothing in an ordinary login page should trip the
+    // new default-pattern detection.
+    const dom = makeDom(
+      '<html><body><form>' +
+      '<label for="user">Username</label><input id="user" name="user" value="ada">' +
+      '<label for="pass">Password</label><input id="pass" name="pass" type="password">' +
+      '<input type="submit" value="Log in"></form></body></html>'
+    );
+    const value = runScrub(dom);
+    assert.equal(value.scrubbed, value.raw, 'an ordinary login form must be unchanged');
+  });
+
+  it('does not blank a button/link label whose id happens to reference a secret it operates on', () => {
+    // "copy-seed-btn" matches the "seed" pattern, but its own visible
+    // text ("Copy") is a UI label, not the secret -- see PATTERN_SKIP_TAGS
+    // in html-with-scrub.js.
+    const dom = makeDom(
+      '<html><body><button id="copy-seed-btn">Copy</button>' +
+      '<a id="reveal-totp-link" href="#">Show code</a></body></html>'
+    );
+    const value = runScrub(dom);
+    assert.equal(value.scrubbed, value.raw, 'button/link labels must survive untouched');
+  });
+
+  it("does not blank a wrapping container's legitimate nested content, only a matching leaf descendant", () => {
+    const dom = makeDom(
+      '<html><body><div id="two-factor-setup">' +
+      '<p>Scan this QR code with your authenticator app.</p>' +
+      `<span id="init_key_code">${FAKE_SEED}</span>` +
+      '<button id="doneBtn">Done</button>' +
+      '</div></body></html>'
+    );
+    const value = runScrub(dom);
+    assert.doesNotMatch(value.scrubbed, new RegExp(FAKE_SEED));
+    assert.match(value.scrubbed, /Scan this QR code with your authenticator app\./);
+    assert.match(value.scrubbed, />Done<\/button>/);
   });
 });
