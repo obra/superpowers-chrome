@@ -4,6 +4,20 @@ All notable changes to the superpowers-chrome MCP project.
 
 ## [Unreleased]
 
+## [3.0.11] - 2026-10-06 - Default redaction for secrets present at page load; known-sensitive URLs suppressed outright
+
+### Security
+- All of #55/#59's redaction depends on a field having a recognized type/autocomplete, or having already mirrored a typed value somewhere -- neither helps a secret that is already in the DOM the moment the page loads, before any action (and so before any `data-sen-secret` marking, which can only happen AFTER an action reveals a value) has run at all. Real case: Slack's 2FA setup page (`/account/settings/2fa_app`) renders the TOTP seed into a hidden `#init_key_code` element from page load, so the very first auto-capture of that page wrote the raw seed to disk.
+- Default secret-pattern detection: an element whose `id`/`name`/`class`/`autocomplete`/`aria-label` contains a secret-looking word (`secret`, `totp`, `otp`, `2fa`, `mfa`, `key_code`, `seed`, `recovery`, `backup_code`, `api_key`, `token` -- case-insensitive substring) is now redacted on first sight, no marking or click required. A matched value-bearing field (`input`/`textarea`/`select`) is treated exactly like any other sensitive field. A matched element with no element children of its own (a leaf text holder) has its own text content blanked directly, regardless of length. A matched wrapping container (e.g. `<div id="two-factor-setup">`) is not text-blanked as a whole -- only its own attributes are stripped -- so legitimate nested instructions and controls survive; a matching descendant leaf inside it is still found and blanked on its own. A button/link/label/legend/option/summary whose id merely references a secret it operates on (`copy-seed-btn`) is not blanked, since its own text is a UI label, not the secret.
+- URL-based suppression: a page whose URL path matches a known-sensitive pattern (`/2fa`, `/two_factor`, `/mfa`, `/totp`, `/security/keys`, `/recovery-codes`, `/backup-codes`) has its html/md body capture AND its screenshot suppressed outright -- `credentialSuppressed: true` with a distinct notice -- regardless of what the page's markup looks like. This is deliberately independent of the pattern detection above: either signal alone suppresses. Configurable via `SUPERPOWERS_CHROME_SENSITIVE_URL_PATTERNS` (comma-separated extra regexes, ADDED to the defaults, never a replacement).
+- `data-sen-secret`/`data-sen-nonce` marking (obra#52) is unchanged.
+
+### Tests
+- `test/lib/page-scripts/html-with-scrub.test.mjs`: Slack's real case (hidden input and hidden leaf-text forms), one test per pattern word, autocomplete/class/aria-label matches, unconditional attribute stripping, a negative test that an ordinary login form is untouched, button/link label preservation, and wrapping-container-vs-leaf-descendant isolation.
+- `test/lib/sensitive-url.test.mjs`: default pattern list, the env-var extension (additive, not a replacement, malformed fragments ignored), non-string/unparseable input.
+- `test/lib/capture-credential-guard.test.mjs`: URL suppression writes no files and takes no screenshot even with ordinary, non-credential-shaped markup; an ordinary URL is not suppressed; the suppression reason propagates through the `*WithCapture` wrappers.
+- `test/credential-guard-mcp.test.mjs` (real Chrome): `#init_key_code` loaded via `navigate` never reaches any capture artifact (every file in the session dir checked, not just `.html`/`.md`); a `file://` URL under a `2fa_app` directory is suppressed end to end even though its markup is ordinary.
+
 ## [3.0.10] - 2026-10-04 - Redaction catches a typed secret a page mirrors from an unrecognized field
 
 ### Security
