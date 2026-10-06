@@ -52,11 +52,57 @@ describe('sensitive-url', () => {
     });
   }
 
-  it('matches a sensitive query string even on an otherwise-generic path', () => {
+  it('does NOT match based on the query string alone (matches path/hash segments only)', () => {
+    // This test used to be named 'matches a sensitive query string...' and
+    // asserted true for the second case below, even though the query
+    // string was never actually part of the matched target for the
+    // security-keys case right above it -- the test's own name
+    // contradicted its first assertion. The query string is now
+    // deliberately excluded from the match target entirely (see the
+    // module comment: a query value like `next=/settings/2fa` describes a
+    // REDIRECT TARGET, not the current page), so both cases are false.
     assert.equal(urlLooksSensitive('https://example.test/settings?tab=security%2Fkeys'), false);
-    // The query string is matched verbatim (not decoded), so an
-    // unencoded sensitive fragment in it still matches.
-    assert.equal(urlLooksSensitive('https://example.test/settings?section=/mfa'), true);
+    assert.equal(urlLooksSensitive('https://example.test/settings?section=/mfa'), false);
+  });
+
+  it('does not over-suppress a login redirect whose NEXT-page query value happens to mention a sensitive path', () => {
+    // jc finding 3/9: /login?next=/settings/2fa must not be suppressed --
+    // /login itself is an ordinary page; the "2fa" text lives entirely in
+    // a query value describing where the user goes AFTER login, not the
+    // current page's own content.
+    assert.equal(urlLooksSensitive('https://example.test/login?next=/settings/2fa'), false);
+  });
+
+  it('does not over-suppress a docs page merely ABOUT mfa (bare-prefix, no segment boundary)', () => {
+    // jc finding 3/9: an unanchored "/mfa" prefix also matched this docs
+    // URL. "mfa" must be its own path segment, not a prefix of a longer,
+    // unrelated slug.
+    assert.equal(urlLooksSensitive('https://example.test/docs/mfa-best-practices'), false);
+  });
+
+  it('matches a hash-routed SPA whose real route lives entirely after the #', () => {
+    // jc finding 3: urlLooksSensitive used to match only pathname+search,
+    // so a hash-routed single-page app (no full page load per route)
+    // never matched at all, no matter what the hash said.
+    assert.equal(urlLooksSensitive('https://app.example.test/#/account/2fa'), true);
+  });
+
+  it("matches AWS IAM's real hash-routed MFA management route", () => {
+    assert.equal(
+      urlLooksSensitive('https://console.aws.amazon.com/iam/home#/security_credentials/mfa'),
+      true
+    );
+  });
+
+  it("matches Google's real /two-step-verification route (one hyphenated slug, not its own path segment)", () => {
+    assert.equal(
+      urlLooksSensitive('https://myaccount.google.com/signinoptions/two-step-verification'),
+      true
+    );
+  });
+
+  it('matches a security-keys hash anchor with no leading slash', () => {
+    assert.equal(urlLooksSensitive('https://example.test/settings#security-keys'), true);
   });
 
   it('returns false for non-string or empty input, never throws', () => {

@@ -13,16 +13,46 @@
  * the moment it loads.
  *
  * This module is a second, orthogonal defense, independent of what the
- * DOM looks like: a known-sensitive URL PATH is suppressed outright, the
- * same way a credential-shaped page is -- no html/md body capture, no
- * screenshot -- regardless of whether the page happens to name anything
- * in a way the other detector would catch. Belt and suspenders: either
- * signal alone suppresses; neither depends on the other.
+ * DOM looks like: a known-sensitive URL PATH (or hash-routed-SPA
+ * fragment) is suppressed outright, the same way a credential-shaped page
+ * is -- no html/md body capture, no screenshot -- regardless of whether
+ * the page happens to name anything in a way the other detector would
+ * catch. Belt and suspenders: either signal alone suppresses; neither
+ * depends on the other.
  *
- * Case-insensitive substring match against the URL's pathname (plus
- * query string, so e.g. a single `/settings?tab=security-keys` page
- * still matches) -- same philosophy as credential-guard.js and
- * html-with-scrub.js: a missed match is a leak, an extra match only
+ * Matched against the URL's pathname AND hash (never the query string):
+ *   - pathname + hash, because a hash-routed single-page app (no full page
+ *     load per route) puts its real "page" entirely after the `#` -- e.g.
+ *     the AWS console's MFA route is
+ *     `console.aws.amazon.com/iam/home#/security_credentials/mfa`, with an
+ *     empty pathname-equivalent and everything that matters in the hash.
+ *   - NOT the query string. It was matched here in an earlier version of
+ *     this module, on the theory that a single-page-app tab parameter
+ *     (`?tab=security-keys`) deserved the same treatment as a path
+ *     segment. In practice this over-suppressed: `/login?next=/settings/2fa`
+ *     is an ordinary login redirect whose NEXT-page target happens to
+ *     mention "2fa" in a query value that was never the current page at
+ *     all. A query string can carry nearly arbitrary data (a return URL,
+ *     a search term, a referrer) that says nothing about what the CURRENT
+ *     page renders, unlike a path segment or hash route.
+ *
+ * Most default patterns are anchored to path/hash SEGMENT boundaries
+ * (`(^|/)word(/|$)`) rather than tested as a raw substring, for the same
+ * reason: an unanchored `/mfa` prefix also matched `/docs/mfa-best-practices`,
+ * a docs page ABOUT mfa, not an MFA enrollment/challenge page -- the word
+ * has to be its own path segment, not merely a prefix of a longer,
+ * unrelated slug. `/2fa` is deliberately left unanchored on its suffix
+ * side: Slack's own real setup URL needs it (`/account/settings/2fa_app`
+ * has "2fa" immediately followed by "_app", not a "/" or end of string),
+ * and nothing has shown the same over-suppression risk for it that "mfa"
+ * had. `security[-_]?keys`, `two[-_]?step`, `login[-_]?verification` and
+ * `security[-_]?info` are deliberately NOT segment-anchored either: they
+ * are expected to show up as a hash anchor (`#security-keys`) or as part
+ * of a longer slug (Google's own `/two-step-verification` route), not
+ * necessarily as a path segment of their own.
+ *
+ * Case-insensitive throughout -- same philosophy as credential-guard.js
+ * and html-with-scrub.js: a missed match is a leak, an extra match only
  * suppresses a capture that would otherwise have been harmless. Never
  * touches the live page -- this only ever decides what gets written to
  * disk.
@@ -30,12 +60,22 @@
 
 const DEFAULT_SENSITIVE_URL_PATTERNS = [
   /\/2fa/i,
-  /\/two[-_]?factor/i,
-  /\/mfa/i,
+  /(^|\/)two[-_]?factor(\/|$)/i,
+  // Google's /two-step-verification route is one hyphen-joined slug, not
+  // its own path segment -- deliberately not anchored, like /2fa above.
+  /two[-_]?step/i,
+  // Segment-anchored, unlike every other word here: an unanchored "mfa"
+  // prefix also matched "/docs/mfa-best-practices" -- see module comment.
+  /(^|\/)mfa(\/|$)/i,
   /\/totp/i,
-  /\/security\/keys/i,
-  /\/recovery[-_]?codes?/i,
-  /\/backup[-_]?codes?/i,
+  /\/security\/keys(\/|$)/i,
+  // No slash requirement -- may appear as a hash anchor or mid-slug.
+  /security[-_]?keys/i,
+  /(^|\/)recovery[-_]?codes?(\/|$)/i,
+  /(^|\/)backup[-_]?codes?(\/|$)/i,
+  // AWS/Google-style account-recovery and login-challenge routes.
+  /login[-_]?verification/i,
+  /security[-_]?info/i,
 ];
 
 // Comma-separated list of EXTRA regex source strings (case-insensitive),
@@ -68,12 +108,19 @@ function extraPatterns() {
 // some upstream already mangled); fall back to matching the raw string
 // rather than throwing, so a bad input only risks a missed suppression,
 // never an exception that would itself abort the capture.
+//
+// Callers are responsible for the SUPERPOWERS_CHROME_ALLOW_CREDENTIAL_CAPTURE
+// gate (see capture.js) -- this function always evaluates the pattern
+// match on its own, so it stays usable from contexts (tests, other
+// tooling) that want the raw match regardless of that env var.
 function urlLooksSensitive(url) {
   if (typeof url !== 'string' || !url) return false;
   let target = url;
   try {
     const parsed = new URL(url);
-    target = parsed.pathname + parsed.search;
+    // pathname + hash, deliberately NOT parsed.search -- see module
+    // comment for why the query string is excluded.
+    target = parsed.pathname + (parsed.hash || '');
   } catch (_e) {
     // Not a parseable absolute URL -- match against the raw string.
   }
