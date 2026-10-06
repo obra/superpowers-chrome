@@ -19,6 +19,18 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const require = createRequire(import.meta.url);
 const credentialGuard = require(join(__dirname, "../../skills/browsing/lib/credential-guard.js"));
+const sensitiveUrl = require(join(__dirname, "../../skills/browsing/lib/sensitive-url.js"));
+
+// capture.js tags a suppressed capture with `suppressedReason` so this
+// layer can show an accurate notice: 'sensitive-url' (the page's URL
+// alone, e.g. a 2FA setup page, regardless of content) gets a different
+// explanation than the default credential-shape/marker notice. Absent or
+// any other value falls back to the original credential-shape wording,
+// so an older capture.js result (no suppressedReason at all) renders
+// exactly as it always did.
+function suppressedNoticeFor(reason?: string): string {
+  return reason === "sensitive-url" ? sensitiveUrl.URL_SUPPRESSED_NOTICE : credentialGuard.CREDENTIAL_SUPPRESSED_NOTICE;
+}
 
 /**
  * Format a DialogRefusedError into a human-readable tool response string.
@@ -40,7 +52,7 @@ export function formatDialogRefusal(error: any): string {
  */
 export function formatCaptureFiles(actionResult: any): string[] {
   if (actionResult.credentialSuppressed) {
-    return [credentialGuard.CREDENTIAL_SUPPRESSED_NOTICE];
+    return [suppressedNoticeFor(actionResult.suppressedReason)];
   }
   const prefix = actionResult.capturePrefix || '???';
   return [
@@ -63,7 +75,7 @@ export function formatActionResponse(actionResult: any, actionDescription: strin
     const dialogDesc = actionResult.artifacts?.markdown
       || (actionResult.dialog ? `Dialog opened: ${actionResult.dialog.kind}` : 'Dialog opened');
     const suppressedNotice = actionResult.actionResult?.credentialSuppressed
-      ? `\n\n${credentialGuard.CREDENTIAL_SUPPRESSED_NOTICE}`
+      ? `\n\n${suppressedNoticeFor(actionResult.actionResult?.suppressedReason)}`
       : '';
     return `${actionDescription}\n\nDialog is now open — page is waiting for user input.${suppressedNotice}\n\n${dialogDesc}`;
   }
@@ -122,10 +134,12 @@ export function formatCaptureResponse(
     domSummary: string;
     pageSize: { width: number; height: number };
     credentialSuppressed?: boolean;
+    suppressedReason?: string;
   } | null,
   dialog?: any,
   artifacts?: any,
-  credentialSuppressed?: boolean
+  credentialSuppressed?: boolean,
+  suppressedReason?: string
 ): string {
   if (!captureOrNull) {
     // Action succeeded but opened a dialog — show dialog info. When the
@@ -138,7 +152,7 @@ export function formatCaptureResponse(
     // credential-shaped substring still in `dialogDesc` before it reaches
     // the agent.
     const dialogDesc = artifacts?.markdown || (dialog ? `Dialog opened: ${dialog.kind}` : 'Dialog opened');
-    const suppressedNotice = credentialSuppressed ? `\n\n${credentialGuard.CREDENTIAL_SUPPRESSED_NOTICE}` : '';
+    const suppressedNotice = credentialSuppressed ? `\n\n${suppressedNoticeFor(suppressedReason)}` : '';
     return `${action}: ${details}\n\nDialog is now open — page is waiting for user input.${suppressedNotice}\n\n${dialogDesc}`;
   }
   const capture = captureOrNull;
@@ -146,7 +160,7 @@ export function formatCaptureResponse(
   if (capture.credentialSuppressed) {
     return `${action}: ${details}
 
-${credentialGuard.CREDENTIAL_SUPPRESSED_NOTICE}
+${suppressedNoticeFor(capture.suppressedReason)}
 
 📊 Page: ${capture.pageSize.width}×${capture.pageSize.height}
 ${capture.domSummary}`;

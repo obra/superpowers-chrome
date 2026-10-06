@@ -9,6 +9,7 @@ const renderedTextScript = require('./page-scripts/rendered-text');
 const htmlWithScrubScript = require('./page-scripts/html-with-scrub');
 const { containsCredentialShaped, credentialCaptureAllowed, secretMarkerRefusal } = require('./credential-guard');
 const { pageHasSecretMarker } = require('./secret-marker');
+const { urlLooksSensitive } = require('./sensitive-url');
 
 // Size cap for the markdown artifact.
 const MARKDOWN_MAX_CHARS = 50000;
@@ -134,6 +135,20 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
 
     const result = await ps.send('Runtime.evaluate', {
       expression: js,
+      returnByValue: true
+    });
+    throwIfExceptionDetails(result);
+    return result.result.value;
+  }
+
+  // The page's current URL, for sensitive-url.js's URL-pattern suppression
+  // check -- that check has to run on the LIVE location, not a URL the
+  // caller supplied earlier (a redirect, or a client-side route change,
+  // can land on a sensitive page the caller never named).
+  async function getPageUrl(tabIndexOrWsUrl) {
+    const ps = await getPageSession(tabIndexOrWsUrl);
+    const result = await ps.send('Runtime.evaluate', {
+      expression: 'location.href',
       returnByValue: true
     });
     throwIfExceptionDetails(result);
@@ -293,13 +308,19 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
         // like the on-page path below: no files, a credentialSuppressed
         // marker, no payload — `open` itself carries the message, so only
         // its `kind` (the one field a caller actually reads) survives.
-        if (mustSuppress(rendered.markdown, rendered.html, rendered.consoleSnapshot)) {
+        // A dialog on a page whose URL matches sensitive-url.js's known-
+        // sensitive pattern list (2FA/MFA/recovery-codes/...) is treated
+        // the same way: the open dialog's own `payload.url` is the page
+        // it belongs to, no round-trip needed to read it.
+        const dialogUrlSensitive = urlLooksSensitive(open.payload && open.payload.url);
+        if (dialogUrlSensitive || mustSuppress(rendered.markdown, rendered.html, rendered.consoleSnapshot)) {
           return {
             capturePrefix: prefix,
             sessionDir: dir,
             files: null,
             dialog: { kind: open.kind },
             credentialSuppressed: true,
+            suppressedReason: dialogUrlSensitive ? 'sensitive-url' : 'credential-shape',
           };
         }
         const artifacts = redactDialogArtifacts(rendered);
@@ -331,10 +352,16 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
     const screenshotPath = path.join(dir, `${prefix}.png`);
     const consoleLogPath = path.join(dir, `${prefix}-console.txt`);
 
+    // URL check first, before even the screenshot: a known-sensitive URL
+    // (sensitive-url.js) suppresses the shot outright instead of taking
+    // and then discarding it, so a QR code or visible seed never touches
+    // disk even transiently.
+    const urlSensitive = urlLooksSensitive(await getPageUrl(tabIndexOrWsUrl));
+
     // Screenshot first, then read the content that gets checked and written,
     // so the check is never earlier than the pixels: a token revealed at any
     // point before the last artifact means no artifact survives.
-    const shot = await screenshotUnlessCredentialShaped(tabIndexOrWsUrl, screenshotPath);
+    const shot = urlSensitive ? null : await screenshotUnlessCredentialShaped(tabIndexOrWsUrl, screenshotPath);
 
     const [{ raw: html, scrubbed: scrubbedHtml, secretValues }, markdown, pageSize, domSummary, renderedText] = await Promise.all([
       getHtmlWithScrub(tabIndexOrWsUrl),
@@ -344,7 +371,7 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
       getRenderedText(tabIndexOrWsUrl)
     ]);
 
-    if (!shot || mustSuppress(html, markdown, domSummary, renderedText)) {
+    if (urlSensitive || !shot || mustSuppress(html, markdown, domSummary, renderedText)) {
       fs.rmSync(screenshotPath, { force: true });
       return {
         capturePrefix: prefix,
@@ -352,7 +379,8 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
         files: null,
         pageSize,
         domSummary: suppressedDomSummary(domSummary),
-        credentialSuppressed: true
+        credentialSuppressed: true,
+        suppressedReason: urlSensitive ? 'sensitive-url' : 'credential-shape'
       };
     }
 
@@ -466,14 +494,18 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
     // The BEFORE html is read after the screenshot so its check is never
     // earlier than the pixels (see capturePageArtifacts).
     const beforeScreenshotPath = path.join(dir, `${prefix}-before.png`);
+    // Same URL-first check as capturePageArtifacts: a known-sensitive URL
+    // (sensitive-url.js) skips the shot outright rather than taking and
+    // then discarding it.
+    const beforeUrlSensitive = urlLooksSensitive(await getPageUrl(pinnedTab));
     const focusInfo = await saveFocus();
-    const beforeShot = await screenshotUnlessCredentialShaped(pinnedTab, beforeScreenshotPath);
+    const beforeShot = beforeUrlSensitive ? null : await screenshotUnlessCredentialShaped(pinnedTab, beforeScreenshotPath);
     await restoreFocus(focusInfo);
     const [{ raw: beforeHtml, scrubbed: beforeScrubbedHtml }, beforeRenderedText] = await Promise.all([
       getHtmlWithScrub(pinnedTab),
       getRenderedText(pinnedTab)
     ]);
-    const beforeSuppressed = !beforeShot || mustSuppress(beforeHtml, beforeRenderedText);
+    const beforeSuppressed = beforeUrlSensitive || !beforeShot || mustSuppress(beforeHtml, beforeRenderedText);
 
     const actionResult = await actionFn();
 
@@ -498,13 +530,15 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
         // reaches the agent. `credentialSuppressed: true` tells that layer to
         // add the ⚠️ notice alongside the (redacted) artifacts, instead of
         // dropping them.
-        if (mustSuppress(rendered.markdown, rendered.html, rendered.consoleSnapshot)) {
+        const dialogUrlSensitive = urlLooksSensitive(openAfter.payload && openAfter.payload.url);
+        if (dialogUrlSensitive || mustSuppress(rendered.markdown, rendered.html, rendered.consoleSnapshot)) {
           return {
             actionResult,
             capture: null,
             dialog: { kind: openAfter.kind },
             artifacts,
             credentialSuppressed: true,
+            suppressedReason: dialogUrlSensitive ? 'sensitive-url' : 'credential-shape',
           };
         }
         writeIfDir(dir, `${afterPrefix}.md`, artifacts.markdown);
@@ -523,9 +557,11 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
     // before the AFTER snapshot.
     await new Promise(resolve => setTimeout(resolve, settleTime));
 
-    // AFTER: screenshot first, then read what gets checked and written.
+    // AFTER: URL check first, then screenshot, then read what gets
+    // checked and written -- same ordering rationale as capturePageArtifacts.
+    const afterUrlSensitive = beforeSuppressed ? false : urlLooksSensitive(await getPageUrl(pinnedTab));
     const afterScreenshotPath = path.join(dir, `${prefix}-after.png`);
-    const afterShot = beforeSuppressed ? null : await screenshotUnlessCredentialShaped(pinnedTab, afterScreenshotPath);
+    const afterShot = (beforeSuppressed || afterUrlSensitive) ? null : await screenshotUnlessCredentialShaped(pinnedTab, afterScreenshotPath);
 
     const [{ raw: afterHtml, scrubbed: afterScrubbedHtml, secretValues }, markdown, pageSize, domSummary, afterRenderedText] = await Promise.all([
       getHtmlWithScrub(pinnedTab),
@@ -538,7 +574,7 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
     // Either side showing a secret suppresses the whole action's capture:
     // the diff of a before-page secret would reprint it as a REMOVED line.
     // Both screenshots are removed too, so the action leaves no artifacts.
-    if (beforeSuppressed || !afterShot || mustSuppress(afterHtml, markdown, domSummary, afterRenderedText)) {
+    if (beforeSuppressed || afterUrlSensitive || !afterShot || mustSuppress(afterHtml, markdown, domSummary, afterRenderedText)) {
       fs.rmSync(beforeScreenshotPath, { force: true });
       fs.rmSync(afterScreenshotPath, { force: true });
       return {
@@ -550,7 +586,8 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
           pageSize,
           domSummary: suppressedDomSummary(domSummary),
           diffSummary: '',
-          credentialSuppressed: true
+          credentialSuppressed: true,
+          suppressedReason: (beforeUrlSensitive || afterUrlSensitive) ? 'sensitive-url' : 'credential-shape'
         }
       };
     }
@@ -626,6 +663,7 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
         files: artifacts.files,
         domSummary: artifacts.domSummary,
         credentialSuppressed: artifacts.credentialSuppressed,
+        suppressedReason: artifacts.suppressedReason,
         consoleLog: [] // Placeholder
       };
     };
@@ -660,6 +698,7 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
         files: artifacts.files,
         domSummary: artifacts.domSummary,
         credentialSuppressed: artifacts.credentialSuppressed,
+        suppressedReason: artifacts.suppressedReason,
         consoleLog: [] // Placeholder
       };
     };
@@ -685,6 +724,7 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
         files: artifacts.files,
         domSummary: artifacts.domSummary,
         credentialSuppressed: artifacts.credentialSuppressed,
+        suppressedReason: artifacts.suppressedReason,
         consoleLog: [] // Placeholder
       };
     };
@@ -710,6 +750,7 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
         files: artifacts.files,
         domSummary: artifacts.domSummary,
         credentialSuppressed: artifacts.credentialSuppressed,
+        suppressedReason: artifacts.suppressedReason,
         consoleLog: [] // Placeholder
       };
     };
@@ -763,6 +804,7 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
         files: artifacts.files,
         domSummary: artifacts.domSummary,
         credentialSuppressed: artifacts.credentialSuppressed,
+        suppressedReason: artifacts.suppressedReason,
         consoleLog: [] // Placeholder
       };
     };

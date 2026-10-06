@@ -51,6 +51,30 @@ const MARKER_PAGE = {
   renderedText: '',
 };
 
+// A fake base32 TOTP seed, visible in ordinary page text with no token
+// shape, no data-sen-secret marker, and no id/name/class a reader would
+// call suspicious -- the only reason this page must be suppressed is its
+// URL (sensitive-url.js), the same way Slack's real 2FA setup page
+// (/account/settings/2fa_app) would be. Isolates URL-based suppression
+// from both the credential-shape scan and the default secret-pattern
+// heuristics in html-with-scrub.js.
+const FAKE_SEED = 'JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP';
+const SENSITIVE_URL_PAGE = {
+  url: 'https://example.test/account/settings/2fa_app',
+  html: `<html><body><h1>Set up two-step verification</h1><span id="setupKey">${FAKE_SEED}</span></body></html>`,
+  markdown: `# Set up two-step verification\n\n${FAKE_SEED}`,
+  domSummary: `Set up two-step verification\nInteractive: 0 buttons, 0 inputs, 0 links\nHeadings: "Set up two-step verification"\nLayout: body`,
+  renderedText: '',
+};
+
+// Same sensitive URL, but the page itself is otherwise ordinary (no
+// seed) -- confirms the suppression is keyed on the URL alone, not on
+// anything that also happens to be in this page's markup.
+const SENSITIVE_URL_CLEAN_PAGE = {
+  ...CLEAN_PAGE,
+  url: 'https://example.test/account/settings/2fa_app',
+};
+
 // A plain password typed into a password field, mirrored by the page's own
 // change handler into the `value` attribute and a `data-initial-value`
 // attribute (a common as-you-type-validation pattern). It has no token
@@ -197,6 +221,10 @@ function setup({
       if (expr === markdownScript) return { result: { value: page.markdown } };
       if (expr === domSummaryScript) return { result: { value: page.domSummary } };
       if (expr === 'document.body.innerText') return { result: { value: page.renderedText } };
+      // Defaults to an ordinary, non-sensitive URL so every existing page
+      // fixture above (none of which sets `.url`) never trips the
+      // URL-pattern suppression by accident.
+      if (expr === 'location.href') return { result: { value: page.url || 'https://example.test/dashboard' } };
       if (expr === htmlWithScrubScript) {
         // scrubbedHtml defaults to html for pages with nothing to scrub.
         const scrubbed = page.scrubbedHtml !== undefined ? page.scrubbedHtml : page.html;
@@ -353,6 +381,56 @@ describe('capturePageArtifacts credential guard', () => {
     const evaluated = await evaluateWithCapture(0, '21+21');
     assert.equal(evaluated.credentialSuppressed, true);
     assert.equal(evaluated.result, 42, 'eval still returns its (non-secret) value');
+  });
+});
+
+// sensitive-url.js: a page suppressed purely because its URL matches a
+// known-sensitive pattern (2FA/MFA/recovery-codes/...), independent of
+// the credential-shape scan and html-with-scrub.js's default
+// secret-pattern heuristics -- this is what actually catches Slack's
+// real 2FA setup page, which shows a bare base32 seed with no token
+// shape and no suspicious id/name/class.
+describe('capturePageArtifacts URL-pattern suppression (sensitive-url.js)', () => {
+  it('suppresses html/md and skips the screenshot entirely for a known-sensitive URL, even with no credential-shaped content', async () => {
+    const { capturePageArtifacts, state, calls } = setup({ before: SENSITIVE_URL_PAGE });
+    const result = await capturePageArtifacts(0, 'navigate');
+
+    assert.equal(result.credentialSuppressed, true);
+    assert.equal(result.suppressedReason, 'sensitive-url');
+    assert.equal(result.files, null);
+    assert.deepEqual(sessionFiles(state), [], 'no capture artifacts may be written');
+    assert.equal(calls.screenshot, 0, 'no screenshot may be taken, not even transiently');
+
+    const text = JSON.stringify(result);
+    assert.ok(!text.includes(FAKE_SEED), `seed leaked into result: ${text}`);
+  });
+
+  it('does not suppress an ordinary page at an ordinary URL', async () => {
+    const { capturePageArtifacts, state } = setup({ before: CLEAN_PAGE });
+    const result = await capturePageArtifacts(0, 'navigate');
+
+    assert.notEqual(result.credentialSuppressed, true);
+    assert.ok(result.files, 'expected normal capture files for a non-sensitive page');
+    assert.ok(sessionFiles(state).length > 0);
+  });
+
+  it('suppresses an otherwise-ordinary page purely because of its URL', async () => {
+    // Same markup as CLEAN_PAGE -- nothing credential-shaped, nothing
+    // pattern-matched -- but the URL alone is enough.
+    const { capturePageArtifacts, state } = setup({ before: SENSITIVE_URL_CLEAN_PAGE });
+    const result = await capturePageArtifacts(0, 'navigate');
+
+    assert.equal(result.credentialSuppressed, true);
+    assert.equal(result.suppressedReason, 'sensitive-url');
+    assert.deepEqual(sessionFiles(state), []);
+  });
+
+  it('the *WithCapture wrappers pass the URL suppression reason through', async () => {
+    const { clickWithCapture } = setup({ before: SENSITIVE_URL_PAGE });
+    const clicked = await clickWithCapture(0, '#reveal');
+    assert.equal(clicked.credentialSuppressed, true);
+    assert.equal(clicked.suppressedReason, 'sensitive-url');
+    assert.equal(clicked.files, null);
   });
 });
 

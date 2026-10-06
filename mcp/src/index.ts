@@ -309,7 +309,7 @@ async function executeBrowserAction(params: UseBrowserInput): Promise<string> {
       // When a dialog is open, captureActionWithDiff skips AFTER-capture
       if (!typeResult.capture) {
         const target = selector ? `into ${selector}` : 'into current focus';
-        return formatCaptureResponse('Typed', target, null, typeResult.dialog, typeResult.artifacts, typeResult.credentialSuppressed);
+        return formatCaptureResponse('Typed', target, null, typeResult.dialog, typeResult.artifacts, typeResult.credentialSuppressed, typeResult.suppressedReason);
       }
       return formatCaptureResponse(
         'Typed',
@@ -636,7 +636,7 @@ async function executeBrowserAction(params: UseBrowserInput): Promise<string> {
         'hover',
         () => chromeLib.hover(tabIndex, selector)
       );
-      return formatCaptureResponse('Hovered', selector, hoverResult.capture, hoverResult.dialog, hoverResult.artifacts, hoverResult.credentialSuppressed);
+      return formatCaptureResponse('Hovered', selector, hoverResult.capture, hoverResult.dialog, hoverResult.artifacts, hoverResult.credentialSuppressed, hoverResult.suppressedReason);
     }
 
     case BrowserAction.DRAG_DROP: {
@@ -708,7 +708,7 @@ async function executeBrowserAction(params: UseBrowserInput): Promise<string> {
       const targetDesc = typeof dragTarget === 'object'
         ? `(${dragTarget.x}, ${dragTarget.y})`
         : dragTarget;
-      return formatCaptureResponse('Dragged', `${source} → ${targetDesc}`, dragResult.capture, dragResult.dialog, dragResult.artifacts, dragResult.credentialSuppressed);
+      return formatCaptureResponse('Dragged', `${source} → ${targetDesc}`, dragResult.capture, dragResult.dialog, dragResult.artifacts, dragResult.credentialSuppressed, dragResult.suppressedReason);
     }
 
     case BrowserAction.MOUSE_MOVE: {
@@ -801,7 +801,7 @@ async function executeBrowserAction(params: UseBrowserInput): Promise<string> {
         'dblclick',
         () => chromeLib.doubleClick(tabIndex, selector)
       );
-      return formatCaptureResponse('Double-clicked', selector, dblClickResult.capture, dblClickResult.dialog, dblClickResult.artifacts, dblClickResult.credentialSuppressed);
+      return formatCaptureResponse('Double-clicked', selector, dblClickResult.capture, dblClickResult.dialog, dblClickResult.artifacts, dblClickResult.credentialSuppressed, dblClickResult.suppressedReason);
     }
 
     case BrowserAction.RIGHT_CLICK: {
@@ -814,7 +814,7 @@ async function executeBrowserAction(params: UseBrowserInput): Promise<string> {
         'rightclick',
         () => chromeLib.rightClick(tabIndex, selector)
       );
-      return formatCaptureResponse('Right-clicked', selector, rightClickResult.capture, rightClickResult.dialog, rightClickResult.artifacts, rightClickResult.credentialSuppressed);
+      return formatCaptureResponse('Right-clicked', selector, rightClickResult.capture, rightClickResult.dialog, rightClickResult.artifacts, rightClickResult.credentialSuppressed, rightClickResult.suppressedReason);
     }
 
     case BrowserAction.FILE_UPLOAD: {
@@ -846,7 +846,8 @@ async function executeBrowserAction(params: UseBrowserInput): Promise<string> {
         uploadResult.capture,
         uploadResult.dialog,
         uploadResult.artifacts,
-        uploadResult.credentialSuppressed
+        uploadResult.credentialSuppressed,
+        uploadResult.suppressedReason
       );
     }
 
@@ -872,7 +873,8 @@ async function executeBrowserAction(params: UseBrowserInput): Promise<string> {
         keyResult.capture,
         keyResult.dialog,
         keyResult.artifacts,
-        keyResult.credentialSuppressed
+        keyResult.credentialSuppressed,
+        keyResult.suppressedReason
       );
     }
 
