@@ -953,3 +953,48 @@ describe('capturePageArtifacts / captureActionWithDiff: ALLOW_CREDENTIAL_CAPTURE
     assert.ok(!result.capture.credentialSuppressed);
   });
 });
+
+// Round 4 (jc round-3-review finding 7): nothing tested the AFTER-action
+// URL check -- an action (e.g. a click) that navigates from an ordinary
+// page to a known-sensitive one. Forcing afterUrlSensitive to false
+// still passed the full suite before this test existed; the underlying
+// mechanism (capture.js's afterUrlSensitive) was already correct, this
+// was purely a coverage gap.
+describe('captureActionWithDiff: the AFTER-action URL check, not just the before-action one (jc finding 7)', () => {
+  it('suppresses the capture when the action navigates from a clean page to a known-sensitive URL', async () => {
+    const { captureActionWithDiff, state, act } = setup({ before: CLEAN_PAGE, after: SENSITIVE_URL_CLEAN_PAGE });
+    const result = await captureActionWithDiff(0, 'click', act, 0);
+
+    assert.equal(result.capture.credentialSuppressed, true);
+    assert.equal(result.capture.suppressedReason, 'sensitive-url',
+      'the reason must reflect the URL, not fall back to credential-shape, when forcing afterUrlSensitive to false would otherwise still pass');
+    assert.deepEqual(result.capture.files, {});
+    assert.deepEqual(sessionFiles(state), [], 'no after-action artifacts may be written once the new URL is sensitive');
+  });
+
+  it(`${ENV}=1 restores the capture even though the action navigated to a known-sensitive URL`, async () => {
+    process.env[ENV] = '1';
+    const { captureActionWithDiff, act } = setup({ before: CLEAN_PAGE, after: SENSITIVE_URL_CLEAN_PAGE });
+    const result = await captureActionWithDiff(0, 'click', act, 0);
+
+    assert.ok(!result.capture.credentialSuppressed);
+  });
+});
+
+// Round 4 (jc round-3-review finding 7, second half): the POST-shot
+// URL re-check inside screenshotUnlessCredentialShaped itself -- a route
+// change DURING the screenshot (the page navigates to a sensitive URL
+// while the pixels are being taken), mirroring the existing
+// "deletes the screenshot when a token appears while it is taken" test
+// for the credential-shape case.
+describe('screenshotUnlessCredentialShaped: URL changing to a sensitive one DURING the shot (jc finding 7)', () => {
+  it('deletes the screenshot when the URL becomes sensitive while it is being taken', async () => {
+    const { screenshotUnlessCredentialShaped } = setup({
+      before: CLEAN_PAGE,
+      revealOnScreenshot: { call: 1, page: SENSITIVE_URL_CLEAN_PAGE },
+    });
+    const shot = path.join(process.env.XDG_CACHE_HOME, 'route-change-during-shot.png');
+    assert.equal(await screenshotUnlessCredentialShaped(0, shot), null);
+    assert.equal(fs.existsSync(shot), false);
+  });
+});
