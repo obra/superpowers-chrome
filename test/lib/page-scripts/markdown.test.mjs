@@ -108,4 +108,85 @@ describe('page-scripts/markdown', () => {
       assert.match(md, /carbon footprint/);
     });
   });
+
+  // Round 3 (jc finding 1): a pattern-matched element INLINE inside an
+  // emitted block leaked its secret into .md in clear, because the block
+  // was rendered via el.textContent (which flattens descendant text)
+  // instead of walking the subtree and redacting the matched descendant
+  // in place. Reproduced by jc at c19a436c with a <p> wrapping a <code>;
+  // this covers all four block types jc named, plus h3 for a fifth.
+  describe('round 3: a pattern-matched element inline inside an emitted block (jc finding 1)', () => {
+    const FAKE_SEED = 'JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP';
+
+    it('<p>Your setup key: <code id="totp-secret">SEED</code></p>', () => {
+      const md = evalScript(`<html><body><p>Your setup key: <code id="totp-secret">${FAKE_SEED}</code></p></body></html>`);
+      assert.doesNotMatch(md, new RegExp(FAKE_SEED), `seed leaked via <p>: ${md}`);
+    });
+
+    it('<li>Setup key: <span id="totp-secret">SEED</span></li>', () => {
+      const md = evalScript(`<html><body><ul><li>Setup key: <span id="totp-secret">${FAKE_SEED}</span></li></ul></body></html>`);
+      assert.doesNotMatch(md, new RegExp(FAKE_SEED), `seed leaked via <li>: ${md}`);
+    });
+
+    it('<table><tr><td>Setup key: <code id="totp-secret">SEED</code></td></tr></table>', () => {
+      const md = evalScript(`<html><body><table><tr><td>Setup key: <code id="totp-secret">${FAKE_SEED}</code></td></tr></table></body></html>`);
+      assert.doesNotMatch(md, new RegExp(FAKE_SEED), `seed leaked via <td>: ${md}`);
+    });
+
+    it('<pre>Setup key: <span id="totp-secret">SEED</span></pre>', () => {
+      const md = evalScript(`<html><body><pre>Setup key: <span id="totp-secret">${FAKE_SEED}</span></pre></body></html>`);
+      assert.doesNotMatch(md, new RegExp(FAKE_SEED), `seed leaked via <pre>: ${md}`);
+    });
+
+    it('<h3>Setup key: <code id="totp-secret">SEED</code></h3>', () => {
+      const md = evalScript(`<html><body><h3>Setup key: <code id="totp-secret">${FAKE_SEED}</code></h3></body></html>`);
+      assert.doesNotMatch(md, new RegExp(FAKE_SEED), `seed leaked via <h3>: ${md}`);
+    });
+
+    it('<blockquote>Setup key: <code id="totp-secret">SEED</code></blockquote>', () => {
+      const md = evalScript(`<html><body><blockquote>Setup key: <code id="totp-secret">${FAKE_SEED}</code></blockquote></body></html>`);
+      assert.doesNotMatch(md, new RegExp(FAKE_SEED), `seed leaked via <blockquote>: ${md}`);
+    });
+  });
+
+  // Round 3 (jc finding 4): container blanking must be limited to STRONG
+  // (exact-compound) matches, or a small enough subtree -- a WEAK/broad
+  // match (bare "token"/"secret") on a big, ordinary container must not
+  // wipe the page. These are jc's own two examples.
+  describe('round 3: weak/broad container matches do not wipe ordinary page content (jc finding 4)', () => {
+    it('a design-system wrapper class ("sn-token-provider") does not blank its ordinary content', () => {
+      const md = evalScript(
+        '<html><body><div class="Shell sn-token-provider">' +
+        '<h2>Get started</h2><p>Normal docs text here</p>' +
+        '</div></body></html>'
+      );
+      assert.match(md, /Get started/, `heading wrongly redacted: ${md}`);
+      assert.match(md, /Normal docs text here/, `paragraph wrongly redacted: ${md}`);
+    });
+
+    it('a docs section id ("module-secrets") does not blank its ordinary content', () => {
+      const md = evalScript(
+        '<html><body><section id="module-secrets">' +
+        '<h2>Module: secrets</h2><p>This module manages credentials.</p>' +
+        '</section></body></html>'
+      );
+      assert.match(md, /Module: secrets/, `heading wrongly redacted: ${md}`);
+      assert.match(md, /This module manages credentials\./, `paragraph wrongly redacted: ${md}`);
+    });
+
+    it('a weak/broad container still redacts a descendant that independently matches', () => {
+      // The container itself (sn-token-provider) is weak and must not be
+      // wiped wholesale, but a nested element with its OWN strong/compound
+      // match is still found and redacted on its own merits.
+      const FAKE_SEED2 = 'JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP';
+      const md = evalScript(
+        '<html><body><div class="sn-token-provider">' +
+        '<h2>Get started</h2>' +
+        `<code id="totp-secret">${FAKE_SEED2}</code>` +
+        '</div></body></html>'
+      );
+      assert.match(md, /Get started/, `heading wrongly redacted: ${md}`);
+      assert.doesNotMatch(md, new RegExp(FAKE_SEED2), `seed leaked: ${md}`);
+    });
+  });
 });
