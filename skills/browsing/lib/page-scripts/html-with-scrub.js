@@ -224,6 +224,40 @@ module.exports = `
       return false;
     }
 
+    // Round 3 (jc finding 4): a matched CONTAINER is only safe to blank
+    // WHOLESALE (every descendant's text, see blankMatchedSubtree below)
+    // when the match is a strong, specific compound naming the secret
+    // itself (totp-secret, recovery-codes, ... -- secret-pattern.js's
+    // isCompoundSecretMatch), AND the container's text is small. Real
+    // regressions this guards against: a design-system wrapper class
+    // ("sn-token-provider") or a docs landmark (a <section
+    // id="module-secrets">) matches the ordinary (weak) detector via a
+    // single broad word ("token"/"secret") -- nowhere near as specific
+    // as an actual secret-naming compound -- and wholesale-blanking
+    // either wipes real page content the agent needs, not a secret. 2000
+    // characters covers a realistic secret-setup widget (a seed/QR
+    // caption plus a few short instructions or button labels) with
+    // headroom; a real docs section or landmark is realistically tens of
+    // KB, comfortably over this cap even before the compound-match
+    // requirement. A LEAF match (no element children) is NOT gated by
+    // this -- blanking one element's own text has no "wipe unrelated
+    // content" blast radius regardless of match strength, so it stays
+    // unconditional (see the clone-pass loop below). A CONTAINER that
+    // fails this check still has its own attributes stripped, and the
+    // clone-pass loop below still finds and blanks any DESCENDANT that
+    // independently matches on its own id/class/etc -- only the
+    // wholesale "redact everything nested inside" behavior is withheld.
+    const CONTAINER_BLANK_TEXT_CAP = 2000;
+    function isStrongContainerMatch(el) {
+      for (const attr of SECRET_LOOKING_ATTRS) {
+        const v = el.getAttribute(attr);
+        if (v && __senIsCompoundSecretMatch(v)) {
+          return (el.textContent || '').length <= CONTAINER_BLANK_TEXT_CAP;
+        }
+      }
+      return false;
+    }
+
     // Fields whose value must be redacted wherever it appears on the page,
     // by live signal, not by mirrored attribute. Does NOT include
     // MARKER_SELECTOR -- see module comment above.
@@ -368,14 +402,22 @@ module.exports = `
     // matched element's own value/data-*/aria-* attributes are stripped
     // unconditionally, like every other attr-scrub category above, even
     // when it is itself a skip-tag control -- only the recursive TEXT
-    // blanking (blankMatchedSubtree) is skipped for those.
+    // blanking (blankMatchedSubtree) is skipped for those. A matched
+    // CONTAINER (has element children) additionally needs
+    // isStrongContainerMatch before its whole subtree is blanked -- see
+    // that function's comment above (round 3 / jc finding 4). A matched
+    // LEAF (no element children) is unconditional, as before: blanking
+    // one element's own text has no "wipe unrelated content" blast
+    // radius regardless of match strength.
     for (const el of clone.querySelectorAll('*')) {
       if (!looksSecretByPattern(el)) continue;
       el.removeAttribute('value');
       for (const name of el.getAttributeNames()) {
         if (name.indexOf('data-') === 0 || name.indexOf('aria-') === 0) el.removeAttribute(name);
       }
-      blankMatchedSubtree(el);
+      if (el.childElementCount === 0 || isStrongContainerMatch(el)) {
+        blankMatchedSubtree(el);
+      }
     }
 
     // outerHTML's two entity-escaping rules: an attribute value escapes &/"/</> and U+00A0; text-node content

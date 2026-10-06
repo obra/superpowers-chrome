@@ -595,12 +595,42 @@ describe('page-scripts/html-with-scrub: default secret-pattern detection', () =>
     assert.equal(value.scrubbed, value.raw, 'button/link labels must survive untouched');
   });
 
-  it("blanks a matching wrapping container's own text AND every descendant leaf's text, not just a matching leaf descendant", () => {
-    // The container's own id ("totp-setup") must itself match
-    // SECRET_LOOKING_PATTERN -- "two-factor-setup" (the pre-fix version of
-    // this test) does NOT match any pattern word at all, so that version
-    // exercised nothing: the childElementCount guard it claimed to cover
-    // was never reached, and removing that guard entirely still passed.
+  it("blanks a matching STRONG wrapping container's own text AND every descendant leaf's text, not just a matching leaf descendant", () => {
+    // The container's own id ("totp-secret") must itself match a STRONG
+    // compound (secret-pattern.js's isCompoundSecretMatch) -- round 3
+    // (jc finding 4) restricts wholesale container blanking to strong
+    // matches, so a merely-weak id like the original "totp-setup" no
+    // longer wholesale-blanks (see the dedicated weak-container test
+    // below). "two-factor-setup" (the pre-round-3 version of this test)
+    // did not match any pattern word at all, so that version exercised
+    // nothing: the childElementCount guard it claimed to cover was never
+    // reached, and removing that guard entirely still passed.
+    const dom = makeDom(
+      '<html><body><div id="totp-secret">' +
+      '<p>Scan this QR code with your authenticator app.</p>' +
+      `<span id="init_key_code">${FAKE_SEED}</span>` +
+      '<button id="doneBtn">Done</button>' +
+      '</div></body></html>'
+    );
+    const value = runScrub(dom);
+    assert.doesNotMatch(value.scrubbed, new RegExp(FAKE_SEED), 'the seed itself must never survive');
+    // A matched STRONG container's descendant text is blanked too,
+    // including an ordinary instruction paragraph that carries no secret
+    // of its own -- accepted for a strong/small container: leaving a
+    // secret in clear to preserve a label is the wrong tradeoff (see
+    // html-with-scrub.js's module comment).
+    assert.doesNotMatch(value.scrubbed, /Scan this QR code with your authenticator app\./,
+      'descendant instruction text inside a matched STRONG container must also be blanked');
+    // A skip-tag CONTROL's own label is the one thing that survives even
+    // inside a matched container: its visible text is a UI label ('Done'),
+    // never the secret, and recursion does not descend into it.
+    assert.match(value.scrubbed, />Done<\/button>/, "a control's own label must still survive");
+  });
+
+  // Round 3 (jc finding 4): a WEAK container match (a single broad word,
+  // not an exact compound) must NOT wholesale-blank -- only a descendant
+  // that itself independently matches is found and blanked.
+  it('does NOT wholesale-blank a WEAK wrapping container, but still blanks an independently-matching descendant', () => {
     const dom = makeDom(
       '<html><body><div id="totp-setup">' +
       '<p>Scan this QR code with your authenticator app.</p>' +
@@ -609,17 +639,9 @@ describe('page-scripts/html-with-scrub: default secret-pattern detection', () =>
       '</div></body></html>'
     );
     const value = runScrub(dom);
-    assert.doesNotMatch(value.scrubbed, new RegExp(FAKE_SEED), 'the seed itself must never survive');
-    // A matched container's descendant text is blanked too, including an
-    // ordinary instruction paragraph that carries no secret of its own --
-    // accepted: leaving a secret in clear to preserve a label is the
-    // wrong tradeoff (see html-with-scrub.js's module comment).
-    assert.doesNotMatch(value.scrubbed, /Scan this QR code with your authenticator app\./,
-      'descendant instruction text inside a matched container must also be blanked');
-    // A skip-tag CONTROL's own label is the one thing that survives even
-    // inside a matched container: its visible text is a UI label ('Done'),
-    // never the secret, and recursion does not descend into it.
-    assert.match(value.scrubbed, />Done<\/button>/, "a control's own label must still survive");
+    assert.doesNotMatch(value.scrubbed, new RegExp(FAKE_SEED), 'the seed itself must never survive (span matches on its own)');
+    assert.match(value.scrubbed, /Scan this QR code with your authenticator app\./,
+      'a WEAK container ("totp-setup" -- not an exact compound) must not wholesale-blank its ordinary instruction text');
   });
 
   it('fully blanks a matched container whose secret is split across element children (jc finding 2: "Key: <code>SEED</code>")', () => {
@@ -679,5 +701,28 @@ describe('page-scripts/html-with-scrub: default secret-pattern detection', () =>
     // what this test guards against -- only the GLOBAL, page-wide
     // corruption of unrelated text is a bug.
     assert.doesNotMatch(value.scrubbed, />const</, 'the matched span\'s own text is still (individually) blanked');
+  });
+
+  // Round 3 (jc finding 4): jc's own two examples, reproduced verbatim.
+  it('a design-system wrapper class ("sn-token-provider") does not wipe ordinary page content', () => {
+    const dom = makeDom(
+      '<html><body><div class="Shell sn-token-provider">' +
+      '<h2>Get started</h2><p>Normal docs text here</p>' +
+      '</div></body></html>'
+    );
+    const value = runScrub(dom);
+    assert.match(value.scrubbed, /<h2>Get started<\/h2>/, `heading wrongly redacted: ${value.scrubbed}`);
+    assert.match(value.scrubbed, /<p>Normal docs text here<\/p>/, `paragraph wrongly redacted: ${value.scrubbed}`);
+  });
+
+  it('a docs landmark section id ("module-secrets") does not wipe ordinary page content', () => {
+    const dom = makeDom(
+      '<html><body><section id="module-secrets">' +
+      '<h2>Module: secrets</h2><p>This module manages credentials.</p>' +
+      '</section></body></html>'
+    );
+    const value = runScrub(dom);
+    assert.match(value.scrubbed, /<h2>Module: secrets<\/h2>/, `heading wrongly redacted: ${value.scrubbed}`);
+    assert.match(value.scrubbed, /<p>This module manages credentials\.<\/p>/, `paragraph wrongly redacted: ${value.scrubbed}`);
   });
 });

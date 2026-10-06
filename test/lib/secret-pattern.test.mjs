@@ -16,7 +16,7 @@ import { createRequire } from 'node:module';
 import { describe, it } from 'node:test';
 
 const require = createRequire(import.meta.url);
-const { looksSecretByPattern } = require('../../skills/browsing/lib/secret-pattern.js');
+const { looksSecretByPattern, isCompoundSecretMatch } = require('../../skills/browsing/lib/secret-pattern.js');
 
 describe('looksSecretByPattern', () => {
   describe('negative: raw-substring false positives that word boundaries must fix', () => {
@@ -89,5 +89,46 @@ describe('looksSecretByPattern', () => {
     assert.equal(looksSecretByPattern(''), false);
     assert.equal(looksSecretByPattern(null), false);
     assert.equal(looksSecretByPattern(undefined), false);
+  });
+});
+
+describe('isCompoundSecretMatch (container-blanking strength gate, round 3 / jc finding 4)', () => {
+  describe('positive: exact compounds that DO justify blanking a whole container', () => {
+    const strongValues = [
+      'totp-secret',
+      'secret-key',
+      'recovery-codes',
+      'recovery_code',
+      'backup-codes',
+      'api-key',
+      'private-key',
+      'init_key_code',
+    ];
+    for (const value of strongValues) {
+      it(value + ' is a strong compound match', () => {
+        assert.equal(isCompoundSecretMatch(value), true, value);
+      });
+    }
+  });
+
+  describe('negative: broad single-word matches that must NOT justify blanking a whole container', () => {
+    const weakValues = [
+      'sn-token-provider',
+      'module-secrets',
+      'totp-setup',
+      'two-factor-setup',
+      'footprint',
+    ];
+    for (const value of weakValues) {
+      it(value + ' is NOT a strong compound match', () => {
+        assert.equal(isCompoundSecretMatch(value), false, value);
+      });
+    }
+  });
+
+  it('returns false for empty/falsy input', () => {
+    assert.equal(isCompoundSecretMatch(''), false);
+    assert.equal(isCompoundSecretMatch(null), false);
+    assert.equal(isCompoundSecretMatch(undefined), false);
   });
 });
