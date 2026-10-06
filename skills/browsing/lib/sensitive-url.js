@@ -41,10 +41,18 @@
  * reason: an unanchored `/mfa` prefix also matched `/docs/mfa-best-practices`,
  * a docs page ABOUT mfa, not an MFA enrollment/challenge page -- the word
  * has to be its own path segment, not merely a prefix of a longer,
- * unrelated slug. `mfa` is the only word anchored this strictly, because
- * it is the only one an over-suppression report named. `/2fa` and
- * `/two[-_]?factor` are deliberately left UNANCHORED on their suffix
- * side: real setup routes need it -- GitHub's
+ * unrelated slug. `mfa` is the only word anchored this strictly (a full
+ * segment anchor), because it is the only one an over-suppression report
+ * named outright. `/2fa`, `/totp`, `security[-_]?keys` and
+ * `security[-_]?info` get a WORD-BOUNDARY anchor instead (round 4): a
+ * negative lookahead/lookbehind against a following/preceding
+ * letter/digit (`(?![a-zA-Z0-9])`, `(?<![a-zA-Z0-9])`) -- a real
+ * boundary check, not a full segment anchor, so `/2fa_app`/`/2fa/setup`
+ * (segment PREFIX + a real separator) still matches but `/2fast`/
+ * `/totpal`/`/security-keyset-docs` (letters glued on with no separator
+ * at all) no longer do. `/two[-_]?factor` is deliberately left fully
+ * UNANCHORED on its suffix side, with no word-boundary check either:
+ * real setup routes need it -- GitHub's
  * `/settings/two_factor_authentication/setup/intro`, GitLab's
  * `/-/profile/two_factor_auth` and 1Password's
  * `/settings/two-factor-authentication` all have "two_factor"/"two-factor"
@@ -52,12 +60,11 @@
  * Slack's `/account/settings/2fa_app`. (`two[-_]?factor` WAS segment-
  * anchored for one round, which silently broke all three of those real
  * routes -- the anchoring fix for "mfa" does not generalize to every
- * word without checking real routes first.) `security[-_]?keys`,
- * `two[-_]?step`, `login[-_]?verification` and `security[-_]?info` are
- * deliberately NOT segment-anchored either: they are expected to show up
- * as a hash anchor (`#security-keys`) or as part of a longer slug
- * (Google's own `/two-step-verification` route), not necessarily as a
- * path segment of their own.
+ * word without checking real routes first.) `two[-_]?step` and
+ * `login[-_]?verification` are also left fully unanchored: they are
+ * expected to show up as part of a longer slug (Google's own
+ * `/two-step-verification` route), not necessarily as a path segment or
+ * word-bounded token of their own.
  *
  * Only matched for a URL whose `pathname` is a real page location
  * (http(s):, file:, and similar) -- never for `data:`, `blob:` or
