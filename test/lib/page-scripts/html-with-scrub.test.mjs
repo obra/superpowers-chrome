@@ -595,17 +595,89 @@ describe('page-scripts/html-with-scrub: default secret-pattern detection', () =>
     assert.equal(value.scrubbed, value.raw, 'button/link labels must survive untouched');
   });
 
-  it("does not blank a wrapping container's legitimate nested content, only a matching leaf descendant", () => {
+  it("blanks a matching wrapping container's own text AND every descendant leaf's text, not just a matching leaf descendant", () => {
+    // The container's own id ("totp-setup") must itself match
+    // SECRET_LOOKING_PATTERN -- "two-factor-setup" (the pre-fix version of
+    // this test) does NOT match any pattern word at all, so that version
+    // exercised nothing: the childElementCount guard it claimed to cover
+    // was never reached, and removing that guard entirely still passed.
     const dom = makeDom(
-      '<html><body><div id="two-factor-setup">' +
+      '<html><body><div id="totp-setup">' +
       '<p>Scan this QR code with your authenticator app.</p>' +
       `<span id="init_key_code">${FAKE_SEED}</span>` +
       '<button id="doneBtn">Done</button>' +
       '</div></body></html>'
     );
     const value = runScrub(dom);
-    assert.doesNotMatch(value.scrubbed, new RegExp(FAKE_SEED));
-    assert.match(value.scrubbed, /Scan this QR code with your authenticator app\./);
-    assert.match(value.scrubbed, />Done<\/button>/);
+    assert.doesNotMatch(value.scrubbed, new RegExp(FAKE_SEED), 'the seed itself must never survive');
+    // A matched container's descendant text is blanked too, including an
+    // ordinary instruction paragraph that carries no secret of its own --
+    // accepted: leaving a secret in clear to preserve a label is the
+    // wrong tradeoff (see html-with-scrub.js's module comment).
+    assert.doesNotMatch(value.scrubbed, /Scan this QR code with your authenticator app\./,
+      'descendant instruction text inside a matched container must also be blanked');
+    // A skip-tag CONTROL's own label is the one thing that survives even
+    // inside a matched container: its visible text is a UI label ('Done'),
+    // never the secret, and recursion does not descend into it.
+    assert.match(value.scrubbed, />Done<\/button>/, "a control's own label must still survive");
+  });
+
+  it('fully blanks a matched container whose secret is split across element children (jc finding 2: "Key: <code>SEED</code>")', () => {
+    const dom = makeDom(
+      `<html><body><div id="totp-secret">Key: <code>${FAKE_SEED}</code></div></body></html>`
+    );
+    const value = runScrub(dom);
+    assert.doesNotMatch(value.scrubbed, new RegExp(FAKE_SEED), 'the seed must not leak just because it sits inside a <code> child');
+  });
+
+  it('fully blanks a matched container that is a list of secrets (jc finding 2: recovery-codes <ul><li>)', () => {
+    const dom = makeDom(
+      '<html><body><ul class="recovery-codes">' +
+      '<li>11112222</li><li>33334444</li><li>55556666</li>' +
+      '</ul></body></html>'
+    );
+    const value = runScrub(dom);
+    for (const code of ['11112222', '33334444', '55556666']) {
+      assert.doesNotMatch(value.scrubbed, new RegExp(code), `recovery code ${code} must not leak in clear`);
+    }
+  });
+
+  it('does not page-wide substring-replace common words or corrupt class= attributes (jc finding 1: Prism token spans)', () => {
+    // Prism.js (and similar syntax highlighters) literally use "token" as
+    // a CSS class name on every highlighted span -- a real, expected
+    // match of the pattern, not a bug. The bug was collecting that span's
+    // own short TEXT ("class", "const", "return" -- ordinary keywords) into
+    // a page-WIDE substring-replace set, which then corrupted every other
+    // occurrence of those same words anywhere else on the page, including
+    // inside the literal attribute-name text "class=" itself.
+    const dom = makeDom(
+      '<html><body>' +
+      '<pre><span class="token keyword">const</span> x = 1; ' +
+      '<span class="token keyword">class</span> Foo {} ' +
+      '<span class="token keyword">return</span> x;</pre>' +
+      '<p class="footprint">carbon footprint</p>' +
+      '<nav class="navbar">Home</nav>' +
+      '</body></html>'
+    );
+    const value = runScrub(dom);
+    // The unrelated paragraph and nav survive completely untouched: their
+    // own ids/classes do not match the pattern (word-boundary fix -- see
+    // secret-pattern.js), and no OTHER element's matched text leaked into
+    // a page-wide replace that could have mangled them.
+    assert.match(value.scrubbed, /<p class="footprint">carbon footprint<\/p>/,
+      '"footprint" must survive -- it only coincidentally contains "otp"');
+    assert.match(value.scrubbed, /<nav class="navbar">Home<\/nav>/,
+      'an unrelated class="navbar" element must survive untouched');
+    // No literal "[REDACTED]=" anywhere: the bug turned every class=
+    // attribute's NAME into [REDACTED]= via a global substring replace of
+    // the word "class".
+    assert.doesNotMatch(value.scrubbed, /\[REDACTED\]=/,
+      'no attribute name may be corrupted by a page-wide substring replace');
+    // The Prism spans' OWN text is still blanked -- each span's id/class
+    // matches the pattern directly, so ITS OWN occurrence is redacted.
+    // That is expected, accepted collateral (documented in the PR), not
+    // what this test guards against -- only the GLOBAL, page-wide
+    // corruption of unrelated text is a bug.
+    assert.doesNotMatch(value.scrubbed, />const</, 'the matched span\'s own text is still (individually) blanked');
   });
 });

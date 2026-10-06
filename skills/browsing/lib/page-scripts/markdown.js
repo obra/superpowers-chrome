@@ -5,8 +5,41 @@
 //
 // Includes images >= 100x100 in a header summary; inlines image references
 // >= 50x50 with size info; skips smaller icons.
+//
+// Default secret-pattern redaction: this walks the LIVE DOM independently
+// of page-scripts/html-with-scrub.js's clone/scrub (see that module's
+// comment for why), so it needs its own pass of the same check -- an
+// element whose own id/name/class/autocomplete/aria-label, OR ANY
+// ANCESTOR's, matches secret-pattern.js's word-boundary detector has its
+// text rendered as [REDACTED] here instead of its real textContent. This
+// catches the same containers html-with-scrub.js's clone pass now fully
+// blanks (a matched `<div>`/`<ul>` wrapping a `<code>`/`<li>` that holds
+// the actual secret), not just an element that matches directly, and
+// trims before comparing length/emptiness exactly like the rest of this
+// generator already does -- untrimmed text was collected into the old
+// html-with-scrub.js secretValues channel this generator used to depend
+// on for the SAME redaction, so a leaf with leading/trailing whitespace
+// never matched the already-trimmed markdown text; that channel is gone
+// now, matching happens directly here instead. \`a\` is excluded (like
+// PATTERN_SKIP_TAGS in html-with-scrub.js/secret-pattern.js): a link's
+// own visible text is a UI label, not the secret it operates on, even
+// when it or an ancestor matches.
+const { SECRET_LOOKING_ATTRS, LOOKS_SECRET_FN_SRC } = require('../secret-pattern');
+
 module.exports = `
   (() => {
+    ${LOOKS_SECRET_FN_SRC}
+    const __senSecretAttrs = ${JSON.stringify(SECRET_LOOKING_ATTRS)};
+    function __senMatchesSecretOrAncestor(el) {
+      for (let node = el; node; node = node.parentElement) {
+        for (const attr of __senSecretAttrs) {
+          const v = node.getAttribute && node.getAttribute(attr);
+          if (v && __senLooksSecretByPattern(v)) return true;
+        }
+      }
+      return false;
+    }
+
     const results = [];
 
     const title = document.title;
@@ -26,10 +59,13 @@ module.exports = `
 
     for (const el of elements) {
       const tag = el.tagName.toLowerCase();
-      const text = el.textContent.trim();
+      // 'a' is excluded from pattern-based blanking -- see module comment
+      // above (its own visible text is a UI label, not the secret).
+      const secretHere = tag !== 'a' && __senMatchesSecretOrAncestor(el);
+      const text = secretHere ? (el.textContent.trim() ? '[REDACTED]' : '') : el.textContent.trim();
 
       if (tag === 'img') {
-        const alt = el.alt || '';
+        const alt = secretHere ? '' : (el.alt || '');
         const src = el.src || '';
         const rect = el.getBoundingClientRect();
         if (rect.width >= 50 && rect.height >= 50) {
@@ -43,7 +79,9 @@ module.exports = `
       if (tag === 'figure') {
         const figcaption = el.querySelector('figcaption');
         if (figcaption) {
-          results.push(\`\\n*Figure: \${figcaption.textContent.trim()}*\\n\`);
+          const figSecret = __senMatchesSecretOrAncestor(figcaption);
+          const figText = figSecret ? '[REDACTED]' : figcaption.textContent.trim();
+          results.push(\`\\n*Figure: \${figText}*\\n\`);
         }
         continue;
       }
@@ -70,7 +108,7 @@ module.exports = `
           results.push('\\n| Table Content |\\n|---|');
           for (let i = 0; i < Math.min(rows.length, 10); i++) {
             const cells = rows[i].querySelectorAll('td, th');
-            const cellTexts = Array.from(cells).map(cell => cell.textContent.trim()).slice(0, 3);
+            const cellTexts = Array.from(cells).map(cell => __senMatchesSecretOrAncestor(cell) ? '[REDACTED]' : cell.textContent.trim()).slice(0, 3);
             if (cellTexts.length > 0) {
               results.push(\`| \${cellTexts.join(' | ')} |\`);
             }

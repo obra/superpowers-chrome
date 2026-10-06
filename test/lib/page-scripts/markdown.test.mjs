@@ -49,4 +49,63 @@ describe('page-scripts/markdown', () => {
     const md = evalScript(giantHtml);
     assert.ok(md.length > 50000);
   });
+
+  // Default secret-pattern redaction: this generator walks the live DOM
+  // independently of html-with-scrub.js's clone/scrub, so it needs its
+  // own pass of the same word-boundary check (secret-pattern.js) -- see
+  // that module and this file's own module comment for why.
+  describe('default secret-pattern redaction', () => {
+    const FAKE_SEED = 'JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP';
+
+    it('redacts a matched leaf element\'s text (a <code> holding a seed)', () => {
+      const md = evalScript(`<html><body><code id="totp-secret">${FAKE_SEED}</code></body></html>`);
+      assert.doesNotMatch(md, new RegExp(FAKE_SEED));
+      assert.match(md, /\[REDACTED\]/);
+    });
+
+    it('redacts descendant leaves inside a matched wrapping container (jc finding 2, applied to markdown)', () => {
+      const md = evalScript(
+        '<html><body><div id="totp-secret">' +
+        '<p>Key:</p>' +
+        `<code>${FAKE_SEED}</code>` +
+        '</div></body></html>'
+      );
+      assert.doesNotMatch(md, new RegExp(FAKE_SEED), 'the seed must not leak into markdown just because it sits in a <code> descendant');
+    });
+
+    it('redacts a recovery-codes <ul><li> list in markdown too', () => {
+      const md = evalScript(
+        '<html><body><ul class="recovery-codes">' +
+        '<li>11112222</li><li>33334444</li>' +
+        '</ul></body></html>'
+      );
+      assert.doesNotMatch(md, /11112222/);
+      assert.doesNotMatch(md, /33334444/);
+    });
+
+    it('redacts a leaf whose text is padded with leading/trailing whitespace (jc finding 6: untrimmed leaf vs already-trimmed .md text)', () => {
+      // The pre-fix mechanism collected the leaf's RAW (untrimmed)
+      // textContent into secretValues for capture.js to substring-match
+      // against the .md text -- but this generator already trims
+      // (textContent.trim(), used throughout), so a whitespace-padded
+      // leaf's untrimmed secretValues entry could never match the
+      // trimmed .md text and the seed leaked into the markdown file in
+      // clear. This generator now matches directly, trimmed, with no
+      // separate secretValues channel to go stale against.
+      const md = evalScript(`<html><body><code id="totp-secret">\n   ${FAKE_SEED}\n  </code></body></html>`);
+      assert.doesNotMatch(md, new RegExp(FAKE_SEED));
+    });
+
+    it('does not blank a link\'s own label even when it or an ancestor matches (control, not the secret)', () => {
+      const md = evalScript(
+        '<html><body><div id="totp-setup"><a id="reveal-totp-link" href="/reveal">Show code</a></div></body></html>'
+      );
+      assert.match(md, /\[Show code\]\(.*\/reveal\)/);
+    });
+
+    it('does not redact ordinary unrelated text (word-boundary negative control: "footprint")', () => {
+      const md = evalScript('<html><body><p class="footprint">carbon footprint</p></body></html>');
+      assert.match(md, /carbon footprint/);
+    });
+  });
 });

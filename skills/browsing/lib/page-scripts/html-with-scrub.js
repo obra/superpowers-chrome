@@ -1,5 +1,6 @@
 const { MARKER_ATTR } = require('../credential-guard');
 const { INERT_CLONE_FN_SRC } = require('../secret-marker');
+const { SECRET_LOOKING_ATTRS, PATTERN_SKIP_TAGS, LOOKS_SECRET_FN_SRC } = require('../secret-pattern');
 
 // Page-side script: loaded as a string and embedded in CDP
 // Runtime.evaluate by lib/capture.js.
@@ -134,32 +135,46 @@ const { INERT_CLONE_FN_SRC } = require('../secret-marker');
 // `#init_key_code` element from the moment the page loads, so the very
 // first auto-capture of that page -- before any click, before any
 // marking could happen -- would otherwise write the raw seed to disk.
-// `looksSecretByPattern` below flags an element whose id/name/class/
-// autocomplete/aria-label contains a secret-looking word (secret, totp,
-// otp, 2fa, mfa, key_code, seed, recovery, backup_code, api_key, token),
-// case-insensitive substring match -- same philosophy as the
-// autocomplete substring matching above: a missed match is a leak, an
-// extra match only degrades a capture, never breaks the live page (only
-// the disk copy is ever touched). A matched value-bearing field
+// `looksSecretByPattern` (secret-pattern.js, shared with markdown.js) flags
+// an element whose id/name/class/autocomplete/aria-label contains a
+// secret-looking WORD -- split on `-`/`_`/camelCase/whitespace into
+// segments, not a raw substring test; see that module for why (it also
+// fixes two real false positives: "otp" inside "footprint" and "token"
+// inside a "token-list" container). A matched value-bearing field
 // (input/textarea/select) is unioned into valueSensitiveEls exactly like
-// any other sensitive field. A matched element with NO element children
-// of its own (a leaf text holder -- the shape of a hidden span/input
-// carrying a seed as its value or text) additionally has its own text
-// content blanked directly in the clone, regardless of length: that is a
-// single matched element's own occurrence, not a document-wide substring
-// scan, so there is no risk of mangling unrelated short strings the way
-// the length floor above guards against. A matched element WITH element
-// children (a wrapping container whose id/class happens to match, e.g.
-// `<div id="two-factor-setup">`) is deliberately NOT text-blanked as a
-// whole -- that would erase legitimate instructions and labels nested
-// inside it, not just a secret -- but its own value/data-*/aria-*
-// attributes are still stripped, and any matching DESCENDANT leaf
-// element is still found and blanked on its own by the same pass.
+// any other sensitive field, and its value is redacted by the ordinary
+// document-wide substring pass below, with the ordinary length floor.
+//
+// A matched LEAF element (no element children -- a hidden span/input
+// holding a seed as its value or text) has its own text blanked directly
+// in the clone, by element reference, not by adding the text to
+// `secretValues` for a page-wide substring replace: that text can be
+// short and can coincide with ordinary words elsewhere on the page (a
+// Prism-highlighted `class="token keyword"` span's own text is the word
+// "class", and replacing every occurrence of "class" page-wide corrupts
+// every `class="..."` attribute into `[REDACTED]="..."`). A matched
+// CONTAINER (has element children, e.g. `<div id="totp-secret">`) is no
+// longer skipped: every one of its own direct text-node children is
+// blanked, and the same blanking recurses into every non-skip-tag
+// descendant -- so `<div id="totp-secret">Key: <code>SEED</code></div>`
+// and `<ul class="recovery-codes"><li>CODE1</li></ul>` are both fully
+// redacted, not just a container's own (often nonexistent) direct text.
+// Descendant elements also get the same value/data-*/aria-* attribute
+// stripping as the container itself, on the assumption that anything
+// inside a matched secret container is part of the secret's own
+// rendering. Cost of this: a label mixed into the container's own text
+// ("Key: " above) is blanked along with the secret next to it --
+// accepted, since leaving a secret in clear to preserve a label is the
+// wrong tradeoff. Interactive CONTROL tags (button/a/summary/label/
+// legend/option, and script/style/noscript) are never recursed into or
+// text-blanked even when matched, since a control's own visible text is a
+// UI LABEL ("Copy"), not the secret it operates on, even when its id
+// references one (`copy-seed-btn`); their own value/data-*/aria-*
+// attributes are still stripped.
 // Known false-positive class, accepted and documented rather than
-// narrowed away: `token` and `seed` are broad enough to also match an
-// ordinary CSRF token field or an unrelated "seed data" id. That only
-// blanks a value/text on the disk copy -- it never removes an element or
-// touches the live page.
+// narrowed away: a bare "token" is broad enough to also match an ordinary
+// CSRF token field ("csrf-token") -- that only blanks a value/text on the
+// disk copy, never removes an element or touches the live page.
 module.exports = `
   (() => {
     const raw = document.documentElement.outerHTML;
@@ -186,9 +201,10 @@ module.exports = `
 
     // Default secret-pattern heuristics -- see module comment above for
     // why this exists (Slack's hidden #init_key_code at page load) and
-    // the false-positive tradeoff it accepts.
-    const SECRET_LOOKING_PATTERN = /secret|totp|otp|2fa|mfa|key[-_]?code|seed|recovery|backup[-_]?code|api[-_]?key|token/i;
-    const SECRET_LOOKING_ATTRS = ['id', 'name', 'class', 'autocomplete', 'aria-label'];
+    // secret-pattern.js for the word-boundary matching itself (shared
+    // with markdown.js, so both artifacts agree on what counts).
+    ${LOOKS_SECRET_FN_SRC}
+    const SECRET_LOOKING_ATTRS = ${JSON.stringify(SECRET_LOOKING_ATTRS)};
     // Not text-containers worth blanking even when matched: no
     // human-visible content to leak, and leaving them alone keeps the
     // disk copy's inline script/style readable instead of noisily
@@ -199,14 +215,11 @@ module.exports = `
     // a UI LABEL ("Copy"), never the secret value itself; blanking it
     // wrecks the capture's readability for no security benefit. Their
     // value/data-*/aria-* attributes are still stripped either way.
-    const PATTERN_SKIP_TAGS = new Set([
-      'SCRIPT', 'STYLE', 'NOSCRIPT',
-      'BUTTON', 'A', 'SUMMARY', 'LABEL', 'LEGEND', 'OPTION',
-    ]);
+    const PATTERN_SKIP_TAGS = new Set(${JSON.stringify(PATTERN_SKIP_TAGS)});
     function looksSecretByPattern(el) {
       for (const attr of SECRET_LOOKING_ATTRS) {
         const v = el.getAttribute(attr);
-        if (v && SECRET_LOOKING_PATTERN.test(v)) return true;
+        if (v && __senLooksSecretByPattern(v)) return true;
       }
       return false;
     }
@@ -301,19 +314,14 @@ module.exports = `
       if (el.value && el.value.length >= minLength) secretValues.add(el.value);
     }
 
-    // Default secret-pattern leaf text: a pattern-matched element with no
-    // element children of its own (a leaf text holder, not a wrapping
-    // container -- see module comment above) has its OWN direct text
-    // collected here too, floor-gated the same as every other value
-    // above. This only affects whether the SAME text also gets caught if
-    // it is mirrored onto a different element elsewhere on the page --
-    // the leaf's own occurrence is separately and always blanked in the
-    // clone below regardless of length.
-    for (const el of patternMatchedEls) {
-      if (PATTERN_SKIP_TAGS.has(el.tagName) || el.childElementCount !== 0) continue;
-      const text = el.textContent;
-      if (text && text.trim().length >= MIN_SECRET_VALUE_LENGTH) secretValues.add(text);
-    }
+    // Deliberately NOT collected into secretValues: a pattern-matched
+    // leaf's own text. Unlike a typed field's .value (above), this text
+    // can be short and can coincide with ordinary words used elsewhere on
+    // the page (see module comment above -- the Prism \`class="token
+    // keyword"\` case). The leaf's own occurrence, and every matched
+    // container's descendant text, is blanked by element reference in the
+    // clone pass below instead, which never touches text outside the
+    // matched element's own subtree.
 
     // Inert clone: see module comment above for why this, not cloneNode.
     ${INERT_CLONE_FN_SRC}
@@ -326,25 +334,48 @@ module.exports = `
       }
     }
 
+    // Strips value/data-*/aria-* from \`node\` (if it is itself an
+    // element -- the inert document's root has no such attributes to
+    // strip but is still walked for its children) and blanks every
+    // direct text-node child, then recurses into every non-skip-tag
+    // element child. Used for the whole subtree of a pattern-matched
+    // element, so a matched LEAF (no element children -- just text nodes)
+    // has that text blanked, and a matched CONTAINER (has element
+    // children) has every one of its own text nodes AND every descendant
+    // leaf's text blanked too -- see module comment above for why the
+    // container case is no longer skipped.
+    function blankMatchedSubtree(node) {
+      if (node.nodeType === 1 && PATTERN_SKIP_TAGS.has(node.tagName)) return;
+      if (node.nodeType === 1) {
+        node.removeAttribute('value');
+        for (const name of node.getAttributeNames()) {
+          if (name.indexOf('data-') === 0 || name.indexOf('aria-') === 0) node.removeAttribute(name);
+        }
+      }
+      for (const child of Array.from(node.childNodes)) {
+        if (child.nodeType === 3 && child.textContent && child.textContent.trim()) {
+          child.textContent = '[REDACTED]';
+        }
+      }
+      for (const child of Array.from(node.children || [])) {
+        blankMatchedSubtree(child);
+      }
+    }
+
     // Default secret-pattern elements, re-matched directly on the CLONE
     // (same structure as the live document, so the same predicate finds
-    // the same nodes -- no live-to-clone node mapping needed). Their
-    // value/data-*/aria-* attributes are stripped unconditionally, like
-    // every other attr-scrub category above. A leaf match (no element
-    // children) additionally has its own text content blanked directly,
-    // regardless of length -- see module comment above for why that is
-    // safe here but not for the substring pass. A match WITH element
-    // children (a wrapping container) is NOT text-blanked as a whole;
-    // only its own attributes are stripped, and any matching descendant
-    // leaf is still found and blanked by this same loop.
+    // the same nodes -- no live-to-clone node mapping needed). Every
+    // matched element's own value/data-*/aria-* attributes are stripped
+    // unconditionally, like every other attr-scrub category above, even
+    // when it is itself a skip-tag control -- only the recursive TEXT
+    // blanking (blankMatchedSubtree) is skipped for those.
     for (const el of clone.querySelectorAll('*')) {
       if (!looksSecretByPattern(el)) continue;
       el.removeAttribute('value');
       for (const name of el.getAttributeNames()) {
         if (name.indexOf('data-') === 0 || name.indexOf('aria-') === 0) el.removeAttribute(name);
       }
-      if (PATTERN_SKIP_TAGS.has(el.tagName) || el.childElementCount !== 0) continue;
-      if (el.textContent && el.textContent.trim()) el.textContent = '[REDACTED]';
+      blankMatchedSubtree(el);
     }
 
     // outerHTML's two entity-escaping rules: an attribute value escapes &/"/</> and U+00A0; text-node content
