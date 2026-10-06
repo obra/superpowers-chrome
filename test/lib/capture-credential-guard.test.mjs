@@ -837,4 +837,119 @@ describe('screenshotUnlessCredentialShaped', () => {
     assert.equal(calls.screenshot, 0);
     assert.equal(fs.existsSync(shotPath()), false);
   });
+
+  // jc finding 4: an EXPLICIT `screenshot` action (mcp/src/index.ts) calls
+  // this function directly, with no URL check of its own -- before this
+  // fix, a known-sensitive URL's QR code or visible seed still reached
+  // disk through that path alone, even though every AUTO-CAPTURE caller
+  // already skipped the call. The markup here is ordinary (CLEAN_PAGE's
+  // html/md, just at a sensitive URL): only the URL itself should suppress.
+  it('takes no screenshot of a known-sensitive URL even when an agent calls screenshot explicitly, with no credential-shaped markup at all', async () => {
+    const { screenshotUnlessCredentialShaped, calls } = setup({ before: SENSITIVE_URL_CLEAN_PAGE });
+    assert.equal(await screenshotUnlessCredentialShaped(0, shotPath()), null);
+    assert.equal(calls.screenshot, 0, 'no screenshot may be taken, not even transiently');
+    assert.equal(fs.existsSync(shotPath()), false);
+  });
+
+  // jc finding 5: the URL_SUPPRESSED_NOTICE text says
+  // SUPERPOWERS_CHROME_ALLOW_CREDENTIAL_CAPTURE=1 disables URL suppression
+  // -- before this fix, urlLooksSensitive was never gated behind
+  // credentialCaptureAllowed() anywhere, so setting the env var did NOT
+  // actually restore a URL-suppressed screenshot, contradicting the notice.
+  it(`${ENV}=1 saves the screenshot even on a known-sensitive URL, making the notice's claim true`, async () => {
+    process.env[ENV] = '1';
+    const { screenshotUnlessCredentialShaped } = setup({ before: SENSITIVE_URL_CLEAN_PAGE });
+    assert.equal(await screenshotUnlessCredentialShaped(0, shotPath()), shotPath());
+    assert.ok(fs.existsSync(shotPath()));
+  });
+});
+
+// jc finding 7: URL suppression in captureActionWithDiff was exercised by
+// tests only through capturePageArtifacts and clickWithCapture --
+// type/key/hover (and the other captureActionWithDiff-based actions) share
+// the exact same function, but nothing called it directly with a sensitive
+// URL, so a regression there had no test to catch it.
+describe('captureActionWithDiff URL-pattern suppression for non-click actions (jc finding 7)', () => {
+  for (const actionType of ['type', 'hover', 'key']) {
+    it(`suppresses a ${actionType} action's capture purely because of the URL, with ordinary markup`, async () => {
+      const { captureActionWithDiff, state, act } = setup({ before: SENSITIVE_URL_CLEAN_PAGE });
+      const result = await captureActionWithDiff(0, actionType, act, 0);
+
+      assert.equal(result.capture.credentialSuppressed, true);
+      assert.equal(result.capture.suppressedReason, 'sensitive-url');
+      assert.deepEqual(result.capture.files, {});
+      assert.deepEqual(sessionFiles(state), [], `no ${actionType} capture artifacts may be written`);
+    });
+  }
+});
+
+// jc finding 7 (dialog branches): a dialog's OWN message can be entirely
+// benign while the PAGE it belongs to is at a known-sensitive URL -- the
+// dialog short-circuits must honor that, not just a credential-shaped
+// dialog message.
+const DIALOG_BENIGN_AT_SENSITIVE_URL = {
+  kind: 'confirm',
+  payload: {
+    message: 'Are you sure you want to leave this page?',
+    url: SENSITIVE_URL_PAGE.url,
+    defaultPrompt: '',
+    hasBrowserHandler: false,
+  },
+};
+
+describe('dialog short-circuits honor URL-pattern suppression even for a benign dialog message (jc finding 7)', () => {
+  it('capturePageArtifacts dialog short-circuit: suppressed because the dialog\'s own payload.url is sensitive', async () => {
+    const { capturePageArtifacts, state } = setup({ before: CLEAN_PAGE, dialog: DIALOG_BENIGN_AT_SENSITIVE_URL });
+    const result = await capturePageArtifacts(0, 'navigate');
+
+    assert.equal(result.credentialSuppressed, true);
+    assert.equal(result.suppressedReason, 'sensitive-url');
+    assert.equal(result.files, null);
+    assert.deepEqual(sessionFiles(state), []);
+  });
+
+  it('captureActionWithDiff after-dialog short-circuit: suppressed because the dialog\'s own payload.url is sensitive', async () => {
+    const { captureActionWithDiff, state, act } = setup({
+      before: CLEAN_PAGE,
+      dialog: null,
+      dialogAfterAction: DIALOG_BENIGN_AT_SENSITIVE_URL,
+    });
+    const result = await captureActionWithDiff(0, 'click', act, 0);
+
+    assert.equal(result.credentialSuppressed, true);
+    assert.equal(result.suppressedReason, 'sensitive-url');
+    assert.deepEqual(sessionFiles(state), ['001-click-before.png'],
+      'only the clean BEFORE screenshot may remain; no after-dialog artifacts written to disk');
+  });
+
+  it(`${ENV}=1 restores both dialog short-circuits even though the dialog's URL is sensitive`, async () => {
+    process.env[ENV] = '1';
+    const { capturePageArtifacts } = setup({ before: CLEAN_PAGE, dialog: DIALOG_BENIGN_AT_SENSITIVE_URL });
+    const result = await capturePageArtifacts(0, 'navigate');
+
+    assert.ok(!result.credentialSuppressed);
+  });
+});
+
+// jc finding 5, end to end (not just screenshotUnlessCredentialShaped in
+// isolation): SUPERPOWERS_CHROME_ALLOW_CREDENTIAL_CAPTURE=1 must actually
+// restore a capture that URL suppression alone would otherwise block.
+describe('capturePageArtifacts / captureActionWithDiff: ALLOW_CREDENTIAL_CAPTURE really disables URL suppression (jc finding 5)', () => {
+  it(`${ENV}=1 restores capturePageArtifacts for a page suppressed only by its URL`, async () => {
+    process.env[ENV] = '1';
+    const { capturePageArtifacts, state } = setup({ before: SENSITIVE_URL_CLEAN_PAGE });
+    const result = await capturePageArtifacts(0, 'navigate');
+
+    assert.ok(!result.credentialSuppressed, 'URL suppression must be disabled by the env var, matching the notice\'s claim');
+    assert.ok(result.files, 'expected normal capture files');
+    assert.ok(sessionFiles(state).length > 0);
+  });
+
+  it(`${ENV}=1 restores captureActionWithDiff for a page suppressed only by its URL`, async () => {
+    process.env[ENV] = '1';
+    const { captureActionWithDiff, act } = setup({ before: SENSITIVE_URL_CLEAN_PAGE });
+    const result = await captureActionWithDiff(0, 'click', act, 0);
+
+    assert.ok(!result.capture.credentialSuppressed);
+  });
 });

@@ -262,16 +262,31 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
       || (!credentialCaptureAllowed() && await pageHasSecretMarker(ps));
   }
 
-  // A screenshot that never leaves an image of a credential-shaped page on
-  // disk. Checked before (an already-secret page is never shot) and again
-  // after, because a token can appear while the pixels are taken (an XHR
-  // completing after "Generate"); a match then deletes the file. Returns the
-  // saved path, or null when the page was credential-shaped.
+  // A screenshot that never leaves an image of a credential-shaped page, OR
+  // a known-sensitive URL (sensitive-url.js), on disk. The URL check runs
+  // first (and again after, mirroring the credential-shape check below):
+  // this is the ONLY place that check used to be missing -- every
+  // AUTO-CAPTURE screenshot path already consulted sensitive-url.js before
+  // calling this function and skipped the call outright, but an EXPLICIT
+  // `screenshot` action (mcp/src/index.ts) calls this function directly,
+  // with no URL check of its own, so a visible QR code or seed on a known-
+  // sensitive URL still reached disk through that path alone. Putting the
+  // check inside this shared function instead of only at its auto-capture
+  // call sites closes that gap for every caller, present and future, in
+  // one place. Also checked: an already-secret page is never shot, and a
+  // token that appears while the pixels are taken (an XHR completing after
+  // "Generate") deletes the file after the fact. Returns the saved path,
+  // or null when the page was suppressed for either reason.
   async function screenshotUnlessCredentialShaped(tabIndexOrWsUrl, filename, selector = null, fullPage = false) {
+    if (!credentialCaptureAllowed() && urlLooksSensitive(await getPageUrl(tabIndexOrWsUrl))) return null;
     if (credentialCaptureAllowed()) return screenshot(tabIndexOrWsUrl, filename, selector, fullPage);
     if (await pageContainsCredentialShaped(tabIndexOrWsUrl)) return null;
     const saved = await screenshot(tabIndexOrWsUrl, filename, selector, fullPage);
     if (await pageContainsCredentialShaped(tabIndexOrWsUrl)) {
+      fs.rmSync(saved, { force: true });
+      return null;
+    }
+    if (!credentialCaptureAllowed() && urlLooksSensitive(await getPageUrl(tabIndexOrWsUrl))) {
       fs.rmSync(saved, { force: true });
       return null;
     }
@@ -312,7 +327,7 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
         // sensitive pattern list (2FA/MFA/recovery-codes/...) is treated
         // the same way: the open dialog's own `payload.url` is the page
         // it belongs to, no round-trip needed to read it.
-        const dialogUrlSensitive = urlLooksSensitive(open.payload && open.payload.url);
+        const dialogUrlSensitive = !credentialCaptureAllowed() && urlLooksSensitive(open.payload && open.payload.url);
         if (dialogUrlSensitive || mustSuppress(rendered.markdown, rendered.html, rendered.consoleSnapshot)) {
           return {
             capturePrefix: prefix,
@@ -355,8 +370,11 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
     // URL check first, before even the screenshot: a known-sensitive URL
     // (sensitive-url.js) suppresses the shot outright instead of taking
     // and then discarding it, so a QR code or visible seed never touches
-    // disk even transiently.
-    const urlSensitive = urlLooksSensitive(await getPageUrl(tabIndexOrWsUrl));
+    // disk even transiently. Gated behind credentialCaptureAllowed() like
+    // mustSuppress() above -- the URL_SUPPRESSED_NOTICE text already told
+    // the operator SUPERPOWERS_CHROME_ALLOW_CREDENTIAL_CAPTURE=1 disables
+    // this; this gate is what actually makes that true.
+    const urlSensitive = !credentialCaptureAllowed() && urlLooksSensitive(await getPageUrl(tabIndexOrWsUrl));
 
     // Screenshot first, then read the content that gets checked and written,
     // so the check is never earlier than the pixels: a token revealed at any
@@ -497,7 +515,7 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
     // Same URL-first check as capturePageArtifacts: a known-sensitive URL
     // (sensitive-url.js) skips the shot outright rather than taking and
     // then discarding it.
-    const beforeUrlSensitive = urlLooksSensitive(await getPageUrl(pinnedTab));
+    const beforeUrlSensitive = !credentialCaptureAllowed() && urlLooksSensitive(await getPageUrl(pinnedTab));
     const focusInfo = await saveFocus();
     const beforeShot = beforeUrlSensitive ? null : await screenshotUnlessCredentialShaped(pinnedTab, beforeScreenshotPath);
     await restoreFocus(focusInfo);
@@ -530,7 +548,7 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
         // reaches the agent. `credentialSuppressed: true` tells that layer to
         // add the ⚠️ notice alongside the (redacted) artifacts, instead of
         // dropping them.
-        const dialogUrlSensitive = urlLooksSensitive(openAfter.payload && openAfter.payload.url);
+        const dialogUrlSensitive = !credentialCaptureAllowed() && urlLooksSensitive(openAfter.payload && openAfter.payload.url);
         if (dialogUrlSensitive || mustSuppress(rendered.markdown, rendered.html, rendered.consoleSnapshot)) {
           return {
             actionResult,
@@ -559,7 +577,7 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
 
     // AFTER: URL check first, then screenshot, then read what gets
     // checked and written -- same ordering rationale as capturePageArtifacts.
-    const afterUrlSensitive = beforeSuppressed ? false : urlLooksSensitive(await getPageUrl(pinnedTab));
+    const afterUrlSensitive = beforeSuppressed ? false : (!credentialCaptureAllowed() && urlLooksSensitive(await getPageUrl(pinnedTab)));
     const afterScreenshotPath = path.join(dir, `${prefix}-after.png`);
     const afterShot = (beforeSuppressed || afterUrlSensitive) ? null : await screenshotUnlessCredentialShaped(pinnedTab, afterScreenshotPath);
 
