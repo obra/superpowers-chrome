@@ -666,12 +666,15 @@ describe('page-scripts/html-with-scrub: default secret-pattern detection', () =>
 
   it('does not page-wide substring-replace common words or corrupt class= attributes (jc finding 1: Prism token spans)', () => {
     // Prism.js (and similar syntax highlighters) literally use "token" as
-    // a CSS class name on every highlighted span -- a real, expected
-    // match of the pattern, not a bug. The bug was collecting that span's
-    // own short TEXT ("class", "const", "return" -- ordinary keywords) into
-    // a page-WIDE substring-replace set, which then corrupted every other
-    // occurrence of those same words anywhere else on the page, including
-    // inside the literal attribute-name text "class=" itself.
+    // a CSS class name on every highlighted span. Round 3 treated this as
+    // a real, expected match of the pattern (the bug it fixed was
+    // collecting that span's own short TEXT into a page-WIDE
+    // substring-replace set, which corrupted every other occurrence of
+    // those same words elsewhere on the page, including the literal
+    // attribute-name text "class=" itself). Round 4 (jc finding 2) goes
+    // further: a bare "token" class alongside a Prism type-word class is
+    // now EXEMPTED from matching at all, so the spans' own text survives
+    // too -- see secret-pattern.js's __senIsPrismTokenSpan.
     const dom = makeDom(
       '<html><body>' +
       '<pre><span class="token keyword">const</span> x = 1; ' +
@@ -695,12 +698,13 @@ describe('page-scripts/html-with-scrub: default secret-pattern detection', () =>
     // the word "class".
     assert.doesNotMatch(value.scrubbed, /\[REDACTED\]=/,
       'no attribute name may be corrupted by a page-wide substring replace');
-    // The Prism spans' OWN text is still blanked -- each span's id/class
-    // matches the pattern directly, so ITS OWN occurrence is redacted.
-    // That is expected, accepted collateral (documented in the PR), not
-    // what this test guards against -- only the GLOBAL, page-wide
-    // corruption of unrelated text is a bug.
-    assert.doesNotMatch(value.scrubbed, />const</, 'the matched span\'s own text is still (individually) blanked');
+    // Round 4 (jc finding 2): the Prism spans' own text now survives too
+    // -- "token keyword"/"token operator"/etc inside a <pre> is Prism's
+    // own generated markup, exempted from matching entirely, not an
+    // accepted collateral loss.
+    assert.match(value.scrubbed, />const</, 'a Prism token span\'s own text must survive -- it is not a secret');
+    assert.match(value.scrubbed, />class</, 'a Prism token span\'s own text must survive -- it is not a secret');
+    assert.match(value.scrubbed, />return</, 'a Prism token span\'s own text must survive -- it is not a secret');
   });
 
   // Round 3 (jc finding 4): jc's own two examples, reproduced verbatim.
@@ -790,6 +794,91 @@ describe('page-scripts/html-with-scrub: default secret-pattern detection', () =>
       const dom = makeDom(`<html><body><img src="qr.png" alt="${OTP_URI}" title="${OTP_URI}"></body></html>`);
       const value = runScrub(dom);
       assert.doesNotMatch(value.scrubbed, /otpauth:\/\//i, `otpauth URI leaked: ${value.scrubbed}`);
+    });
+  });
+
+  // Round 4 (jc finding 1): jc's own four examples, reproduced verbatim,
+  // for the .html artifact (see markdown.test.mjs for the identical
+  // fixtures run through the .md artifact -- same decision, both ways).
+  describe('shared leaf-or-strong-container gate: identical decisions as markdown.js (jc finding 1)', () => {
+    it('a weak-matched <li> WITH children is kept, not wholesale-blanked', () => {
+      const dom = makeDom('<html><body><ul><li class="mfa-tip"><strong>Tip:</strong> Turn on MFA</li></ul></body></html>');
+      const value = runScrub(dom);
+      assert.match(value.scrubbed, /Turn on MFA/, `kept text wrongly redacted: ${value.scrubbed}`);
+    });
+
+    it('an MkDocs-style weak-matched <h2> WITH children (a headerlink <a>) is kept', () => {
+      const dom = makeDom('<html><body><h2 id="managing-secrets">Managing secrets<a class="headerlink">#</a></h2></body></html>');
+      const value = runScrub(dom);
+      assert.match(value.scrubbed, /Managing secrets/, `kept heading text wrongly redacted: ${value.scrubbed}`);
+    });
+
+    it('<p class="otp-secret">Key: <strong>SEED</strong></p> is now blanked (otp-secret added to STRONG_COMPOUND_PAIRS)', () => {
+      const dom = makeDom('<html><body><p class="otp-secret">Key: <strong>JBSWY3DPEHPK3PXP</strong></p></body></html>');
+      const value = runScrub(dom);
+      assert.doesNotMatch(value.scrubbed, /JBSWY3DPEHPK3PXP/, `seed leaked: ${value.scrubbed}`);
+    });
+
+    it('<div id="mfa-secret"><span>SEED</span></div> is now blanked (mfa-secret added to STRONG_COMPOUND_PAIRS)', () => {
+      const dom = makeDom('<html><body><div id="mfa-secret"><span>SEED12345</span></div></body></html>');
+      const value = runScrub(dom);
+      assert.doesNotMatch(value.scrubbed, /SEED12345/, `seed leaked: ${value.scrubbed}`);
+    });
+  });
+
+  // Round 4 (jc finding 2): a real Prism.js snippet and a
+  // prism-react-renderer (Docusaurus) snippet must keep their code in
+  // clear; a genuine secret still redacts even inside a <pre>/<code>.
+  describe('Prism / prism-react-renderer code samples are not wiped (jc finding 2)', () => {
+    it('a real Prism-highlighted JS snippet survives in clear', () => {
+      const dom = makeDom(
+        '<html><body><pre class="language-javascript"><code class="language-javascript">' +
+        '<span class="token keyword">const</span> x <span class="token operator">=</span> ' +
+        '<span class="token function">fetch</span><span class="token punctuation">(</span>' +
+        '<span class="token string">\'/api\'</span><span class="token punctuation">)</span>' +
+        '<span class="token punctuation">;</span>' +
+        '</code></pre></body></html>'
+      );
+      const value = runScrub(dom);
+      assert.match(value.scrubbed, />const</, `Prism code wrongly redacted: ${value.scrubbed}`);
+      assert.match(value.scrubbed, />fetch</, `Prism code wrongly redacted: ${value.scrubbed}`);
+      assert.doesNotMatch(value.scrubbed, /\[REDACTED\]/, `Prism code wrongly redacted: ${value.scrubbed}`);
+    });
+
+    it('a prism-react-renderer (Docusaurus) snippet, using token-line wrappers, survives in clear', () => {
+      const dom = makeDom(
+        '<html><body><pre class="prism-code"><code>' +
+        '<div class="token-line"><span class="token keyword">const</span> <span class="token plain">x</span></div>' +
+        '<div class="token-line"><span class="token plain">fetch</span><span class="token punctuation">();</span></div>' +
+        '</code></pre></body></html>'
+      );
+      const value = runScrub(dom);
+      assert.match(value.scrubbed, />const</, `prism-react-renderer code wrongly redacted: ${value.scrubbed}`);
+      assert.doesNotMatch(value.scrubbed, /\[REDACTED\]/, `prism-react-renderer code wrongly redacted: ${value.scrubbed}`);
+    });
+
+    it('a genuine secret still redacts even inside a <pre>/<code> block (positive control)', () => {
+      const dom = makeDom('<html><body><pre><code class="api-token">ghp_abcdefghijklmnop</code></pre></body></html>');
+      const value = runScrub(dom);
+      assert.doesNotMatch(value.scrubbed, /ghp_abcdefghijklmnop/, `genuine secret leaked: ${value.scrubbed}`);
+    });
+  });
+
+  // Round 4 (jc minor #3): a strong-named container OVER the cap used to
+  // leak its own unnamed children entirely.
+  describe('a strong container OVER the size cap still blanks its short code-like children (jc minor #3)', () => {
+    it('a recovery-codes list with ~2200 chars of guidance text: prose kept, codes blanked', () => {
+      const guidance = 'Store these recovery codes somewhere safe. '.repeat(50); // ~2250 chars
+      const dom = makeDom(
+        '<html><body><div class="recovery-codes">' +
+        `<p>${guidance}</p>` +
+        '<ul><li>abcde-12345</li><li>fghij-67890</li></ul>' +
+        '</div></body></html>'
+      );
+      const value = runScrub(dom);
+      assert.doesNotMatch(value.scrubbed, /abcde-12345/, `recovery code leaked: ${value.scrubbed}`);
+      assert.doesNotMatch(value.scrubbed, /fghij-67890/, `recovery code leaked: ${value.scrubbed}`);
+      assert.match(value.scrubbed, /Store these recovery codes/, `guidance prose wrongly wiped: ${value.scrubbed}`);
     });
   });
 });

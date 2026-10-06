@@ -1,6 +1,9 @@
 const { MARKER_ATTR } = require('../credential-guard');
 const { INERT_CLONE_FN_SRC } = require('../secret-marker');
-const { SECRET_LOOKING_ATTRS, PATTERN_SKIP_TAGS, LOOKS_SECRET_FN_SRC, OTPAUTH_URI_SOURCE } = require('../secret-pattern');
+const {
+  SECRET_LOOKING_ATTRS, PATTERN_SKIP_TAGS, LOOKS_SECRET_FN_SRC, OTPAUTH_URI_SOURCE,
+  CONTAINER_BLANK_TEXT_CAP, SHORT_LEAF_BLANK_CAP,
+} = require('../secret-pattern');
 
 // Page-side script: loaded as a string and embedded in CDP
 // Runtime.evaluate by lib/capture.js.
@@ -216,12 +219,16 @@ module.exports = `
     // wrecks the capture's readability for no security benefit. Their
     // value/data-*/aria-* attributes are still stripped either way.
     const PATTERN_SKIP_TAGS = new Set(${JSON.stringify(PATTERN_SKIP_TAGS)});
+    // Round 4 (jc finding 1): these three used to be defined separately
+    // here AND in markdown.js, and had silently drifted -- markdown.js
+    // wholesale-blanked ANY matched container regardless of strength,
+    // this file required a strong compound under the cap. Now a single
+    // shared implementation (secret-pattern.js's LOOKS_SECRET_FN_SRC),
+    // thin wrappers here just supply this script's own
+    // SECRET_LOOKING_ATTRS/CONTAINER_BLANK_TEXT_CAP, so the two artifacts
+    // can't diverge on this again.
     function looksSecretByPattern(el) {
-      for (const attr of SECRET_LOOKING_ATTRS) {
-        const v = el.getAttribute(attr);
-        if (v && __senLooksSecretByPattern(v)) return true;
-      }
-      return false;
+      return __senElementLooksSecretByPattern(el, SECRET_LOOKING_ATTRS);
     }
 
     // Round 3 (jc finding 4): a matched CONTAINER is only safe to blank
@@ -245,17 +252,22 @@ module.exports = `
     // unconditional (see the clone-pass loop below). A CONTAINER that
     // fails this check still has its own attributes stripped, and the
     // clone-pass loop below still finds and blanks any DESCENDANT that
-    // independently matches on its own id/class/etc -- only the
-    // wholesale "redact everything nested inside" behavior is withheld.
-    const CONTAINER_BLANK_TEXT_CAP = 2000;
+    // independently matches on its own id/class/etc, AND (round 4, jc
+    // minor #3) any SHORT leaf descendant when the container is a strong
+    // compound that merely failed on SIZE -- see blankShortLeafDescendants
+    // below -- only the wholesale "redact everything nested inside"
+    // behavior is withheld.
+    const CONTAINER_BLANK_TEXT_CAP = ${JSON.stringify(CONTAINER_BLANK_TEXT_CAP)};
     function isStrongContainerMatch(el) {
-      for (const attr of SECRET_LOOKING_ATTRS) {
-        const v = el.getAttribute(attr);
-        if (v && __senIsCompoundSecretMatch(v)) {
-          return (el.textContent || '').length <= CONTAINER_BLANK_TEXT_CAP;
-        }
-      }
-      return false;
+      return __senIsStrongContainerMatch(el, SECRET_LOOKING_ATTRS, CONTAINER_BLANK_TEXT_CAP);
+    }
+
+    // Round 4 (jc minor #3): compound match regardless of the size cap --
+    // used only to decide whether the over-cap short-leaf fallback
+    // applies (isStrongContainerMatch above already folds the cap in,
+    // for the wholesale-blank decision).
+    function isStrongCompoundMatch(el) {
+      return __senIsStrongCompoundMatch(el, SECRET_LOOKING_ATTRS);
     }
 
     // Fields whose value must be redacted wherever it appears on the page,
@@ -402,6 +414,35 @@ module.exports = `
       }
     }
 
+    // Round 4 (jc minor #3): a strong-named container OVER
+    // CONTAINER_BLANK_TEXT_CAP (e.g. a recovery-codes widget with 2000+
+    // characters of guidance text around the actual code list) used to
+    // leak its own unnamed children entirely -- isStrongContainerMatch
+    // withholds wholesale blanking once over the cap, and nothing else
+    // picked up the slack. The simplest rule that blanks the codes and
+    // keeps the prose: still blank any LEAF descendant (no element
+    // children of its own) whose own trimmed text is SHORT_LEAF_BLANK_CAP
+    // characters or fewer -- a <li>/<code> holding one short code is
+    // comfortably under this; a real paragraph of guidance text is not.
+    const SHORT_LEAF_BLANK_CAP = ${JSON.stringify(SHORT_LEAF_BLANK_CAP)};
+    function blankShortLeafDescendants(node) {
+      for (const el of node.querySelectorAll('*')) {
+        if (PATTERN_SKIP_TAGS.has(el.tagName)) continue;
+        if (el.childElementCount !== 0) continue;
+        const text = (el.textContent || '').trim();
+        if (!text || text.length > SHORT_LEAF_BLANK_CAP) continue;
+        el.removeAttribute('value');
+        for (const name of el.getAttributeNames()) {
+          if (name.indexOf('data-') === 0 || name.indexOf('aria-') === 0) el.removeAttribute(name);
+        }
+        for (const child of Array.from(el.childNodes)) {
+          if (child.nodeType === 3 && child.textContent && child.textContent.trim()) {
+            child.textContent = '[REDACTED]';
+          }
+        }
+      }
+    }
+
     // Default secret-pattern elements, re-matched directly on the CLONE
     // (same structure as the live document, so the same predicate finds
     // the same nodes -- no live-to-clone node mapping needed). Every
@@ -414,7 +455,10 @@ module.exports = `
     // that function's comment above (round 3 / jc finding 4). A matched
     // LEAF (no element children) is unconditional, as before: blanking
     // one element's own text has no "wipe unrelated content" blast
-    // radius regardless of match strength.
+    // radius regardless of match strength. A strong-compound CONTAINER
+    // that fails isStrongContainerMatch only because it is over the size
+    // cap still gets its short leaf descendants blanked (round 4, jc
+    // minor #3).
     for (const el of clone.querySelectorAll('*')) {
       if (!looksSecretByPattern(el)) continue;
       el.removeAttribute('value');
@@ -423,6 +467,8 @@ module.exports = `
       }
       if (el.childElementCount === 0 || isStrongContainerMatch(el)) {
         blankMatchedSubtree(el);
+      } else if (isStrongCompoundMatch(el)) {
+        blankShortLeafDescendants(el);
       }
     }
 
