@@ -22,6 +22,44 @@ describe('sensitive-url', () => {
     assert.equal(urlLooksSensitive('https://acme.slack.com/account/settings/2fa_app'), true);
   });
 
+  // Round 3 (jc finding 2): segment-anchoring two_factor to
+  // (^|/)two[-_]?factor(/|$) -- the fix for "mfa"'s over-suppression --
+  // silently broke every one of these real 2FA setup routes, none of
+  // which have "two_factor"/"two-factor" as its OWN whole path segment.
+  for (const [site, url] of [
+    ['GitHub', 'https://github.com/settings/two_factor_authentication/setup/intro'],
+    ['GitLab', 'https://gitlab.com/-/profile/two_factor_auth'],
+    ['1Password', 'https://my.1password.com/settings/two-factor-authentication'],
+  ]) {
+    it(`matches ${site}'s real 2FA settings route`, () => {
+      assert.equal(urlLooksSensitive(url), true, url);
+    });
+  }
+
+  // Round 3 (jc finding 3): a data: URL's `pathname` IS the percent-
+  // encoded document body, not a path -- the real-Chrome #init_key_code
+  // end-to-end test's own fixture title ("Set up two-step verification")
+  // leaked into that pathname and self-triggered suppression via the
+  // unanchored two[-_]?step pattern, failing the PR's own headline test.
+  describe('never matches data:, blob: or about: URLs (their "pathname" is not a page location)', () => {
+    it('a data: URL whose body happens to contain sensitive-looking text', () => {
+      const url = 'data:text/html,' + encodeURIComponent('<title>Set up two-step verification</title><span id="init_key_code">SEED</span>');
+      assert.equal(urlLooksSensitive(url), false, url);
+    });
+
+    it('a blob: URL', () => {
+      assert.equal(urlLooksSensitive('blob:https://example.com/2fa-setup-abc123'), false);
+    });
+
+    it('an about: URL', () => {
+      assert.equal(urlLooksSensitive('about:blank'), false);
+    });
+  });
+
+  it('still matches a file:// URL\'s real path (unlike data:/blob:/about:, its pathname is a real location)', () => {
+    assert.equal(urlLooksSensitive('file:///tmp/fixture/account/settings/2fa_app/index.html'), true);
+  });
+
   for (const path of [
     '/account/settings/2fa_app',
     '/settings/two-factor',

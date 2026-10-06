@@ -41,15 +41,36 @@
  * reason: an unanchored `/mfa` prefix also matched `/docs/mfa-best-practices`,
  * a docs page ABOUT mfa, not an MFA enrollment/challenge page -- the word
  * has to be its own path segment, not merely a prefix of a longer,
- * unrelated slug. `/2fa` is deliberately left unanchored on its suffix
- * side: Slack's own real setup URL needs it (`/account/settings/2fa_app`
- * has "2fa" immediately followed by "_app", not a "/" or end of string),
- * and nothing has shown the same over-suppression risk for it that "mfa"
- * had. `security[-_]?keys`, `two[-_]?step`, `login[-_]?verification` and
- * `security[-_]?info` are deliberately NOT segment-anchored either: they
- * are expected to show up as a hash anchor (`#security-keys`) or as part
- * of a longer slug (Google's own `/two-step-verification` route), not
- * necessarily as a path segment of their own.
+ * unrelated slug. `mfa` is the only word anchored this strictly, because
+ * it is the only one an over-suppression report named. `/2fa` and
+ * `/two[-_]?factor` are deliberately left UNANCHORED on their suffix
+ * side: real setup routes need it -- GitHub's
+ * `/settings/two_factor_authentication/setup/intro`, GitLab's
+ * `/-/profile/two_factor_auth` and 1Password's
+ * `/settings/two-factor-authentication` all have "two_factor"/"two-factor"
+ * immediately followed by more slug, not a "/" or end of string, same as
+ * Slack's `/account/settings/2fa_app`. (`two[-_]?factor` WAS segment-
+ * anchored for one round, which silently broke all three of those real
+ * routes -- the anchoring fix for "mfa" does not generalize to every
+ * word without checking real routes first.) `security[-_]?keys`,
+ * `two[-_]?step`, `login[-_]?verification` and `security[-_]?info` are
+ * deliberately NOT segment-anchored either: they are expected to show up
+ * as a hash anchor (`#security-keys`) or as part of a longer slug
+ * (Google's own `/two-step-verification` route), not necessarily as a
+ * path segment of their own.
+ *
+ * Only matched for a URL whose `pathname` is a real page location
+ * (http(s):, file:, and similar) -- never for `data:`, `blob:` or
+ * `about:` URLs. A `data:` URL's `pathname` IS the percent-encoded
+ * document body (a `<title>` or any other markup), not a path, so a
+ * page that merely TALKS ABOUT a sensitive topic in its title/body --
+ * unrelated to whether the fixture itself renders a secret -- would
+ * otherwise false-match on that text; this is exactly how the real-
+ * Chrome `#init_key_code` end-to-end test's OWN fixture title ("Set up
+ * two-step verification") previously self-triggered suppression via the
+ * unanchored `two[-_]?step` pattern. `blob:`'s pathname is an opaque
+ * inner reference and `about:`'s is a fixed handful of browser-internal
+ * names; neither is a page location either.
  *
  * Case-insensitive throughout -- same philosophy as credential-guard.js
  * and html-with-scrub.js: a missed match is a leak, an extra match only
@@ -60,7 +81,9 @@
 
 const DEFAULT_SENSITIVE_URL_PATTERNS = [
   /\/2fa/i,
-  /(^|\/)two[-_]?factor(\/|$)/i,
+  // Unanchored, like /2fa above -- see module comment for the GitHub/
+  // GitLab/1Password real routes this needs the open suffix for.
+  /\/two[-_]?factor/i,
   // Google's /two-step-verification route is one hyphen-joined slug, not
   // its own path segment -- deliberately not anchored, like /2fa above.
   /two[-_]?step/i,
@@ -113,11 +136,16 @@ function extraPatterns() {
 // gate (see capture.js) -- this function always evaluates the pattern
 // match on its own, so it stays usable from contexts (tests, other
 // tooling) that want the raw match regardless of that env var.
+// Schemes whose `pathname` is not a real page location -- see module
+// comment for why each one is excluded rather than matched.
+const NEVER_SENSITIVE_SCHEMES = new Set(['data:', 'blob:', 'about:']);
+
 function urlLooksSensitive(url) {
   if (typeof url !== 'string' || !url) return false;
   let target = url;
   try {
     const parsed = new URL(url);
+    if (NEVER_SENSITIVE_SCHEMES.has(parsed.protocol)) return false;
     // pathname + hash, deliberately NOT parsed.search -- see module
     // comment for why the query string is excluded.
     target = parsed.pathname + (parsed.hash || '');
