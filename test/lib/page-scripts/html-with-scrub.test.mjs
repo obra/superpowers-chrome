@@ -725,4 +725,71 @@ describe('page-scripts/html-with-scrub: default secret-pattern detection', () =>
     assert.match(value.scrubbed, /<h2>Module: secrets<\/h2>/, `heading wrongly redacted: ${value.scrubbed}`);
     assert.match(value.scrubbed, /<p>This module manages credentials\.<\/p>/, `paragraph wrongly redacted: ${value.scrubbed}`);
   });
+
+  // Round 4 (jc finding 5): blankMatchedSubtree returned at a skip-tag
+  // control BEFORE stripping that control's own data-*/value attributes,
+  // so a copy button's data-clipboard-text (holding the same seed) leaked
+  // into the html even though the module comment claimed attributes were
+  // always stripped unconditionally.
+  it("strips a skip-tag control's own data-* attributes inside a matched container, not just its text", () => {
+    const dom = makeDom(
+      `<html><body><div id="totp-secret"><code>${FAKE_SEED}</code>` +
+      `<button data-clipboard-text="${FAKE_SEED}">Copy</button></div></body></html>`
+    );
+    const value = runScrub(dom);
+    assert.doesNotMatch(value.scrubbed, new RegExp(FAKE_SEED), `seed leaked via data-clipboard-text: ${value.scrubbed}`);
+    assert.match(value.scrubbed, />Copy<\/button>/, "the button's own label must still survive");
+  });
+
+  // Round 4 (jc finding 5): SUMMARY/LABEL/LEGEND/OPTION are no longer
+  // exempt from text-blanking or recursion -- only BUTTON/A are, since
+  // only those are genuinely separate UI controls whose own text is a
+  // label rather than the secret's own rendering.
+  it('recurses into and blanks a <label> wrapping a matched leaf inside a matched container', () => {
+    const dom = makeDom(
+      `<html><body><div id="totp-secret"><label>Seed: <code>${FAKE_SEED}</code></label></div></body></html>`
+    );
+    const value = runScrub(dom);
+    assert.doesNotMatch(value.scrubbed, new RegExp(FAKE_SEED), `seed leaked via <label>: ${value.scrubbed}`);
+  });
+
+  // Round 4 (jc finding 5): an otpauth:// URI is a self-describing
+  // credential and must be redacted wherever it appears, regardless of
+  // whether the carrying element also matches the word-boundary
+  // secret-pattern detector. href was "partly pre-existing" leakage --
+  // never scrubbed by any prior mechanism at all.
+  describe('otpauth:// URIs are redacted unconditionally, wherever they appear', () => {
+    const OTP_URI = 'otpauth://totp/Example:alice@example.com?secret=JBSWY3DPEHPK3PXP&issuer=Example';
+
+    it('in an <a href> with no matching id/class of its own', () => {
+      const dom = makeDom(`<html><body><a href="${OTP_URI}">Add to authenticator</a></body></html>`);
+      const value = runScrub(dom);
+      assert.doesNotMatch(value.scrubbed, /otpauth:\/\//i, `otpauth URI leaked: ${value.scrubbed}`);
+      assert.match(value.scrubbed, />Add to authenticator<\/a>/, "the link's own label must still survive");
+    });
+
+    it('in an <img src>', () => {
+      const dom = makeDom(`<html><body><img src="${OTP_URI}"></body></html>`);
+      const value = runScrub(dom);
+      assert.doesNotMatch(value.scrubbed, /otpauth:\/\//i, `otpauth URI leaked: ${value.scrubbed}`);
+    });
+
+    it('in a data-* attribute', () => {
+      const dom = makeDom(`<html><body><div data-qr-uri="${OTP_URI}"></div></body></html>`);
+      const value = runScrub(dom);
+      assert.doesNotMatch(value.scrubbed, /otpauth:\/\//i, `otpauth URI leaked: ${value.scrubbed}`);
+    });
+
+    it('in plain visible text', () => {
+      const dom = makeDom(`<html><body><p>Provisioning URI: ${OTP_URI}</p></body></html>`);
+      const value = runScrub(dom);
+      assert.doesNotMatch(value.scrubbed, /otpauth:\/\//i, `otpauth URI leaked: ${value.scrubbed}`);
+    });
+
+    it("in a QR image's alt/title", () => {
+      const dom = makeDom(`<html><body><img src="qr.png" alt="${OTP_URI}" title="${OTP_URI}"></body></html>`);
+      const value = runScrub(dom);
+      assert.doesNotMatch(value.scrubbed, /otpauth:\/\//i, `otpauth URI leaked: ${value.scrubbed}`);
+    });
+  });
 });

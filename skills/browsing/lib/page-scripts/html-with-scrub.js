@@ -1,6 +1,6 @@
 const { MARKER_ATTR } = require('../credential-guard');
 const { INERT_CLONE_FN_SRC } = require('../secret-marker');
-const { SECRET_LOOKING_ATTRS, PATTERN_SKIP_TAGS, LOOKS_SECRET_FN_SRC } = require('../secret-pattern');
+const { SECRET_LOOKING_ATTRS, PATTERN_SKIP_TAGS, LOOKS_SECRET_FN_SRC, OTPAUTH_URI_SOURCE } = require('../secret-pattern');
 
 // Page-side script: loaded as a string and embedded in CDP
 // Runtime.evaluate by lib/capture.js.
@@ -379,13 +379,19 @@ module.exports = `
     // leaf's text blanked too -- see module comment above for why the
     // container case is no longer skipped.
     function blankMatchedSubtree(node) {
-      if (node.nodeType === 1 && PATTERN_SKIP_TAGS.has(node.tagName)) return;
+      // Attribute stripping runs BEFORE the skip-tag early return below --
+      // round 4 (jc finding 5): an earlier version returned first, so a
+      // skip-tag control nested inside a matched container (a <button
+      // data-clipboard-text="SEED">Copy</button>) never had ITS OWN
+      // data-*/value attributes stripped at all, even though the module
+      // comment already claimed they always were.
       if (node.nodeType === 1) {
         node.removeAttribute('value');
         for (const name of node.getAttributeNames()) {
           if (name.indexOf('data-') === 0 || name.indexOf('aria-') === 0) node.removeAttribute(name);
         }
       }
+      if (node.nodeType === 1 && PATTERN_SKIP_TAGS.has(node.tagName)) return;
       for (const child of Array.from(node.childNodes)) {
         if (child.nodeType === 3 && child.textContent && child.textContent.trim()) {
           child.textContent = '[REDACTED]';
@@ -435,6 +441,16 @@ module.exports = `
         scrubbed = scrubbed.split(variant).join('[REDACTED]');
       }
     }
+
+    // Round 4 (jc finding 5): an otpauth:// URI -- the de facto standard
+    // TOTP/HOTP provisioning credential -- is redacted wherever it
+    // appears in the serialized output, unconditionally, regardless of
+    // whether the carrying element (an <a href>, an <img src>, a data-*
+    // attribute, visible text, a QR image's alt/title) also matched the
+    // word-boundary secret-pattern detector above. See secret-pattern.js
+    // for why this runs as one global replace over the final string
+    // rather than scrubbing individual attributes before serialization.
+    scrubbed = scrubbed.replace(new RegExp(${JSON.stringify(OTPAUTH_URI_SOURCE)}, 'gi'), '[REDACTED]');
 
     // secretValues is exposed alongside raw/scrubbed so capture.js can
     // apply the same redaction to the markdown artifact: generateMarkdown walks the live DOM separately

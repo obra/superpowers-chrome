@@ -189,4 +189,31 @@ describe('page-scripts/markdown', () => {
       assert.doesNotMatch(md, new RegExp(FAKE_SEED2), `seed leaked: ${md}`);
     });
   });
+
+  // Round 4 (jc finding 5): an otpauth:// URI is redacted unconditionally,
+  // wherever it appears in the final markdown -- including inside a
+  // rendered [text](href) link, where it was "partly pre-existing"
+  // leakage per jc: href was never scrubbed by any prior mechanism.
+  describe('otpauth:// URIs are redacted unconditionally in markdown too', () => {
+    const OTP_URI = 'otpauth://totp/Example:alice@example.com?secret=JBSWY3DPEHPK3PXP&issuer=Example';
+
+    it('in an <a href> rendered as a markdown link', () => {
+      const md = evalScript(`<html><body><a href="${OTP_URI}">Add to authenticator</a></body></html>`);
+      assert.doesNotMatch(md, /otpauth:\/\//i, `otpauth URI leaked: ${md}`);
+      assert.match(md, /Add to authenticator/, "the link's own label must still survive");
+    });
+
+    it('in plain visible text', () => {
+      const md = evalScript(`<html><body><p>Provisioning URI: ${OTP_URI}</p></body></html>`);
+      assert.doesNotMatch(md, /otpauth:\/\//i, `otpauth URI leaked: ${md}`);
+    });
+
+    it("in a QR image's alt text", () => {
+      const dom = new JSDOM(`<img src="qr.png" alt="${OTP_URI}">`, { runScripts: 'dangerously' });
+      const proto = dom.window.HTMLImageElement.prototype;
+      proto.getBoundingClientRect = function () { return { width: 200, height: 200 }; };
+      const md = dom.window.eval(markdownScript);
+      assert.doesNotMatch(md, /otpauth:\/\//i, `otpauth URI leaked: ${md}`);
+    });
+  });
 });

@@ -42,7 +42,7 @@
 // channel for this generator to depend on, so a leaf with leading/
 // trailing whitespace never matched this already-trimmed text; that
 // channel is gone now, matching happens directly here instead.
-const { SECRET_LOOKING_ATTRS, LOOKS_SECRET_FN_SRC } = require('../secret-pattern');
+const { SECRET_LOOKING_ATTRS, LOOKS_SECRET_FN_SRC, OTPAUTH_URI_SOURCE } = require('../secret-pattern');
 
 module.exports = `
   (() => {
@@ -175,7 +175,14 @@ module.exports = `
       }
     }
 
+    // Round 4 (jc finding 5): an otpauth:// URI is redacted wherever it
+    // appears in the final output -- including inside a rendered
+    // [text](href) link -- unconditionally, regardless of whether the
+    // carrying element also matched the word-boundary secret-pattern
+    // detector above. See secret-pattern.js for the full rationale.
+    const joined = results.join('\\n').replace(new RegExp(${JSON.stringify(OTPAUTH_URI_SOURCE)}, 'gi'), '[REDACTED]');
+
     // Not truncated here: capture.js caps it after redacting secret values.
-    return results.join('\\n');
+    return joined;
   })()
 `;

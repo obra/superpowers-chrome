@@ -39,10 +39,16 @@ const SECRET_LOOKING_ATTRS = ['id', 'name', 'class', 'autocomplete', 'aria-label
 
 // Tags whose own rendered text is a UI LABEL, not the secret the tag
 // operates on, even when the tag's own id/class matches ("copy-seed-btn",
-// "reveal-totp-link"). SCRIPT/STYLE/NOSCRIPT are never human-visible text
-// worth blanking either. Shared so html-with-scrub.js's clone pass and
-// markdown.js's generator agree on what to skip.
-const PATTERN_SKIP_TAGS = ['SCRIPT', 'STYLE', 'NOSCRIPT', 'BUTTON', 'A', 'SUMMARY', 'LABEL', 'LEGEND', 'OPTION'];
+// "reveal-totp-link"): BUTTON and A. SCRIPT/STYLE/NOSCRIPT are never
+// human-visible text worth blanking either, and are never a meaningful
+// recursion target. Narrowed (round 4 / jc finding 5) from an earlier
+// version that also skip-blanked SUMMARY/LABEL/LEGEND/OPTION -- those are
+// not controls with their OWN separate operator text the way a button or
+// link is (a <label> wrapping a matched <code> is routinely the ONLY
+// place the secret is rendered at all), so they are no longer exempt:
+// their own text is blanked like any other element, and
+// html-with-scrub.js's blankMatchedSubtree now recurses into them.
+const PATTERN_SKIP_TAGS = ['SCRIPT', 'STYLE', 'NOSCRIPT', 'BUTTON', 'A'];
 
 // Round 3 (jc): "blank the whole matched container" is only safe when the
 // match is SPECIFIC, not merely a broad single word. A real-world wrapper
@@ -152,10 +158,33 @@ const LOOKS_SECRET_FN_SRC = `
 const looksSecretByPattern = new Function(`${LOOKS_SECRET_FN_SRC}\nreturn __senLooksSecretByPattern;`)();
 const isCompoundSecretMatch = new Function(`${LOOKS_SECRET_FN_SRC}\nreturn __senIsCompoundSecretMatch;`)();
 
+// Round 4 (jc finding 5): an otpauth:// URI is a self-describing TOTP/HOTP
+// provisioning credential -- RFC-less but a de facto standard every
+// authenticator app and TOTP library recognizes -- so ANY occurrence
+// anywhere in a capture (an <a href="otpauth://...">, an <img src="...">,
+// a data-* attribute, visible text, or a QR image's alt/title) is
+// redacted outright, regardless of whether the element carrying it also
+// matches the word-boundary secret-pattern detector above. This is
+// unconditional and independent of looksSecretByPattern: an otpauth://
+// URI needs no id/name/class signal to be recognized as a credential:
+// the URI scheme itself says so. Applied as a single global
+// string-replace over the FINAL serialized capture (html-with-scrub.js's
+// `scrubbed` string, markdown.js's joined output) rather than scrubbing
+// individual attributes before serialization -- outerHTML/the markdown
+// join already puts href/src/data-*/alt/title/text content all into one
+// string, so one pass catches every carriage at once. Mirrors the shape
+// credential-guard.js's TOKEN_SHAPES otpauth entry already uses to
+// trigger whole-page suppression; this is the same URI shape applied as
+// a targeted scrub instead.
+const OTPAUTH_URI_SOURCE = 'otpauth://[^\\s"\'<>]+';
+const OTPAUTH_URI_PATTERN = new RegExp(OTPAUTH_URI_SOURCE, 'gi');
+
 module.exports = {
   SECRET_LOOKING_ATTRS,
   PATTERN_SKIP_TAGS,
   STRONG_COMPOUND_PAIRS,
+  OTPAUTH_URI_SOURCE,
+  OTPAUTH_URI_PATTERN,
   LOOKS_SECRET_FN_SRC,
   looksSecretByPattern,
   isCompoundSecretMatch,
