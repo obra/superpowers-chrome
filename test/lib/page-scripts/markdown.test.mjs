@@ -216,4 +216,81 @@ describe('page-scripts/markdown', () => {
       assert.doesNotMatch(md, /otpauth:\/\//i, `otpauth URI leaked: ${md}`);
     });
   });
+
+  // Round 4 (jc finding 1): jc's own four examples, reproduced verbatim,
+  // for the .md artifact (see html-with-scrub.test.mjs for the IDENTICAL
+  // fixtures run through the .html artifact -- same decision, both ways).
+  describe('shared leaf-or-strong-container gate: identical decisions as html-with-scrub.js (jc finding 1)', () => {
+    it('a weak-matched <li> WITH children is kept, not wholesale-blanked', () => {
+      const md = evalScript('<html><body><ul><li class="mfa-tip"><strong>Tip:</strong> Turn on MFA</li></ul></body></html>');
+      assert.match(md, /Turn on MFA/, `kept text wrongly redacted: ${md}`);
+    });
+
+    it('an MkDocs-style weak-matched <h2> WITH children (a headerlink <a>) is kept', () => {
+      const md = evalScript('<html><body><h2 id="managing-secrets">Managing secrets<a class="headerlink">#</a></h2></body></html>');
+      assert.match(md, /Managing secrets/, `kept heading text wrongly redacted: ${md}`);
+    });
+
+    it('<p class="otp-secret">Key: <strong>SEED</strong></p> is now blanked (otp-secret added to STRONG_COMPOUND_PAIRS)', () => {
+      const md = evalScript('<html><body><p class="otp-secret">Key: <strong>JBSWY3DPEHPK3PXP</strong></p></body></html>');
+      assert.doesNotMatch(md, /JBSWY3DPEHPK3PXP/, `seed leaked: ${md}`);
+    });
+
+    it('<div id="mfa-secret"><span>SEED</span></div> is now blanked (mfa-secret added to STRONG_COMPOUND_PAIRS)', () => {
+      const md = evalScript('<html><body><div id="mfa-secret"><span>SEED12345</span></div></body></html>');
+      assert.doesNotMatch(md, /SEED12345/, `seed leaked: ${md}`);
+    });
+  });
+
+  // Round 4 (jc finding 2): a real Prism.js snippet and a
+  // prism-react-renderer (Docusaurus) snippet must keep their code in
+  // clear; a genuine secret still redacts even inside a <pre>/<code>.
+  describe('Prism / prism-react-renderer code samples are not wiped (jc finding 2)', () => {
+    it('a real Prism-highlighted JS snippet survives in clear', () => {
+      const md = evalScript(
+        '<html><body><pre class="language-javascript"><code class="language-javascript">' +
+        '<span class="token keyword">const</span> x <span class="token operator">=</span> ' +
+        '<span class="token function">fetch</span><span class="token punctuation">(</span>' +
+        '<span class="token string">\'/api\'</span><span class="token punctuation">)</span>' +
+        '<span class="token punctuation">;</span>' +
+        '</code></pre></body></html>'
+      );
+      assert.match(md, /const/, `Prism code wrongly redacted: ${md}`);
+      assert.match(md, /fetch/, `Prism code wrongly redacted: ${md}`);
+      assert.doesNotMatch(md, /\[REDACTED\]/, `Prism code wrongly redacted: ${md}`);
+    });
+
+    it('a prism-react-renderer (Docusaurus) snippet, using token-line wrappers, survives in clear', () => {
+      const md = evalScript(
+        '<html><body><pre class="prism-code"><code>' +
+        '<div class="token-line"><span class="token keyword">const</span> <span class="token plain">x</span></div>' +
+        '<div class="token-line"><span class="token plain">fetch</span><span class="token punctuation">();</span></div>' +
+        '</code></pre></body></html>'
+      );
+      assert.match(md, /const/, `prism-react-renderer code wrongly redacted: ${md}`);
+      assert.doesNotMatch(md, /\[REDACTED\]/, `prism-react-renderer code wrongly redacted: ${md}`);
+    });
+
+    it('a genuine secret still redacts even inside a <pre>/<code> block (positive control)', () => {
+      const md = evalScript('<html><body><pre><code class="api-token">ghp_abcdefghijklmnop</code></pre></body></html>');
+      assert.doesNotMatch(md, /ghp_abcdefghijklmnop/, `genuine secret leaked: ${md}`);
+    });
+  });
+
+  // Round 4 (jc minor #3): a strong-named container OVER the cap used to
+  // leak its own unnamed children entirely.
+  describe('a strong container OVER the size cap still blanks its short code-like children (jc minor #3)', () => {
+    it('a recovery-codes list with ~2200 chars of guidance text: prose kept, codes blanked', () => {
+      const guidance = 'Store these recovery codes somewhere safe. '.repeat(50); // ~2250 chars
+      const md = evalScript(
+        '<html><body><div class="recovery-codes">' +
+        `<p>${guidance}</p>` +
+        '<ul><li>abcde-12345</li><li>fghij-67890</li></ul>' +
+        '</div></body></html>'
+      );
+      assert.doesNotMatch(md, /abcde-12345/, `recovery code leaked: ${md}`);
+      assert.doesNotMatch(md, /fghij-67890/, `recovery code leaked: ${md}`);
+      assert.match(md, /Store these recovery codes/, `guidance prose wrongly wiped: ${md}`);
+    });
+  });
 });
