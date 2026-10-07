@@ -17,9 +17,52 @@ const { throwIfExceptionDetails } = require('./cdp-utils');
  *
  * `attachSelectOption({ getPageSession })` returns the bound action.
  */
+// Page-side function body. Only the selector is spliced into the source
+// text (via getElementSelectorAll's JSON.stringify, the same pattern used
+// throughout lib/*.js) - caller-supplied `requested` values and `idx` are
+// NEVER concatenated into the expression string. They travel as
+// Runtime.callFunctionOn `arguments` (CallArgument values) and are bound
+// to real function parameters, so untrusted content can't break out of
+// the generated source the way raw template interpolation could.
+function buildFunctionDeclaration(selector) {
+  const allExpr = getElementSelectorAll(selector);
+  return `function (requested, idx) {
+    const elements = ${allExpr};
+    const el = elements[idx];
+    if (!el) return { success: false, error: 'Element not found at index ' + idx };
+    if (el.tagName !== 'SELECT') return { success: false, error: 'Element is not a SELECT' };
+    if (requested.length > 1 && !el.multiple) {
+      return { success: false, error: 'Cannot select multiple values on a non-multiple <select>' };
+    }
+    const options = Array.from(el.options);
+    const matched = [];
+    const unmatched = [];
+    for (const v of requested) {
+      const opt = options.find(o => o.value === v) ||
+                  options.find(o => o.textContent.trim() === v);
+      if (opt) matched.push(opt);
+      else unmatched.push(v);
+    }
+    if (unmatched.length) {
+      return { success: false, error: 'No matching option for: ' + JSON.stringify(unmatched) };
+    }
+    for (const o of options) o.selected = false;
+    for (const o of matched) o.selected = true;
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+    return {
+      success: true,
+      matchCount: elements.length,
+      matched: matched.map(o => ({ value: o.value, text: o.textContent.trim() }))
+    };
+  }`;
+}
+
 function attachSelectOption({ getPageSession }) {
   async function selectOption(tabIndexOrWsUrl, selector, value, index = 0) {
     const pageSession = await getPageSession(tabIndexOrWsUrl);
+    if (!Number.isInteger(index) || index < 0) {
+      throw new TypeError('index must be a non-negative integer');
+    }
     const values = Array.isArray(value) ? value : [value];
 
     const countJs = `${getElementSelectorAll(selector)}.length`;
@@ -36,45 +79,16 @@ function attachSelectOption({ getPageSession }) {
       console.error(`WARNING: ${warning}`);
     }
 
-    const js = `
-      (() => {
-        const elements = ${getElementSelectorAll(selector)};
-        const el = elements[${index}];
-        if (!el) return { success: false, error: 'Element not found at index ${index}' };
-        if (el.tagName !== 'SELECT') return { success: false, error: 'Element is not a SELECT' };
+    const docResult = await pageSession.send('Runtime.evaluate', {
+      expression: 'document',
+      returnByValue: false
+    });
+    throwIfExceptionDetails(docResult);
 
-        const requested = ${JSON.stringify(values)};
-        if (requested.length > 1 && !el.multiple) {
-          return { success: false, error: 'Cannot select multiple values on a non-multiple <select>' };
-        }
-
-        const options = Array.from(el.options);
-        const matched = [];
-        const unmatched = [];
-        for (const v of requested) {
-          const opt = options.find(o => o.value === v) ||
-                      options.find(o => o.textContent.trim() === v);
-          if (opt) matched.push(opt);
-          else unmatched.push(v);
-        }
-        if (unmatched.length) {
-          return { success: false, error: 'No matching option for: ' + JSON.stringify(unmatched) };
-        }
-
-        for (const o of options) o.selected = false;
-        for (const o of matched) o.selected = true;
-        el.dispatchEvent(new Event('change', { bubbles: true }));
-
-        return {
-          success: true,
-          matchCount: elements.length,
-          matched: matched.map(o => ({ value: o.value, text: o.textContent.trim() }))
-        };
-      })()
-    `;
-
-    const result = await pageSession.send('Runtime.evaluate', {
-      expression: js,
+    const result = await pageSession.send('Runtime.callFunctionOn', {
+      objectId: docResult.result.objectId,
+      functionDeclaration: buildFunctionDeclaration(selector),
+      arguments: [{ value: values }, { value: index }],
       returnByValue: true
     });
     throwIfExceptionDetails(result);
