@@ -271,6 +271,21 @@ describe('page-scripts/markdown', () => {
       assert.doesNotMatch(md, /\[REDACTED\]/, `prism-react-renderer code wrongly redacted: ${md}`);
     });
 
+    it('a secret in <code class="token-value"> still redacts -- only the exact token-line wrapper is exempt', () => {
+      const md = evalScript('<html><body><code class="token-value">a1b2c3d4e5f6SEKRIT</code></body></html>');
+      assert.doesNotMatch(md, /a1b2c3d4e5f6SEKRIT/, `secret leaked: ${md}`);
+    });
+
+    it('a secret in <code class="token-secret"> still redacts -- only the exact token-line wrapper is exempt', () => {
+      const md = evalScript('<html><body><code class="token-secret">a1b2c3d4e5f6SEKRIT</code></body></html>');
+      assert.doesNotMatch(md, /a1b2c3d4e5f6SEKRIT/, `secret leaked: ${md}`);
+    });
+
+    it('a secret in <pre class="token-display"> still redacts -- only the exact token-line wrapper is exempt', () => {
+      const md = evalScript('<html><body><pre class="token-display">a1b2c3d4e5f6SEKRIT</pre></body></html>');
+      assert.doesNotMatch(md, /a1b2c3d4e5f6SEKRIT/, `secret leaked: ${md}`);
+    });
+
     it('a genuine secret still redacts even inside a <pre>/<code> block (positive control)', () => {
       const md = evalScript('<html><body><pre><code class="api-token">ghp_abcdefghijklmnop</code></pre></body></html>');
       assert.doesNotMatch(md, /ghp_abcdefghijklmnop/, `genuine secret leaked: ${md}`);

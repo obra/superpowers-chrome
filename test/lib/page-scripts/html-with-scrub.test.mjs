@@ -857,6 +857,24 @@ describe('page-scripts/html-with-scrub: default secret-pattern detection', () =>
       assert.doesNotMatch(value.scrubbed, /\[REDACTED\]/, `prism-react-renderer code wrongly redacted: ${value.scrubbed}`);
     });
 
+    it('a secret in <code class="token-value"> still redacts -- only the exact token-line wrapper is exempt', () => {
+      const dom = makeDom('<html><body><code class="token-value">a1b2c3d4e5f6SEKRIT</code></body></html>');
+      const value = runScrub(dom);
+      assert.doesNotMatch(value.scrubbed, /a1b2c3d4e5f6SEKRIT/, `secret leaked: ${value.scrubbed}`);
+    });
+
+    it('a secret in <code class="token-secret"> still redacts -- only the exact token-line wrapper is exempt', () => {
+      const dom = makeDom('<html><body><code class="token-secret">a1b2c3d4e5f6SEKRIT</code></body></html>');
+      const value = runScrub(dom);
+      assert.doesNotMatch(value.scrubbed, /a1b2c3d4e5f6SEKRIT/, `secret leaked: ${value.scrubbed}`);
+    });
+
+    it('a secret in <pre class="token-display"> still redacts -- only the exact token-line wrapper is exempt', () => {
+      const dom = makeDom('<html><body><pre class="token-display">a1b2c3d4e5f6SEKRIT</pre></body></html>');
+      const value = runScrub(dom);
+      assert.doesNotMatch(value.scrubbed, /a1b2c3d4e5f6SEKRIT/, `secret leaked: ${value.scrubbed}`);
+    });
+
     it('a genuine secret still redacts even inside a <pre>/<code> block (positive control)', () => {
       const dom = makeDom('<html><body><pre><code class="api-token">ghp_abcdefghijklmnop</code></pre></body></html>');
       const value = runScrub(dom);

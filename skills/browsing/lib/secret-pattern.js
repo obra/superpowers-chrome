@@ -203,7 +203,9 @@ const LOOKS_SECRET_FN_SRC = `
       }
     }
     for (var j = 0; j < classes.length; j++) {
-      if (classes[j] === 'token-line' || classes[j].indexOf('token-') === 0) return true;
+      // Only prism-react-renderer's exact 'token-line' wrapper: a 'token-*'
+      // wildcard would also exempt <code class="token-value">SECRET</code>.
+      if (classes[j] === 'token-line') return true;
     }
     return false;
   }
@@ -226,7 +228,7 @@ const LOOKS_SECRET_FN_SRC = `
       if (!v) continue;
       if (attr === 'class' && __senIsPrismTokenSpan(el)) {
         var kept = v.split(/\\s+/).filter(function (c) {
-          return c !== 'token' && c !== 'token-line' && c.indexOf('token-') !== 0;
+          return c !== 'token' && c !== 'token-line';
         }).join(' ');
         if (kept && __senLooksSecretByPattern(kept)) return true;
         continue;
