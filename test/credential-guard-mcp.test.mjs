@@ -65,6 +65,18 @@ const MARKER_INPUT_PAGE = dataUrl(
   `<input id="secret" data-sen-secret value="${BASE32_SEED}">` +
   `<input id="control" value="${CONTROL_VALUE}">`
 );
+
+// Real case this default-pattern detection exists for: Slack's 2FA setup
+// page renders the TOTP seed into a hidden `#init_key_code` element from
+// the moment the page loads -- no click, no data-sen-secret marking (that
+// can only happen AFTER a capture already ran), no token shape
+// credential-guard.js recognizes. The very first navigate's auto-capture
+// must still never write the seed to any artifact.
+const INIT_KEY_CODE_PAGE = dataUrl(
+  '<title>Set up two-step verification</title><h1>Scan this QR code</h1>' +
+  `<input type="hidden" id="init_key_code" value="${BASE32_SEED}">` +
+  '<button id="b">Done</button>'
+);
 // Marks the root of whole-page extraction itself, not a descendant of it.
 const MARKER_BODY_PAGE = dataUrl(
   `<title>Marked body page</title><body data-sen-secret><p>${BASE32_SEED}</p></body>`
@@ -1211,5 +1223,98 @@ describe('the scrub never re-fires page handlers or reloads resources (real Chro
     const final = await server.call({ action: 'eval', payload: 'window.__senImgErrorCount' });
     const finalCount = Number(final.text.match(/\d+/)?.[0]);
     assert.equal(finalCount, countAfterNavigate, 'the image error handler must not re-fire on auto-capture');
+  });
+});
+
+// Default secret-pattern detection (real Chrome): Slack's real case,
+// loaded via navigate -- the very first auto-capture, before any click or
+// marking is possible. The seed must appear in NO artifact at all, text
+// or binary -- every file in the session dir, not just .html/.md.
+describe('default secret-pattern detection: hidden #init_key_code at page load (real Chrome)', { skip: !CHROME_AVAILABLE && 'Chrome not installed' }, () => {
+  let server;
+  before(async () => { server = await startServer(); });
+  after(async () => { await server?.stop(); });
+
+  it('never writes the seed to any capture artifact from the first navigate onward', async () => {
+    await server.call({ action: 'navigate', payload: INIT_KEY_CODE_PAGE });
+
+    const files = server.capturedFiles();
+    assert.ok(files.length > 0, 'expected some capture files to have been written');
+    for (const file of files) {
+      const written = fs.readFileSync(file);
+      assert.ok(
+        !written.includes(Buffer.from(BASE32_SEED)),
+        `seed leaked into ${file}`
+      );
+    }
+
+    // A further action (click) must keep it that way too, not just the
+    // first navigate.
+    await server.call({ action: 'click', selector: '#b' });
+    for (const file of server.capturedFiles()) {
+      const written = fs.readFileSync(file);
+      assert.ok(!written.includes(Buffer.from(BASE32_SEED)), `seed leaked into ${file}`);
+    }
+  });
+});
+
+// URL-based suppression (sensitive-url.js, real Chrome): a page at a
+// known-sensitive URL path is suppressed outright -- html/md and the
+// screenshot -- regardless of its markup. Uses file:// URLs (data: URLs
+// have no meaningful path) with a directory name matching the pattern
+// list, the same way a real site's path would.
+describe('URL-pattern suppression (sensitive-url.js, real Chrome)', { skip: !CHROME_AVAILABLE && 'Chrome not installed' }, () => {
+  let server;
+  let dir;
+  before(async () => {
+    server = await startServer();
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sensitive-url-'));
+    fs.mkdirSync(path.join(dir, 'account', 'settings', '2fa_app'), { recursive: true });
+    // Ordinary markup, no token shape, no secret-pattern id/name/class --
+    // isolates the URL check from the other two detectors.
+    fs.writeFileSync(
+      path.join(dir, 'account', 'settings', '2fa_app', 'index.html'),
+      `<title>Set up two-step verification</title><h1>Scan this QR code</h1><p>${BASE32_SEED}</p>` +
+      '<button id="b">Done</button>'
+    );
+  });
+  after(async () => {
+    await server?.stop();
+    if (dir) fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('suppresses html/md and the screenshot for a known-sensitive URL path, even with ordinary markup', async () => {
+    const { text } = await server.call({
+      action: 'navigate',
+      payload: `file://${path.join(dir, 'account', 'settings', '2fa_app', 'index.html')}`,
+    });
+    assert.match(text, /known-sensitive pattern/);
+    assert.doesNotMatch(text, new RegExp(BASE32_SEED));
+
+    const files = server.capturedFiles();
+    for (const file of files) {
+      assert.ok(!file.endsWith('.png'), `no screenshot may be taken for a sensitive URL: ${file}`);
+      const written = fs.readFileSync(file);
+      assert.ok(!written.includes(Buffer.from(BASE32_SEED)), `seed leaked into ${file}`);
+    }
+  });
+
+  // Round 4 (jc finding 6): an explicit `screenshot` action refused
+  // because of URL suppression must say so, not the generic
+  // credential-shape message -- the two reasons have different remedies
+  // (SENSITIVE_URL_PATTERNS/ALLOW_CREDENTIAL_CAPTURE vs. the credential
+  // broker advice).
+  it('an explicit screenshot action on the same sensitive URL reports the URL-specific reason, not "credential-shaped content"', async () => {
+    await server.call({
+      action: 'navigate',
+      payload: `file://${path.join(dir, 'account', 'settings', '2fa_app', 'index.html')}`,
+    });
+    const shot = path.join(server.xdg, 'explicit-sensitive-url.png');
+    const { text, isError } = await server.call({ action: 'screenshot', payload: shot });
+    assert.equal(isError, true, text);
+    assert.match(text, /screenshot refused/i);
+    assert.match(text, /known-sensitive pattern/i, `wrong refusal reason: ${text}`);
+    assert.doesNotMatch(text, /credential-shaped content/i, `wrong refusal reason: ${text}`);
+    assert.equal(fs.existsSync(shot), false);
   });
 });

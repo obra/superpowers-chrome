@@ -45,7 +45,8 @@ export declare function formatCaptureResponse(action: string, details: string, c
         height: number;
     };
     credentialSuppressed?: boolean;
-} | null, dialog?: any, artifacts?: any, credentialSuppressed?: boolean): string;
+    suppressedReason?: string;
+} | null, dialog?: any, artifacts?: any, credentialSuppressed?: boolean, suppressedReason?: string): string;
 /**
  * Last line of defense: every piece of text use_browser returns (results,
  * errors, dialog refusals) has credential-shaped substrings replaced, so

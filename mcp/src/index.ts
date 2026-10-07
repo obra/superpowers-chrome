@@ -45,6 +45,7 @@ const require = createRequire(import.meta.url);
 const chromeLib = require(join(__dirname, "../../skills/browsing/chrome-ws-lib.js")).createSession();
 const credentialGuard = require(join(__dirname, "../../skills/browsing/lib/credential-guard.js"));
 const secretMarker = require(join(__dirname, "../../skills/browsing/lib/secret-marker.js"));
+const sensitiveUrl = require(join(__dirname, "../../skills/browsing/lib/sensitive-url.js"));
 const SERVER_VERSION = require(join(__dirname, "../package.json")).version;
 
 /**
@@ -309,7 +310,7 @@ async function executeBrowserAction(params: UseBrowserInput): Promise<string> {
       // When a dialog is open, captureActionWithDiff skips AFTER-capture
       if (!typeResult.capture) {
         const target = selector ? `into ${selector}` : 'into current focus';
-        return formatCaptureResponse('Typed', target, null, typeResult.dialog, typeResult.artifacts, typeResult.credentialSuppressed);
+        return formatCaptureResponse('Typed', target, null, typeResult.dialog, typeResult.artifacts, typeResult.credentialSuppressed, typeResult.suppressedReason);
       }
       return formatCaptureResponse(
         'Typed',
@@ -444,8 +445,21 @@ async function executeBrowserAction(params: UseBrowserInput): Promise<string> {
       }
       const fullpage = p.fullpage ?? false;
       const selectorForScreenshot = topSelector ?? (typeof p.selector === 'string' ? p.selector : undefined);
+      // Round 4 (jc finding 6): determine WHY a refusal happened before
+      // calling screenshotUnlessCredentialShaped, so the error message can
+      // say which -- that function returns a bare null for both a
+      // sensitive URL and credential-shaped content, and always reporting
+      // "page shows credential-shaped content" was simply wrong for the
+      // URL case (and never mentioned SENSITIVE_URL_PATTERNS or
+      // ALLOW_CREDENTIAL_CAPTURE). This mirrors the same pre-check pattern
+      // capture.js's own auto-capture call sites already use.
+      const urlSensitive = !credentialGuard.credentialCaptureAllowed() &&
+        sensitiveUrl.urlLooksSensitive(await chromeLib.getPageUrl(tabIndex));
       const savedPath = await chromeLib.screenshotUnlessCredentialShaped(tabIndex, filepath, selectorForScreenshot, fullpage);
       if (!savedPath) {
+        if (urlSensitive) {
+          throw new Error(`screenshot refused: ${sensitiveUrl.URL_SUPPRESSED_NOTICE}`);
+        }
         throw new Error(
           "screenshot refused: page shows credential-shaped content. " +
           credentialGuard.CREDENTIAL_ADVICE
@@ -636,7 +650,7 @@ async function executeBrowserAction(params: UseBrowserInput): Promise<string> {
         'hover',
         () => chromeLib.hover(tabIndex, selector)
       );
-      return formatCaptureResponse('Hovered', selector, hoverResult.capture, hoverResult.dialog, hoverResult.artifacts, hoverResult.credentialSuppressed);
+      return formatCaptureResponse('Hovered', selector, hoverResult.capture, hoverResult.dialog, hoverResult.artifacts, hoverResult.credentialSuppressed, hoverResult.suppressedReason);
     }
 
     case BrowserAction.DRAG_DROP: {
@@ -708,7 +722,7 @@ async function executeBrowserAction(params: UseBrowserInput): Promise<string> {
       const targetDesc = typeof dragTarget === 'object'
         ? `(${dragTarget.x}, ${dragTarget.y})`
         : dragTarget;
-      return formatCaptureResponse('Dragged', `${source} → ${targetDesc}`, dragResult.capture, dragResult.dialog, dragResult.artifacts, dragResult.credentialSuppressed);
+      return formatCaptureResponse('Dragged', `${source} → ${targetDesc}`, dragResult.capture, dragResult.dialog, dragResult.artifacts, dragResult.credentialSuppressed, dragResult.suppressedReason);
     }
 
     case BrowserAction.MOUSE_MOVE: {
@@ -801,7 +815,7 @@ async function executeBrowserAction(params: UseBrowserInput): Promise<string> {
         'dblclick',
         () => chromeLib.doubleClick(tabIndex, selector)
       );
-      return formatCaptureResponse('Double-clicked', selector, dblClickResult.capture, dblClickResult.dialog, dblClickResult.artifacts, dblClickResult.credentialSuppressed);
+      return formatCaptureResponse('Double-clicked', selector, dblClickResult.capture, dblClickResult.dialog, dblClickResult.artifacts, dblClickResult.credentialSuppressed, dblClickResult.suppressedReason);
     }
 
     case BrowserAction.RIGHT_CLICK: {
@@ -814,7 +828,7 @@ async function executeBrowserAction(params: UseBrowserInput): Promise<string> {
         'rightclick',
         () => chromeLib.rightClick(tabIndex, selector)
       );
-      return formatCaptureResponse('Right-clicked', selector, rightClickResult.capture, rightClickResult.dialog, rightClickResult.artifacts, rightClickResult.credentialSuppressed);
+      return formatCaptureResponse('Right-clicked', selector, rightClickResult.capture, rightClickResult.dialog, rightClickResult.artifacts, rightClickResult.credentialSuppressed, rightClickResult.suppressedReason);
     }
 
     case BrowserAction.FILE_UPLOAD: {
@@ -846,7 +860,8 @@ async function executeBrowserAction(params: UseBrowserInput): Promise<string> {
         uploadResult.capture,
         uploadResult.dialog,
         uploadResult.artifacts,
-        uploadResult.credentialSuppressed
+        uploadResult.credentialSuppressed,
+        uploadResult.suppressedReason
       );
     }
 
@@ -872,7 +887,8 @@ async function executeBrowserAction(params: UseBrowserInput): Promise<string> {
         keyResult.capture,
         keyResult.dialog,
         keyResult.artifacts,
-        keyResult.credentialSuppressed
+        keyResult.credentialSuppressed,
+        keyResult.suppressedReason
       );
     }
 

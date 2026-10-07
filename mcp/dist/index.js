@@ -21281,6 +21281,10 @@ var __filename = fileURLToPath(import.meta.url);
 var __dirname = dirname(__filename);
 var require2 = createRequire(import.meta.url);
 var credentialGuard = require2(join(__dirname, "../../skills/browsing/lib/credential-guard.js"));
+var sensitiveUrl = require2(join(__dirname, "../../skills/browsing/lib/sensitive-url.js"));
+function suppressedNoticeFor(reason) {
+  return reason === "sensitive-url" ? sensitiveUrl.URL_SUPPRESSED_NOTICE : credentialGuard.CREDENTIAL_SUPPRESSED_NOTICE;
+}
 function formatDialogRefusal(error2) {
   const lines = [error2.message || "Page is behind a dialog."];
   if (error2.artifacts?.markdown) {
@@ -21291,7 +21295,7 @@ function formatDialogRefusal(error2) {
 }
 function formatCaptureFiles(actionResult) {
   if (actionResult.credentialSuppressed) {
-    return [credentialGuard.CREDENTIAL_SUPPRESSED_NOTICE];
+    return [suppressedNoticeFor(actionResult.suppressedReason)];
   }
   const prefix = actionResult.capturePrefix || "???";
   return [
@@ -21304,7 +21308,7 @@ function formatActionResponse(actionResult, actionDescription) {
     const dialogDesc = actionResult.artifacts?.markdown || (actionResult.dialog ? `Dialog opened: ${actionResult.dialog.kind}` : "Dialog opened");
     const suppressedNotice = actionResult.actionResult?.credentialSuppressed ? `
 
-${credentialGuard.CREDENTIAL_SUPPRESSED_NOTICE}` : "";
+${suppressedNoticeFor(actionResult.actionResult?.suppressedReason)}` : "";
     return `${actionDescription}
 
 Dialog is now open \u2014 page is waiting for user input.${suppressedNotice}
@@ -21340,12 +21344,12 @@ function formatEvalDescription(expression, evalResult) {
   return `Evaluated: ${expression}
 Result: ${value}`;
 }
-function formatCaptureResponse(action, details, captureOrNull, dialog, artifacts, credentialSuppressed) {
+function formatCaptureResponse(action, details, captureOrNull, dialog, artifacts, credentialSuppressed, suppressedReason) {
   if (!captureOrNull) {
     const dialogDesc = artifacts?.markdown || (dialog ? `Dialog opened: ${dialog.kind}` : "Dialog opened");
     const suppressedNotice = credentialSuppressed ? `
 
-${credentialGuard.CREDENTIAL_SUPPRESSED_NOTICE}` : "";
+${suppressedNoticeFor(suppressedReason)}` : "";
     return `${action}: ${details}
 
 Dialog is now open \u2014 page is waiting for user input.${suppressedNotice}
@@ -21356,7 +21360,7 @@ ${dialogDesc}`;
   if (capture.credentialSuppressed) {
     return `${action}: ${details}
 
-${credentialGuard.CREDENTIAL_SUPPRESSED_NOTICE}
+${suppressedNoticeFor(capture.suppressedReason)}
 
 \u{1F4CA} Page: ${capture.pageSize.width}\xD7${capture.pageSize.height}
 ${capture.domSummary}`;
@@ -21384,6 +21388,7 @@ var require3 = createRequire2(import.meta.url);
 var chromeLib = require3(join2(__dirname2, "../../skills/browsing/chrome-ws-lib.js")).createSession();
 var credentialGuard2 = require3(join2(__dirname2, "../../skills/browsing/lib/credential-guard.js"));
 var secretMarker = require3(join2(__dirname2, "../../skills/browsing/lib/secret-marker.js"));
+var sensitiveUrl2 = require3(join2(__dirname2, "../../skills/browsing/lib/sensitive-url.js"));
 var SERVER_VERSION = require3(join2(__dirname2, "../package.json")).version;
 function hasDisplay() {
   const platform = process.platform;
@@ -21552,7 +21557,7 @@ async function executeBrowserAction(params) {
       );
       if (!typeResult.capture) {
         const target = selector ? `into ${selector}` : "into current focus";
-        return formatCaptureResponse("Typed", target, null, typeResult.dialog, typeResult.artifacts, typeResult.credentialSuppressed);
+        return formatCaptureResponse("Typed", target, null, typeResult.dialog, typeResult.artifacts, typeResult.credentialSuppressed, typeResult.suppressedReason);
       }
       return formatCaptureResponse(
         "Typed",
@@ -21638,8 +21643,12 @@ async function executeBrowserAction(params) {
       }
       const fullpage = p.fullpage ?? false;
       const selectorForScreenshot = topSelector ?? (typeof p.selector === "string" ? p.selector : void 0);
+      const urlSensitive = !credentialGuard2.credentialCaptureAllowed() && sensitiveUrl2.urlLooksSensitive(await chromeLib.getPageUrl(tabIndex));
       const savedPath = await chromeLib.screenshotUnlessCredentialShaped(tabIndex, filepath, selectorForScreenshot, fullpage);
       if (!savedPath) {
+        if (urlSensitive) {
+          throw new Error(`screenshot refused: ${sensitiveUrl2.URL_SUPPRESSED_NOTICE}`);
+        }
         throw new Error(
           "screenshot refused: page shows credential-shaped content. " + credentialGuard2.CREDENTIAL_ADVICE
         );
@@ -21794,7 +21803,7 @@ async function executeBrowserAction(params) {
         "hover",
         () => chromeLib.hover(tabIndex, selector)
       );
-      return formatCaptureResponse("Hovered", selector, hoverResult.capture, hoverResult.dialog, hoverResult.artifacts, hoverResult.credentialSuppressed);
+      return formatCaptureResponse("Hovered", selector, hoverResult.capture, hoverResult.dialog, hoverResult.artifacts, hoverResult.credentialSuppressed, hoverResult.suppressedReason);
     }
     case "drag_drop" /* DRAG_DROP */: {
       const decodedPayload = tryParseJsonObject(payload) ?? payload;
@@ -21832,7 +21841,7 @@ async function executeBrowserAction(params) {
         () => chromeLib.drag(tabIndex, source, dragTarget)
       );
       const targetDesc = typeof dragTarget === "object" ? `(${dragTarget.x}, ${dragTarget.y})` : dragTarget;
-      return formatCaptureResponse("Dragged", `${source} \u2192 ${targetDesc}`, dragResult.capture, dragResult.dialog, dragResult.artifacts, dragResult.credentialSuppressed);
+      return formatCaptureResponse("Dragged", `${source} \u2192 ${targetDesc}`, dragResult.capture, dragResult.dialog, dragResult.artifacts, dragResult.credentialSuppressed, dragResult.suppressedReason);
     }
     case "mouse_move" /* MOUSE_MOVE */: {
       const shapeHint = "{x,y} or {x,y,steps?,fromX?,fromY?}";
@@ -21900,7 +21909,7 @@ async function executeBrowserAction(params) {
         "dblclick",
         () => chromeLib.doubleClick(tabIndex, selector)
       );
-      return formatCaptureResponse("Double-clicked", selector, dblClickResult.capture, dblClickResult.dialog, dblClickResult.artifacts, dblClickResult.credentialSuppressed);
+      return formatCaptureResponse("Double-clicked", selector, dblClickResult.capture, dblClickResult.dialog, dblClickResult.artifacts, dblClickResult.credentialSuppressed, dblClickResult.suppressedReason);
     }
     case "right_click" /* RIGHT_CLICK */: {
       const selector = topSelector ?? (typeof payload === "string" ? payload : null);
@@ -21912,7 +21921,7 @@ async function executeBrowserAction(params) {
         "rightclick",
         () => chromeLib.rightClick(tabIndex, selector)
       );
-      return formatCaptureResponse("Right-clicked", selector, rightClickResult.capture, rightClickResult.dialog, rightClickResult.artifacts, rightClickResult.credentialSuppressed);
+      return formatCaptureResponse("Right-clicked", selector, rightClickResult.capture, rightClickResult.dialog, rightClickResult.artifacts, rightClickResult.credentialSuppressed, rightClickResult.suppressedReason);
     }
     case "file_upload" /* FILE_UPLOAD */: {
       const p = parsePayload(payload, "file_upload");
@@ -21943,7 +21952,8 @@ async function executeBrowserAction(params) {
         uploadResult.capture,
         uploadResult.dialog,
         uploadResult.artifacts,
-        uploadResult.credentialSuppressed
+        uploadResult.credentialSuppressed,
+        uploadResult.suppressedReason
       );
     }
     case "keyboard_press" /* KEYBOARD_PRESS */: {
@@ -21965,7 +21975,8 @@ async function executeBrowserAction(params) {
         keyResult.capture,
         keyResult.dialog,
         keyResult.artifacts,
-        keyResult.credentialSuppressed
+        keyResult.credentialSuppressed,
+        keyResult.suppressedReason
       );
     }
     case "set_viewport" /* SET_VIEWPORT */: {

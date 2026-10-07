@@ -51,6 +51,30 @@ const MARKER_PAGE = {
   renderedText: '',
 };
 
+// A fake base32 TOTP seed, visible in ordinary page text with no token
+// shape, no data-sen-secret marker, and no id/name/class a reader would
+// call suspicious -- the only reason this page must be suppressed is its
+// URL (sensitive-url.js), the same way Slack's real 2FA setup page
+// (/account/settings/2fa_app) would be. Isolates URL-based suppression
+// from both the credential-shape scan and the default secret-pattern
+// heuristics in html-with-scrub.js.
+const FAKE_SEED = 'JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP';
+const SENSITIVE_URL_PAGE = {
+  url: 'https://example.test/account/settings/2fa_app',
+  html: `<html><body><h1>Set up two-step verification</h1><span id="setupKey">${FAKE_SEED}</span></body></html>`,
+  markdown: `# Set up two-step verification\n\n${FAKE_SEED}`,
+  domSummary: `Set up two-step verification\nInteractive: 0 buttons, 0 inputs, 0 links\nHeadings: "Set up two-step verification"\nLayout: body`,
+  renderedText: '',
+};
+
+// Same sensitive URL, but the page itself is otherwise ordinary (no
+// seed) -- confirms the suppression is keyed on the URL alone, not on
+// anything that also happens to be in this page's markup.
+const SENSITIVE_URL_CLEAN_PAGE = {
+  ...CLEAN_PAGE,
+  url: 'https://example.test/account/settings/2fa_app',
+};
+
 // A plain password typed into a password field, mirrored by the page's own
 // change handler into the `value` attribute and a `data-initial-value`
 // attribute (a common as-you-type-validation pattern). It has no token
@@ -197,6 +221,10 @@ function setup({
       if (expr === markdownScript) return { result: { value: page.markdown } };
       if (expr === domSummaryScript) return { result: { value: page.domSummary } };
       if (expr === 'document.body.innerText') return { result: { value: page.renderedText } };
+      // Defaults to an ordinary, non-sensitive URL so every existing page
+      // fixture above (none of which sets `.url`) never trips the
+      // URL-pattern suppression by accident.
+      if (expr === 'location.href') return { result: { value: page.url || 'https://example.test/dashboard' } };
       if (expr === htmlWithScrubScript) {
         // scrubbedHtml defaults to html for pages with nothing to scrub.
         const scrubbed = page.scrubbedHtml !== undefined ? page.scrubbedHtml : page.html;
@@ -353,6 +381,56 @@ describe('capturePageArtifacts credential guard', () => {
     const evaluated = await evaluateWithCapture(0, '21+21');
     assert.equal(evaluated.credentialSuppressed, true);
     assert.equal(evaluated.result, 42, 'eval still returns its (non-secret) value');
+  });
+});
+
+// sensitive-url.js: a page suppressed purely because its URL matches a
+// known-sensitive pattern (2FA/MFA/recovery-codes/...), independent of
+// the credential-shape scan and html-with-scrub.js's default
+// secret-pattern heuristics -- this is what actually catches Slack's
+// real 2FA setup page, which shows a bare base32 seed with no token
+// shape and no suspicious id/name/class.
+describe('capturePageArtifacts URL-pattern suppression (sensitive-url.js)', () => {
+  it('suppresses html/md and skips the screenshot entirely for a known-sensitive URL, even with no credential-shaped content', async () => {
+    const { capturePageArtifacts, state, calls } = setup({ before: SENSITIVE_URL_PAGE });
+    const result = await capturePageArtifacts(0, 'navigate');
+
+    assert.equal(result.credentialSuppressed, true);
+    assert.equal(result.suppressedReason, 'sensitive-url');
+    assert.equal(result.files, null);
+    assert.deepEqual(sessionFiles(state), [], 'no capture artifacts may be written');
+    assert.equal(calls.screenshot, 0, 'no screenshot may be taken, not even transiently');
+
+    const text = JSON.stringify(result);
+    assert.ok(!text.includes(FAKE_SEED), `seed leaked into result: ${text}`);
+  });
+
+  it('does not suppress an ordinary page at an ordinary URL', async () => {
+    const { capturePageArtifacts, state } = setup({ before: CLEAN_PAGE });
+    const result = await capturePageArtifacts(0, 'navigate');
+
+    assert.notEqual(result.credentialSuppressed, true);
+    assert.ok(result.files, 'expected normal capture files for a non-sensitive page');
+    assert.ok(sessionFiles(state).length > 0);
+  });
+
+  it('suppresses an otherwise-ordinary page purely because of its URL', async () => {
+    // Same markup as CLEAN_PAGE -- nothing credential-shaped, nothing
+    // pattern-matched -- but the URL alone is enough.
+    const { capturePageArtifacts, state } = setup({ before: SENSITIVE_URL_CLEAN_PAGE });
+    const result = await capturePageArtifacts(0, 'navigate');
+
+    assert.equal(result.credentialSuppressed, true);
+    assert.equal(result.suppressedReason, 'sensitive-url');
+    assert.deepEqual(sessionFiles(state), []);
+  });
+
+  it('the *WithCapture wrappers pass the URL suppression reason through', async () => {
+    const { clickWithCapture } = setup({ before: SENSITIVE_URL_PAGE });
+    const clicked = await clickWithCapture(0, '#reveal');
+    assert.equal(clicked.credentialSuppressed, true);
+    assert.equal(clicked.suppressedReason, 'sensitive-url');
+    assert.equal(clicked.files, null);
   });
 });
 
@@ -758,5 +836,165 @@ describe('screenshotUnlessCredentialShaped', () => {
     assert.equal(await screenshotUnlessCredentialShaped(0, shotPath()), null);
     assert.equal(calls.screenshot, 0);
     assert.equal(fs.existsSync(shotPath()), false);
+  });
+
+  // jc finding 4: an EXPLICIT `screenshot` action (mcp/src/index.ts) calls
+  // this function directly, with no URL check of its own -- before this
+  // fix, a known-sensitive URL's QR code or visible seed still reached
+  // disk through that path alone, even though every AUTO-CAPTURE caller
+  // already skipped the call. The markup here is ordinary (CLEAN_PAGE's
+  // html/md, just at a sensitive URL): only the URL itself should suppress.
+  it('takes no screenshot of a known-sensitive URL even when an agent calls screenshot explicitly, with no credential-shaped markup at all', async () => {
+    const { screenshotUnlessCredentialShaped, calls } = setup({ before: SENSITIVE_URL_CLEAN_PAGE });
+    assert.equal(await screenshotUnlessCredentialShaped(0, shotPath()), null);
+    assert.equal(calls.screenshot, 0, 'no screenshot may be taken, not even transiently');
+    assert.equal(fs.existsSync(shotPath()), false);
+  });
+
+  // jc finding 5: the URL_SUPPRESSED_NOTICE text says
+  // SUPERPOWERS_CHROME_ALLOW_CREDENTIAL_CAPTURE=1 disables URL suppression
+  // -- before this fix, urlLooksSensitive was never gated behind
+  // credentialCaptureAllowed() anywhere, so setting the env var did NOT
+  // actually restore a URL-suppressed screenshot, contradicting the notice.
+  it(`${ENV}=1 saves the screenshot even on a known-sensitive URL, making the notice's claim true`, async () => {
+    process.env[ENV] = '1';
+    const { screenshotUnlessCredentialShaped } = setup({ before: SENSITIVE_URL_CLEAN_PAGE });
+    assert.equal(await screenshotUnlessCredentialShaped(0, shotPath()), shotPath());
+    assert.ok(fs.existsSync(shotPath()));
+  });
+});
+
+// jc finding 7: URL suppression in captureActionWithDiff was exercised by
+// tests only through capturePageArtifacts and clickWithCapture --
+// type/key/hover (and the other captureActionWithDiff-based actions) share
+// the exact same function, but nothing called it directly with a sensitive
+// URL, so a regression there had no test to catch it.
+describe('captureActionWithDiff URL-pattern suppression for non-click actions (jc finding 7)', () => {
+  for (const actionType of ['type', 'hover', 'key']) {
+    it(`suppresses a ${actionType} action's capture purely because of the URL, with ordinary markup`, async () => {
+      const { captureActionWithDiff, state, act } = setup({ before: SENSITIVE_URL_CLEAN_PAGE });
+      const result = await captureActionWithDiff(0, actionType, act, 0);
+
+      assert.equal(result.capture.credentialSuppressed, true);
+      assert.equal(result.capture.suppressedReason, 'sensitive-url');
+      assert.deepEqual(result.capture.files, {});
+      assert.deepEqual(sessionFiles(state), [], `no ${actionType} capture artifacts may be written`);
+    });
+  }
+});
+
+// jc finding 7 (dialog branches): a dialog's OWN message can be entirely
+// benign while the PAGE it belongs to is at a known-sensitive URL -- the
+// dialog short-circuits must honor that, not just a credential-shaped
+// dialog message.
+const DIALOG_BENIGN_AT_SENSITIVE_URL = {
+  kind: 'confirm',
+  payload: {
+    message: 'Are you sure you want to leave this page?',
+    url: SENSITIVE_URL_PAGE.url,
+    defaultPrompt: '',
+    hasBrowserHandler: false,
+  },
+};
+
+describe('dialog short-circuits honor URL-pattern suppression even for a benign dialog message (jc finding 7)', () => {
+  it('capturePageArtifacts dialog short-circuit: suppressed because the dialog\'s own payload.url is sensitive', async () => {
+    const { capturePageArtifacts, state } = setup({ before: CLEAN_PAGE, dialog: DIALOG_BENIGN_AT_SENSITIVE_URL });
+    const result = await capturePageArtifacts(0, 'navigate');
+
+    assert.equal(result.credentialSuppressed, true);
+    assert.equal(result.suppressedReason, 'sensitive-url');
+    assert.equal(result.files, null);
+    assert.deepEqual(sessionFiles(state), []);
+  });
+
+  it('captureActionWithDiff after-dialog short-circuit: suppressed because the dialog\'s own payload.url is sensitive', async () => {
+    const { captureActionWithDiff, state, act } = setup({
+      before: CLEAN_PAGE,
+      dialog: null,
+      dialogAfterAction: DIALOG_BENIGN_AT_SENSITIVE_URL,
+    });
+    const result = await captureActionWithDiff(0, 'click', act, 0);
+
+    assert.equal(result.credentialSuppressed, true);
+    assert.equal(result.suppressedReason, 'sensitive-url');
+    assert.deepEqual(sessionFiles(state), ['001-click-before.png'],
+      'only the clean BEFORE screenshot may remain; no after-dialog artifacts written to disk');
+  });
+
+  it(`${ENV}=1 restores both dialog short-circuits even though the dialog's URL is sensitive`, async () => {
+    process.env[ENV] = '1';
+    const { capturePageArtifacts } = setup({ before: CLEAN_PAGE, dialog: DIALOG_BENIGN_AT_SENSITIVE_URL });
+    const result = await capturePageArtifacts(0, 'navigate');
+
+    assert.ok(!result.credentialSuppressed);
+  });
+});
+
+// jc finding 5, end to end (not just screenshotUnlessCredentialShaped in
+// isolation): SUPERPOWERS_CHROME_ALLOW_CREDENTIAL_CAPTURE=1 must actually
+// restore a capture that URL suppression alone would otherwise block.
+describe('capturePageArtifacts / captureActionWithDiff: ALLOW_CREDENTIAL_CAPTURE really disables URL suppression (jc finding 5)', () => {
+  it(`${ENV}=1 restores capturePageArtifacts for a page suppressed only by its URL`, async () => {
+    process.env[ENV] = '1';
+    const { capturePageArtifacts, state } = setup({ before: SENSITIVE_URL_CLEAN_PAGE });
+    const result = await capturePageArtifacts(0, 'navigate');
+
+    assert.ok(!result.credentialSuppressed, 'URL suppression must be disabled by the env var, matching the notice\'s claim');
+    assert.ok(result.files, 'expected normal capture files');
+    assert.ok(sessionFiles(state).length > 0);
+  });
+
+  it(`${ENV}=1 restores captureActionWithDiff for a page suppressed only by its URL`, async () => {
+    process.env[ENV] = '1';
+    const { captureActionWithDiff, act } = setup({ before: SENSITIVE_URL_CLEAN_PAGE });
+    const result = await captureActionWithDiff(0, 'click', act, 0);
+
+    assert.ok(!result.capture.credentialSuppressed);
+  });
+});
+
+// Round 4 (jc round-3-review finding 7): nothing tested the AFTER-action
+// URL check -- an action (e.g. a click) that navigates from an ordinary
+// page to a known-sensitive one. Forcing afterUrlSensitive to false
+// still passed the full suite before this test existed; the underlying
+// mechanism (capture.js's afterUrlSensitive) was already correct, this
+// was purely a coverage gap.
+describe('captureActionWithDiff: the AFTER-action URL check, not just the before-action one (jc finding 7)', () => {
+  it('suppresses the capture when the action navigates from a clean page to a known-sensitive URL', async () => {
+    const { captureActionWithDiff, state, act } = setup({ before: CLEAN_PAGE, after: SENSITIVE_URL_CLEAN_PAGE });
+    const result = await captureActionWithDiff(0, 'click', act, 0);
+
+    assert.equal(result.capture.credentialSuppressed, true);
+    assert.equal(result.capture.suppressedReason, 'sensitive-url',
+      'the reason must reflect the URL, not fall back to credential-shape, when forcing afterUrlSensitive to false would otherwise still pass');
+    assert.deepEqual(result.capture.files, {});
+    assert.deepEqual(sessionFiles(state), [], 'no after-action artifacts may be written once the new URL is sensitive');
+  });
+
+  it(`${ENV}=1 restores the capture even though the action navigated to a known-sensitive URL`, async () => {
+    process.env[ENV] = '1';
+    const { captureActionWithDiff, act } = setup({ before: CLEAN_PAGE, after: SENSITIVE_URL_CLEAN_PAGE });
+    const result = await captureActionWithDiff(0, 'click', act, 0);
+
+    assert.ok(!result.capture.credentialSuppressed);
+  });
+});
+
+// Round 4 (jc round-3-review finding 7, second half): the POST-shot
+// URL re-check inside screenshotUnlessCredentialShaped itself -- a route
+// change DURING the screenshot (the page navigates to a sensitive URL
+// while the pixels are being taken), mirroring the existing
+// "deletes the screenshot when a token appears while it is taken" test
+// for the credential-shape case.
+describe('screenshotUnlessCredentialShaped: URL changing to a sensitive one DURING the shot (jc finding 7)', () => {
+  it('deletes the screenshot when the URL becomes sensitive while it is being taken', async () => {
+    const { screenshotUnlessCredentialShaped } = setup({
+      before: CLEAN_PAGE,
+      revealOnScreenshot: { call: 1, page: SENSITIVE_URL_CLEAN_PAGE },
+    });
+    const shot = path.join(process.env.XDG_CACHE_HOME, 'route-change-during-shot.png');
+    assert.equal(await screenshotUnlessCredentialShaped(0, shot), null);
+    assert.equal(fs.existsSync(shot), false);
   });
 });

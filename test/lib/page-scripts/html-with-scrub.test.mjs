@@ -51,13 +51,48 @@ describe('page-scripts/html-with-scrub', () => {
     assert.doesNotMatch(value.scrubbed, /123456/);
   });
 
-  it('redacts a self-mirrored field with no recognized type or autocomplete (Google 2-step totpPin)', () => {
+  it('redacts a self-mirrored field with no recognized type or autocomplete, isolated from the default secret-pattern detection', () => {
     // Google's 2-step verification page: a plain <input> with no
     // type="password" and no autocomplete token this module recognizes,
     // but the page's own JS copies the typed code into data-initial-value
     // verbatim. None of the existing selectors (type, autocomplete, the
     // data-sen-secret marker) flag this field, so it must be found by
     // comparing the live .value against the field's own attributes.
+    // Google's real field is id="totpPin", which the default
+    // secret-pattern detection added below *also* independently catches
+    // (it contains "otp"); see the next test for that stronger,
+    // attribute-removing outcome. This test uses a pattern-safe id
+    // ("verificationCode" contains none of the secret-looking words) to
+    // isolate and keep testing the self-mirror-only mechanism's own,
+    // weaker guarantee on its own.
+    const dom = makeDom('<html><body><input id="verificationCode" data-initial-value=""></body></html>');
+    const { document } = dom.window;
+    const field = document.getElementById('verificationCode');
+    field.value = '123456';
+    field.setAttribute('data-initial-value', '123456');
+
+    const value = runScrub(dom);
+    assert.match(value.raw, /data-initial-value="123456"/);
+    // This field is found only by self-mirror, not by CSS selector (no
+    // type/autocomplete to match) and not by the default secret-pattern
+    // detection (its id doesn't match), so there is no selector to
+    // re-match in the clone and exact-remove the attribute by name the
+    // way a password or one-time-code field's data-* gets removed above
+    // -- the attribute name survives, but the value-substring pass
+    // redacts its content.
+    assert.doesNotMatch(value.scrubbed, /123456/);
+    assert.match(value.scrubbed, /data-initial-value="\[REDACTED\]"/);
+
+    // The live document must be untouched.
+    assert.equal(field.getAttribute('data-initial-value'), '123456');
+  });
+
+  it("also catches Google's real totpPin id via the default secret-pattern detection, stripping the attribute by name", () => {
+    // Same page as above, but with Google's actual field id. "totpPin"
+    // contains "otp", so looksSecretByPattern flags it independently of
+    // self-mirror detection -- and because that gives the clone a
+    // selector to re-match (unlike the self-mirror-only case above), the
+    // attribute is fully removed, not just value-redacted.
     const dom = makeDom('<html><body><input id="totpPin" data-initial-value=""></body></html>');
     const { document } = dom.window;
     const totpPin = document.getElementById('totpPin');
@@ -66,13 +101,8 @@ describe('page-scripts/html-with-scrub', () => {
 
     const value = runScrub(dom);
     assert.match(value.raw, /data-initial-value="123456"/);
-    // This field is found only by self-mirror, not by CSS selector (no
-    // type/autocomplete to match), so there is no selector to re-match in
-    // the clone and exact-remove the attribute by name the way a password
-    // or one-time-code field's data-* gets removed above -- the attribute
-    // name survives, but the value-substring pass redacts its content.
     assert.doesNotMatch(value.scrubbed, /123456/);
-    assert.match(value.scrubbed, /data-initial-value="\[REDACTED\]"/);
+    assert.doesNotMatch(value.scrubbed, /data-initial-value/);
 
     // The live document must be untouched.
     assert.equal(totpPin.getAttribute('data-initial-value'), '123456');
@@ -448,5 +478,425 @@ describe('page-scripts/html-with-scrub', () => {
     const value = runScrub(dom);
     assert.match(value.raw, /value="cvv:737"/);
     assert.doesNotMatch(value.scrubbed, /737/);
+  });
+});
+
+// Default secret-pattern detection: redact on first sight, no
+// data-sen-secret marking and no click required -- the real gap this
+// closes is a page that puts a secret in the DOM at load time (Slack's
+// hidden #init_key_code on its 2FA setup page), before an agent could
+// ever have marked anything.
+describe('page-scripts/html-with-scrub: default secret-pattern detection', () => {
+  function makeDom(html) {
+    return new JSDOM(html, { runScripts: 'dangerously' });
+  }
+  function runScrub(dom) {
+    return dom.window.eval(htmlWithScrubScript);
+  }
+  function evalScript(html) {
+    const dom = makeDom(html);
+    return { value: runScrub(dom), dom };
+  }
+
+  const FAKE_SEED = 'JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP';
+
+  it("redacts Slack's real case: a hidden input carrying the seed as its value attribute", () => {
+    const { value } = evalScript(
+      `<html><body><input type="hidden" id="init_key_code" value="${FAKE_SEED}"></body></html>`
+    );
+    assert.match(value.raw, new RegExp(FAKE_SEED));
+    assert.doesNotMatch(value.scrubbed, new RegExp(FAKE_SEED));
+    assert.doesNotMatch(value.scrubbed, /init_key_code.*value=/);
+  });
+
+  it("redacts the same seed held as a hidden leaf element's text content, not an input value", () => {
+    const dom = makeDom(
+      `<html><body><span id="init_key_code" style="display:none">${FAKE_SEED}</span></body></html>`
+    );
+    const value = runScrub(dom);
+    assert.match(value.raw, new RegExp(FAKE_SEED));
+    assert.doesNotMatch(value.scrubbed, new RegExp(FAKE_SEED));
+    assert.match(value.scrubbed, /<span id="init_key_code"[^>]*>\[REDACTED\]<\/span>/);
+  });
+
+  it('redacts a seed mirrored elsewhere on the page too, via the collected secretValues substring pass', () => {
+    const dom = makeDom(
+      `<html><body><input type="hidden" id="init_key_code" value="${FAKE_SEED}">` +
+      `<div id="debugPanel" data-last-seed="${FAKE_SEED}"></div></body></html>`
+    );
+    const value = runScrub(dom);
+    assert.doesNotMatch(value.scrubbed, new RegExp(FAKE_SEED));
+    assert.ok(value.secretValues.includes(FAKE_SEED));
+  });
+
+  for (const [label, id] of [
+    ['secret', 'mySecretValue'], ['totp', 'totpSeed'], ['otp', 'otpCode'],
+    ['2fa', 'setup2faKey'], ['mfa', 'mfaSetupCode'], ['key_code', 'init_key_code'],
+    ['seed', 'walletSeed'], ['recovery', 'recoveryPhrase'], ['backup_code', 'backup_code_1'],
+    ['api_key', 'apiKeyValue'], ['token', 'authToken'],
+  ]) {
+    it(`matches the "${label}" pattern via element id`, () => {
+      const dom = makeDom(`<html><body><span id="${id}">${FAKE_SEED}</span></body></html>`);
+      const value = runScrub(dom);
+      assert.doesNotMatch(value.scrubbed, new RegExp(FAKE_SEED), `id="${id}" should have matched`);
+    });
+  }
+
+  it('matches via autocomplete="one-time-code" on a plain, otherwise-unflagged element id/name', () => {
+    // Already covered for value-bearing fields by the existing
+    // AUTOCOMPLETE_SELECTOR, but confirms it still works for a field this
+    // module's pattern list alone would not have flagged (no secret-ish
+    // id/name/class).
+    const dom = makeDom(
+      `<html><body><input id="field7" name="field7" autocomplete="one-time-code" value="654321"></body></html>`
+    );
+    const value = runScrub(dom);
+    assert.doesNotMatch(value.scrubbed, /654321/);
+  });
+
+  it('matches via class and aria-label too, not just id/name', () => {
+    const domClass = makeDom(`<html><body><span class="totp-seed-display">${FAKE_SEED}</span></body></html>`);
+    assert.doesNotMatch(runScrub(domClass).scrubbed, new RegExp(FAKE_SEED));
+
+    const domAria = makeDom(`<html><body><span aria-label="api_key">${FAKE_SEED}</span></body></html>`);
+    assert.doesNotMatch(runScrub(domAria).scrubbed, new RegExp(FAKE_SEED));
+  });
+
+  it('strips data-* and aria-* attributes from a matched element unconditionally, like other categories', () => {
+    const { value } = evalScript(
+      `<html><body><div id="totpWrapper" data-seed="${FAKE_SEED}" aria-describedby="hint"></div></body></html>`
+    );
+    assert.match(value.raw, new RegExp(FAKE_SEED));
+    assert.doesNotMatch(value.scrubbed, /data-seed/);
+  });
+
+  it('does NOT over-redact an ordinary login form (username field, labels, submit button)', () => {
+    // Negative test: nothing in an ordinary login page should trip the
+    // new default-pattern detection.
+    const dom = makeDom(
+      '<html><body><form>' +
+      '<label for="user">Username</label><input id="user" name="user" value="ada">' +
+      '<label for="pass">Password</label><input id="pass" name="pass" type="password">' +
+      '<input type="submit" value="Log in"></form></body></html>'
+    );
+    const value = runScrub(dom);
+    assert.equal(value.scrubbed, value.raw, 'an ordinary login form must be unchanged');
+  });
+
+  it('does not blank a button/link label whose id happens to reference a secret it operates on', () => {
+    // "copy-seed-btn" matches the "seed" pattern, but its own visible
+    // text ("Copy") is a UI label, not the secret -- see PATTERN_SKIP_TAGS
+    // in html-with-scrub.js.
+    const dom = makeDom(
+      '<html><body><button id="copy-seed-btn">Copy</button>' +
+      '<a id="reveal-totp-link" href="#">Show code</a></body></html>'
+    );
+    const value = runScrub(dom);
+    assert.equal(value.scrubbed, value.raw, 'button/link labels must survive untouched');
+  });
+
+  it("blanks a matching STRONG wrapping container's own text AND every descendant leaf's text, not just a matching leaf descendant", () => {
+    // The container's own id ("totp-secret") must itself match a STRONG
+    // compound (secret-pattern.js's isCompoundSecretMatch) -- round 3
+    // (jc finding 4) restricts wholesale container blanking to strong
+    // matches, so a merely-weak id like the original "totp-setup" no
+    // longer wholesale-blanks (see the dedicated weak-container test
+    // below). "two-factor-setup" (the pre-round-3 version of this test)
+    // did not match any pattern word at all, so that version exercised
+    // nothing: the childElementCount guard it claimed to cover was never
+    // reached, and removing that guard entirely still passed.
+    const dom = makeDom(
+      '<html><body><div id="totp-secret">' +
+      '<p>Scan this QR code with your authenticator app.</p>' +
+      `<span id="init_key_code">${FAKE_SEED}</span>` +
+      '<button id="doneBtn">Done</button>' +
+      '</div></body></html>'
+    );
+    const value = runScrub(dom);
+    assert.doesNotMatch(value.scrubbed, new RegExp(FAKE_SEED), 'the seed itself must never survive');
+    // A matched STRONG container's descendant text is blanked too,
+    // including an ordinary instruction paragraph that carries no secret
+    // of its own -- accepted for a strong/small container: leaving a
+    // secret in clear to preserve a label is the wrong tradeoff (see
+    // html-with-scrub.js's module comment).
+    assert.doesNotMatch(value.scrubbed, /Scan this QR code with your authenticator app\./,
+      'descendant instruction text inside a matched STRONG container must also be blanked');
+    // A skip-tag CONTROL's own label is the one thing that survives even
+    // inside a matched container: its visible text is a UI label ('Done'),
+    // never the secret, and recursion does not descend into it.
+    assert.match(value.scrubbed, />Done<\/button>/, "a control's own label must still survive");
+  });
+
+  // Round 3 (jc finding 4): a WEAK container match (a single broad word,
+  // not an exact compound) must NOT wholesale-blank -- only a descendant
+  // that itself independently matches is found and blanked.
+  it('does NOT wholesale-blank a WEAK wrapping container, but still blanks an independently-matching descendant', () => {
+    const dom = makeDom(
+      '<html><body><div id="totp-setup">' +
+      '<p>Scan this QR code with your authenticator app.</p>' +
+      `<span id="init_key_code">${FAKE_SEED}</span>` +
+      '<button id="doneBtn">Done</button>' +
+      '</div></body></html>'
+    );
+    const value = runScrub(dom);
+    assert.doesNotMatch(value.scrubbed, new RegExp(FAKE_SEED), 'the seed itself must never survive (span matches on its own)');
+    assert.match(value.scrubbed, /Scan this QR code with your authenticator app\./,
+      'a WEAK container ("totp-setup" -- not an exact compound) must not wholesale-blank its ordinary instruction text');
+  });
+
+  it('fully blanks a matched container whose secret is split across element children (jc finding 2: "Key: <code>SEED</code>")', () => {
+    const dom = makeDom(
+      `<html><body><div id="totp-secret">Key: <code>${FAKE_SEED}</code></div></body></html>`
+    );
+    const value = runScrub(dom);
+    assert.doesNotMatch(value.scrubbed, new RegExp(FAKE_SEED), 'the seed must not leak just because it sits inside a <code> child');
+  });
+
+  it('fully blanks a matched container that is a list of secrets (jc finding 2: recovery-codes <ul><li>)', () => {
+    const dom = makeDom(
+      '<html><body><ul class="recovery-codes">' +
+      '<li>11112222</li><li>33334444</li><li>55556666</li>' +
+      '</ul></body></html>'
+    );
+    const value = runScrub(dom);
+    for (const code of ['11112222', '33334444', '55556666']) {
+      assert.doesNotMatch(value.scrubbed, new RegExp(code), `recovery code ${code} must not leak in clear`);
+    }
+  });
+
+  it('does not page-wide substring-replace common words or corrupt class= attributes (jc finding 1: Prism token spans)', () => {
+    // Prism.js (and similar syntax highlighters) literally use "token" as
+    // a CSS class name on every highlighted span. Round 3 treated this as
+    // a real, expected match of the pattern (the bug it fixed was
+    // collecting that span's own short TEXT into a page-WIDE
+    // substring-replace set, which corrupted every other occurrence of
+    // those same words elsewhere on the page, including the literal
+    // attribute-name text "class=" itself). Round 4 (jc finding 2) goes
+    // further: a bare "token" class alongside a Prism type-word class is
+    // now EXEMPTED from matching at all, so the spans' own text survives
+    // too -- see secret-pattern.js's __senIsPrismTokenSpan.
+    const dom = makeDom(
+      '<html><body>' +
+      '<pre><span class="token keyword">const</span> x = 1; ' +
+      '<span class="token keyword">class</span> Foo {} ' +
+      '<span class="token keyword">return</span> x;</pre>' +
+      '<p class="footprint">carbon footprint</p>' +
+      '<nav class="navbar">Home</nav>' +
+      '</body></html>'
+    );
+    const value = runScrub(dom);
+    // The unrelated paragraph and nav survive completely untouched: their
+    // own ids/classes do not match the pattern (word-boundary fix -- see
+    // secret-pattern.js), and no OTHER element's matched text leaked into
+    // a page-wide replace that could have mangled them.
+    assert.match(value.scrubbed, /<p class="footprint">carbon footprint<\/p>/,
+      '"footprint" must survive -- it only coincidentally contains "otp"');
+    assert.match(value.scrubbed, /<nav class="navbar">Home<\/nav>/,
+      'an unrelated class="navbar" element must survive untouched');
+    // No literal "[REDACTED]=" anywhere: the bug turned every class=
+    // attribute's NAME into [REDACTED]= via a global substring replace of
+    // the word "class".
+    assert.doesNotMatch(value.scrubbed, /\[REDACTED\]=/,
+      'no attribute name may be corrupted by a page-wide substring replace');
+    // Round 4 (jc finding 2): the Prism spans' own text now survives too
+    // -- "token keyword"/"token operator"/etc inside a <pre> is Prism's
+    // own generated markup, exempted from matching entirely, not an
+    // accepted collateral loss.
+    assert.match(value.scrubbed, />const</, 'a Prism token span\'s own text must survive -- it is not a secret');
+    assert.match(value.scrubbed, />class</, 'a Prism token span\'s own text must survive -- it is not a secret');
+    assert.match(value.scrubbed, />return</, 'a Prism token span\'s own text must survive -- it is not a secret');
+  });
+
+  // Round 3 (jc finding 4): jc's own two examples, reproduced verbatim.
+  it('a design-system wrapper class ("sn-token-provider") does not wipe ordinary page content', () => {
+    const dom = makeDom(
+      '<html><body><div class="Shell sn-token-provider">' +
+      '<h2>Get started</h2><p>Normal docs text here</p>' +
+      '</div></body></html>'
+    );
+    const value = runScrub(dom);
+    assert.match(value.scrubbed, /<h2>Get started<\/h2>/, `heading wrongly redacted: ${value.scrubbed}`);
+    assert.match(value.scrubbed, /<p>Normal docs text here<\/p>/, `paragraph wrongly redacted: ${value.scrubbed}`);
+  });
+
+  it('a docs landmark section id ("module-secrets") does not wipe ordinary page content', () => {
+    const dom = makeDom(
+      '<html><body><section id="module-secrets">' +
+      '<h2>Module: secrets</h2><p>This module manages credentials.</p>' +
+      '</section></body></html>'
+    );
+    const value = runScrub(dom);
+    assert.match(value.scrubbed, /<h2>Module: secrets<\/h2>/, `heading wrongly redacted: ${value.scrubbed}`);
+    assert.match(value.scrubbed, /<p>This module manages credentials\.<\/p>/, `paragraph wrongly redacted: ${value.scrubbed}`);
+  });
+
+  // Round 4 (jc finding 5): blankMatchedSubtree returned at a skip-tag
+  // control BEFORE stripping that control's own data-*/value attributes,
+  // so a copy button's data-clipboard-text (holding the same seed) leaked
+  // into the html even though the module comment claimed attributes were
+  // always stripped unconditionally.
+  it("strips a skip-tag control's own data-* attributes inside a matched container, not just its text", () => {
+    const dom = makeDom(
+      `<html><body><div id="totp-secret"><code>${FAKE_SEED}</code>` +
+      `<button data-clipboard-text="${FAKE_SEED}">Copy</button></div></body></html>`
+    );
+    const value = runScrub(dom);
+    assert.doesNotMatch(value.scrubbed, new RegExp(FAKE_SEED), `seed leaked via data-clipboard-text: ${value.scrubbed}`);
+    assert.match(value.scrubbed, />Copy<\/button>/, "the button's own label must still survive");
+  });
+
+  // Round 4 (jc finding 5): SUMMARY/LABEL/LEGEND/OPTION are no longer
+  // exempt from text-blanking or recursion -- only BUTTON/A are, since
+  // only those are genuinely separate UI controls whose own text is a
+  // label rather than the secret's own rendering.
+  it('recurses into and blanks a <label> wrapping a matched leaf inside a matched container', () => {
+    const dom = makeDom(
+      `<html><body><div id="totp-secret"><label>Seed: <code>${FAKE_SEED}</code></label></div></body></html>`
+    );
+    const value = runScrub(dom);
+    assert.doesNotMatch(value.scrubbed, new RegExp(FAKE_SEED), `seed leaked via <label>: ${value.scrubbed}`);
+  });
+
+  // Round 4 (jc finding 5): an otpauth:// URI is a self-describing
+  // credential and must be redacted wherever it appears, regardless of
+  // whether the carrying element also matches the word-boundary
+  // secret-pattern detector. href was "partly pre-existing" leakage --
+  // never scrubbed by any prior mechanism at all.
+  describe('otpauth:// URIs are redacted unconditionally, wherever they appear', () => {
+    const OTP_URI = 'otpauth://totp/Example:alice@example.com?secret=JBSWY3DPEHPK3PXP&issuer=Example';
+
+    it('in an <a href> with no matching id/class of its own', () => {
+      const dom = makeDom(`<html><body><a href="${OTP_URI}">Add to authenticator</a></body></html>`);
+      const value = runScrub(dom);
+      assert.doesNotMatch(value.scrubbed, /otpauth:\/\//i, `otpauth URI leaked: ${value.scrubbed}`);
+      assert.match(value.scrubbed, />Add to authenticator<\/a>/, "the link's own label must still survive");
+    });
+
+    it('in an <img src>', () => {
+      const dom = makeDom(`<html><body><img src="${OTP_URI}"></body></html>`);
+      const value = runScrub(dom);
+      assert.doesNotMatch(value.scrubbed, /otpauth:\/\//i, `otpauth URI leaked: ${value.scrubbed}`);
+    });
+
+    it('in a data-* attribute', () => {
+      const dom = makeDom(`<html><body><div data-qr-uri="${OTP_URI}"></div></body></html>`);
+      const value = runScrub(dom);
+      assert.doesNotMatch(value.scrubbed, /otpauth:\/\//i, `otpauth URI leaked: ${value.scrubbed}`);
+    });
+
+    it('in plain visible text', () => {
+      const dom = makeDom(`<html><body><p>Provisioning URI: ${OTP_URI}</p></body></html>`);
+      const value = runScrub(dom);
+      assert.doesNotMatch(value.scrubbed, /otpauth:\/\//i, `otpauth URI leaked: ${value.scrubbed}`);
+    });
+
+    it("in a QR image's alt/title", () => {
+      const dom = makeDom(`<html><body><img src="qr.png" alt="${OTP_URI}" title="${OTP_URI}"></body></html>`);
+      const value = runScrub(dom);
+      assert.doesNotMatch(value.scrubbed, /otpauth:\/\//i, `otpauth URI leaked: ${value.scrubbed}`);
+    });
+  });
+
+  // Round 4 (jc finding 1): jc's own four examples, reproduced verbatim,
+  // for the .html artifact (see markdown.test.mjs for the identical
+  // fixtures run through the .md artifact -- same decision, both ways).
+  describe('shared leaf-or-strong-container gate: identical decisions as markdown.js (jc finding 1)', () => {
+    it('a weak-matched <li> WITH children is kept, not wholesale-blanked', () => {
+      const dom = makeDom('<html><body><ul><li class="mfa-tip"><strong>Tip:</strong> Turn on MFA</li></ul></body></html>');
+      const value = runScrub(dom);
+      assert.match(value.scrubbed, /Turn on MFA/, `kept text wrongly redacted: ${value.scrubbed}`);
+    });
+
+    it('an MkDocs-style weak-matched <h2> WITH children (a headerlink <a>) is kept', () => {
+      const dom = makeDom('<html><body><h2 id="managing-secrets">Managing secrets<a class="headerlink">#</a></h2></body></html>');
+      const value = runScrub(dom);
+      assert.match(value.scrubbed, /Managing secrets/, `kept heading text wrongly redacted: ${value.scrubbed}`);
+    });
+
+    it('<p class="otp-secret">Key: <strong>SEED</strong></p> is now blanked (otp-secret added to STRONG_COMPOUND_PAIRS)', () => {
+      const dom = makeDom('<html><body><p class="otp-secret">Key: <strong>JBSWY3DPEHPK3PXP</strong></p></body></html>');
+      const value = runScrub(dom);
+      assert.doesNotMatch(value.scrubbed, /JBSWY3DPEHPK3PXP/, `seed leaked: ${value.scrubbed}`);
+    });
+
+    it('<div id="mfa-secret"><span>SEED</span></div> is now blanked (mfa-secret added to STRONG_COMPOUND_PAIRS)', () => {
+      const dom = makeDom('<html><body><div id="mfa-secret"><span>SEED12345</span></div></body></html>');
+      const value = runScrub(dom);
+      assert.doesNotMatch(value.scrubbed, /SEED12345/, `seed leaked: ${value.scrubbed}`);
+    });
+  });
+
+  // Round 4 (jc finding 2): a real Prism.js snippet and a
+  // prism-react-renderer (Docusaurus) snippet must keep their code in
+  // clear; a genuine secret still redacts even inside a <pre>/<code>.
+  describe('Prism / prism-react-renderer code samples are not wiped (jc finding 2)', () => {
+    it('a real Prism-highlighted JS snippet survives in clear', () => {
+      const dom = makeDom(
+        '<html><body><pre class="language-javascript"><code class="language-javascript">' +
+        '<span class="token keyword">const</span> x <span class="token operator">=</span> ' +
+        '<span class="token function">fetch</span><span class="token punctuation">(</span>' +
+        '<span class="token string">\'/api\'</span><span class="token punctuation">)</span>' +
+        '<span class="token punctuation">;</span>' +
+        '</code></pre></body></html>'
+      );
+      const value = runScrub(dom);
+      assert.match(value.scrubbed, />const</, `Prism code wrongly redacted: ${value.scrubbed}`);
+      assert.match(value.scrubbed, />fetch</, `Prism code wrongly redacted: ${value.scrubbed}`);
+      assert.doesNotMatch(value.scrubbed, /\[REDACTED\]/, `Prism code wrongly redacted: ${value.scrubbed}`);
+    });
+
+    it('a prism-react-renderer (Docusaurus) snippet, using token-line wrappers, survives in clear', () => {
+      const dom = makeDom(
+        '<html><body><pre class="prism-code"><code>' +
+        '<div class="token-line"><span class="token keyword">const</span> <span class="token plain">x</span></div>' +
+        '<div class="token-line"><span class="token plain">fetch</span><span class="token punctuation">();</span></div>' +
+        '</code></pre></body></html>'
+      );
+      const value = runScrub(dom);
+      assert.match(value.scrubbed, />const</, `prism-react-renderer code wrongly redacted: ${value.scrubbed}`);
+      assert.doesNotMatch(value.scrubbed, /\[REDACTED\]/, `prism-react-renderer code wrongly redacted: ${value.scrubbed}`);
+    });
+
+    it('a secret in <code class="token-value"> still redacts -- only the exact token-line wrapper is exempt', () => {
+      const dom = makeDom('<html><body><code class="token-value">a1b2c3d4e5f6SEKRIT</code></body></html>');
+      const value = runScrub(dom);
+      assert.doesNotMatch(value.scrubbed, /a1b2c3d4e5f6SEKRIT/, `secret leaked: ${value.scrubbed}`);
+    });
+
+    it('a secret in <code class="token-secret"> still redacts -- only the exact token-line wrapper is exempt', () => {
+      const dom = makeDom('<html><body><code class="token-secret">a1b2c3d4e5f6SEKRIT</code></body></html>');
+      const value = runScrub(dom);
+      assert.doesNotMatch(value.scrubbed, /a1b2c3d4e5f6SEKRIT/, `secret leaked: ${value.scrubbed}`);
+    });
+
+    it('a secret in <pre class="token-display"> still redacts -- only the exact token-line wrapper is exempt', () => {
+      const dom = makeDom('<html><body><pre class="token-display">a1b2c3d4e5f6SEKRIT</pre></body></html>');
+      const value = runScrub(dom);
+      assert.doesNotMatch(value.scrubbed, /a1b2c3d4e5f6SEKRIT/, `secret leaked: ${value.scrubbed}`);
+    });
+
+    it('a genuine secret still redacts even inside a <pre>/<code> block (positive control)', () => {
+      const dom = makeDom('<html><body><pre><code class="api-token">ghp_abcdefghijklmnop</code></pre></body></html>');
+      const value = runScrub(dom);
+      assert.doesNotMatch(value.scrubbed, /ghp_abcdefghijklmnop/, `genuine secret leaked: ${value.scrubbed}`);
+    });
+  });
+
+  // Round 4 (jc minor #3): a strong-named container OVER the cap used to
+  // leak its own unnamed children entirely.
+  describe('a strong container OVER the size cap still blanks its short code-like children (jc minor #3)', () => {
+    it('a recovery-codes list with ~2200 chars of guidance text: prose kept, codes blanked', () => {
+      const guidance = 'Store these recovery codes somewhere safe. '.repeat(50); // ~2250 chars
+      const dom = makeDom(
+        '<html><body><div class="recovery-codes">' +
+        `<p>${guidance}</p>` +
+        '<ul><li>abcde-12345</li><li>fghij-67890</li></ul>' +
+        '</div></body></html>'
+      );
+      const value = runScrub(dom);
+      assert.doesNotMatch(value.scrubbed, /abcde-12345/, `recovery code leaked: ${value.scrubbed}`);
+      assert.doesNotMatch(value.scrubbed, /fghij-67890/, `recovery code leaked: ${value.scrubbed}`);
+      assert.match(value.scrubbed, /Store these recovery codes/, `guidance prose wrongly wiped: ${value.scrubbed}`);
+    });
   });
 });
