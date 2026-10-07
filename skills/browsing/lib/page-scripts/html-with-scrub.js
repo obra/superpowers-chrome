@@ -373,6 +373,13 @@ module.exports = `
     ${INERT_CLONE_FN_SRC}
     const clone = __senInertClone(document.documentElement);
 
+    // Snapshot data-sen-secret-marked elements BEFORE the attribute-strip
+    // pass just below removes the very attribute that identifies them --
+    // querying for MARKER_SELECTOR again after that pass would find
+    // nothing. Used below to additionally blank each marked element's
+    // whole subtree, the same treatment a pattern-matched element gets.
+    const markedEls = Array.from(clone.querySelectorAll(MARKER_SELECTOR));
+
     for (const el of clone.querySelectorAll(ATTR_SCRUB_SELECTOR)) {
       el.removeAttribute('value');
       for (const name of el.getAttributeNames()) {
@@ -470,6 +477,18 @@ module.exports = `
       } else if (isStrongCompoundMatch(el)) {
         blankShortLeafDescendants(el);
       }
+    }
+
+    // data-sen-secret-marked elements get the same full-subtree blanking
+    // as a pattern-matched element: this is an opt-in attribute a page we
+    // control can put on a secret-bearing element with no recognizable
+    // shape and no secret-looking id/name/class at all (a generated
+    // password revealed in a plain <div> after a "show password" click is
+    // exactly this case). Using markedEls (snapshotted above, before the
+    // ATTR_SCRUB_SELECTOR pass removed the marker attribute itself) rather
+    // than re-querying MARKER_SELECTOR here.
+    for (const el of markedEls) {
+      blankMatchedSubtree(el);
     }
 
     // outerHTML's two entity-escaping rules: an attribute value escapes &/"/</> and U+00A0; text-node content

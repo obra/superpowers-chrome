@@ -18,6 +18,7 @@ const __dirname = dirname(__filename);
 const require = createRequire(import.meta.url);
 const credentialGuard = require(join(__dirname, "../../skills/browsing/lib/credential-guard.js"));
 const sensitiveUrl = require(join(__dirname, "../../skills/browsing/lib/sensitive-url.js"));
+const capturePause = require(join(__dirname, "../../skills/browsing/lib/capture-pause.js"));
 // capture.js tags a suppressed capture with `suppressedReason` so this
 // layer can show an accurate notice: 'sensitive-url' (the page's URL
 // alone, e.g. a 2FA setup page, regardless of content) gets a different
@@ -46,6 +47,9 @@ export function formatDialogRefusal(error) {
  * credential-shaped content, why there are none.
  */
 export function formatCaptureFiles(actionResult) {
+    if (actionResult.capturePaused) {
+        return [capturePause.CAPTURE_PAUSED_NOTICE];
+    }
     if (actionResult.credentialSuppressed) {
         return [suppressedNoticeFor(actionResult.suppressedReason)];
     }
@@ -68,9 +72,11 @@ export function formatActionResponse(actionResult, actionDescription) {
         // url/pageSize/capturePrefix off a top level where they don't exist.
         const dialogDesc = actionResult.artifacts?.markdown
             || (actionResult.dialog ? `Dialog opened: ${actionResult.dialog.kind}` : 'Dialog opened');
-        const suppressedNotice = actionResult.actionResult?.credentialSuppressed
-            ? `\n\n${suppressedNoticeFor(actionResult.actionResult?.suppressedReason)}`
-            : '';
+        const suppressedNotice = actionResult.actionResult?.capturePaused
+            ? `\n\n${capturePause.CAPTURE_PAUSED_NOTICE}`
+            : actionResult.actionResult?.credentialSuppressed
+                ? `\n\n${suppressedNoticeFor(actionResult.actionResult?.suppressedReason)}`
+                : '';
         return `${actionDescription}\n\nDialog is now open — page is waiting for user input.${suppressedNotice}\n\n${dialogDesc}`;
     }
     const response = [
@@ -112,7 +118,7 @@ export function formatEvalDescription(expression, evalResult) {
  * Format capture response with DOM diff information.
  * When capture is null (action opened a dialog), returns dialog info instead.
  */
-export function formatCaptureResponse(action, details, captureOrNull, dialog, artifacts, credentialSuppressed, suppressedReason) {
+export function formatCaptureResponse(action, details, captureOrNull, dialog, artifacts, credentialSuppressed, suppressedReason, capturePaused) {
     if (!captureOrNull) {
         // Action succeeded but opened a dialog — show dialog info. When the
         // action's dialog was suppressed (its message was credential-shaped),
@@ -124,10 +130,17 @@ export function formatCaptureResponse(action, details, captureOrNull, dialog, ar
         // credential-shaped substring still in `dialogDesc` before it reaches
         // the agent.
         const dialogDesc = artifacts?.markdown || (dialog ? `Dialog opened: ${dialog.kind}` : 'Dialog opened');
-        const suppressedNotice = credentialSuppressed ? `\n\n${suppressedNoticeFor(suppressedReason)}` : '';
+        const suppressedNotice = capturePaused
+            ? `\n\n${capturePause.CAPTURE_PAUSED_NOTICE}`
+            : credentialSuppressed
+                ? `\n\n${suppressedNoticeFor(suppressedReason)}`
+                : '';
         return `${action}: ${details}\n\nDialog is now open — page is waiting for user input.${suppressedNotice}\n\n${dialogDesc}`;
     }
     const capture = captureOrNull;
+    if (capture.capturePaused) {
+        return `${action}: ${details}\n\n${capturePause.CAPTURE_PAUSED_NOTICE}`;
+    }
     if (capture.credentialSuppressed) {
         return `${action}: ${details}
 

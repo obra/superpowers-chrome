@@ -10,6 +10,7 @@ const htmlWithScrubScript = require('./page-scripts/html-with-scrub');
 const { containsCredentialShaped, credentialCaptureAllowed, secretMarkerRefusal } = require('./credential-guard');
 const { pageHasSecretMarker } = require('./secret-marker');
 const { urlLooksSensitive } = require('./sensitive-url');
+const { capturePausedScreenshotRefusal } = require('./capture-pause');
 
 // Size cap for the markdown artifact.
 const MARKDOWN_MAX_CHARS = 50000;
@@ -108,6 +109,29 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
     initializeSession();
     state.captureCounter++;
     return `${String(state.captureCounter).padStart(3, '0')}-${actionType}`;
+  }
+
+  // Pause switch for every automatic capture (see lib/capture-pause.js for
+  // the full rationale). Flips state.capturePaused, which capturePageArtifacts
+  // and captureActionWithDiff check FIRST, before any CDP call -- paused
+  // auto-capture never even reads the page, let alone writes to disk.
+  // screenshotUnlessCredentialShaped (the explicit `screenshot` action's
+  // entry point) refuses outright instead, since an explicit request made
+  // during a paused window is exactly the secret-reveal moment pausing
+  // exists to protect. The flag lives on `state`, so it survives across
+  // actions within this session until resumeCapture runs -- an agent that
+  // forgets to resume simply gets no more captures for the rest of the
+  // session, never a silent leak.
+  function pauseCapture() {
+    state.capturePaused = true;
+  }
+
+  function resumeCapture() {
+    state.capturePaused = false;
+  }
+
+  function isCapturePaused() {
+    return !!state.capturePaused;
   }
 
   // Token-efficient page summary: heading list, interactive-element counts,
@@ -278,6 +302,17 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
   // "Generate") deletes the file after the fact. Returns the saved path,
   // or null when the page was suppressed for either reason.
   async function screenshotUnlessCredentialShaped(tabIndexOrWsUrl, filename, selector = null, fullPage = false) {
+    // Checked first and unconditionally -- including when
+    // SUPERPOWERS_CHROME_ALLOW_CREDENTIAL_CAPTURE=1, which is a separate
+    // escape hatch for a human debugging their own browser, not a reason
+    // to let an explicit screenshot through during a reveal window the
+    // agent itself just opened by calling pause_capture. Every AUTO-CAPTURE
+    // caller of this function (capturePageArtifacts, captureActionWithDiff)
+    // already returns before ever reaching here while paused -- this throw
+    // only fires for the EXPLICIT `screenshot` action (mcp/src/index.ts).
+    if (state.capturePaused) {
+      throw new Error(capturePausedScreenshotRefusal());
+    }
     if (!credentialCaptureAllowed() && urlLooksSensitive(await getPageUrl(tabIndexOrWsUrl))) return null;
     if (credentialCaptureAllowed()) return screenshot(tabIndexOrWsUrl, filename, selector, fullPage);
     if (await pageContainsCredentialShaped(tabIndexOrWsUrl)) return null;
@@ -314,6 +349,22 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
     if (dialogs) {
       const open = dialogs.getOpen(ps.sessionId);
       if (open) {
+        // Paused: dialogs.getOpen() is a lookup against state.dialogs,
+        // already populated by a CDP EVENT handler elsewhere, not a read of
+        // page content -- so a dialog is still reported (its `kind` only)
+        // even while paused. Only the rendered dialog message and the
+        // synthetic artifact FILES below are skipped: a dialog's message is
+        // page/JS-controlled text, exactly the kind of content pause
+        // exists to keep off disk.
+        if (state.capturePaused) {
+          return {
+            capturePrefix: null,
+            sessionDir: state.sessionDir,
+            files: null,
+            dialog: { kind: open.kind },
+            capturePaused: true,
+          };
+        }
         const rendered = renderSyntheticArtifacts(open);
         const prefix = createCapturePrefix(actionType);
         const dir = state.sessionDir;
@@ -358,6 +409,17 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
           dialog: open,
         };
       }
+    }
+
+    // Paused and no dialog open: return without any further CDP call --
+    // no screenshot, no html/markdown/domSummary read, nothing written.
+    if (state.capturePaused) {
+      return {
+        capturePrefix: null,
+        sessionDir: state.sessionDir,
+        files: null,
+        capturePaused: true,
+      };
     }
 
     const prefix = createCapturePrefix(actionType);
@@ -442,6 +504,37 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
     // dialog routing via withDialogAwarenessForSession.
     if (dialogs && dialogs.getOpen(ps.sessionId)) {
       return { actionResult: await actionFn() };
+    }
+
+    // Pause short-circuit: the action itself still runs (pausing capture
+    // never pauses the action) -- only the before/after screenshots, HTML,
+    // diff, and markdown this function would otherwise write are skipped.
+    // dialogs.getOpen() afterward is a lookup against state.dialogs,
+    // already populated by a CDP EVENT handler elsewhere, not a page-content
+    // read, so a dialog that opens mid-action is still reported (its `kind`
+    // only, no rendered message) even while paused -- callers that only
+    // check `!result.capture` to detect a mid-action dialog (TYPE, HOVER,
+    // DRAG_DROP, ... in mcp/src/index.ts) still see it.
+    if (state.capturePaused) {
+      const actionResult = await actionFn();
+      const openAfter = dialogs ? dialogs.getOpen(ps.sessionId) : null;
+      if (openAfter) {
+        return {
+          actionResult,
+          capture: null,
+          dialog: { kind: openAfter.kind },
+          capturePaused: true,
+        };
+      }
+      return {
+        actionResult,
+        capture: {
+          prefix: null,
+          sessionDir: state.sessionDir,
+          files: {},
+          capturePaused: true,
+        },
+      };
     }
 
     const prefix = createCapturePrefix(actionType);
@@ -682,6 +775,7 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
         domSummary: artifacts.domSummary,
         credentialSuppressed: artifacts.credentialSuppressed,
         suppressedReason: artifacts.suppressedReason,
+        capturePaused: artifacts.capturePaused,
         consoleLog: [] // Placeholder
       };
     };
@@ -717,6 +811,7 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
         domSummary: artifacts.domSummary,
         credentialSuppressed: artifacts.credentialSuppressed,
         suppressedReason: artifacts.suppressedReason,
+        capturePaused: artifacts.capturePaused,
         consoleLog: [] // Placeholder
       };
     };
@@ -743,6 +838,7 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
         domSummary: artifacts.domSummary,
         credentialSuppressed: artifacts.credentialSuppressed,
         suppressedReason: artifacts.suppressedReason,
+        capturePaused: artifacts.capturePaused,
         consoleLog: [] // Placeholder
       };
     };
@@ -769,6 +865,7 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
         domSummary: artifacts.domSummary,
         credentialSuppressed: artifacts.credentialSuppressed,
         suppressedReason: artifacts.suppressedReason,
+        capturePaused: artifacts.capturePaused,
         consoleLog: [] // Placeholder
       };
     };
@@ -823,6 +920,7 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
         domSummary: artifacts.domSummary,
         credentialSuppressed: artifacts.credentialSuppressed,
         suppressedReason: artifacts.suppressedReason,
+        capturePaused: artifacts.capturePaused,
         consoleLog: [] // Placeholder
       };
     };
@@ -870,6 +968,9 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
     // give each its own refusal message, without changing that function's
     // existing (heavily tested) null/path return contract.
     getPageUrl,
+    pauseCapture,
+    resumeCapture,
+    isCapturePaused,
   };
 }
 

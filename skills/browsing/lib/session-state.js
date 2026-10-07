@@ -44,6 +44,12 @@ function createState({ host, port } = {}) {
     sessionDir: null,
     captureCounter: 0,
 
+    // Pause switch for automatic captures (see lib/capture-pause.js and
+    // lib/capture.js's pauseCapture/resumeCapture). Lives on this bag, not
+    // a module-level variable, so it survives across actions WITHIN a
+    // session but never leaks between independent sessions.
+    capturePaused: false,
+
     // Chrome process management.
     chromeProcess: null,
     chromeHeadless: true,

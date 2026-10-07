@@ -46,6 +46,7 @@ const chromeLib = require(join(__dirname, "../../skills/browsing/chrome-ws-lib.j
 const credentialGuard = require(join(__dirname, "../../skills/browsing/lib/credential-guard.js"));
 const secretMarker = require(join(__dirname, "../../skills/browsing/lib/secret-marker.js"));
 const sensitiveUrl = require(join(__dirname, "../../skills/browsing/lib/sensitive-url.js"));
+const capturePause = require(join(__dirname, "../../skills/browsing/lib/capture-pause.js"));
 const SERVER_VERSION = require(join(__dirname, "../package.json")).version;
 
 /**
@@ -139,6 +140,12 @@ enum BrowserAction {
   ENABLE_CONSOLE_LOGGING = "enable_console_logging",
   GET_CONSOLE_MESSAGES = "get_console_messages", // payload={since?} (epoch ms; also accepted as a bare epoch-ms number/string)
   CLEAR_CONSOLE_MESSAGES = "clear_console_messages",
+  // Auto-capture control (see lib/capture-pause.js): pause suspends every
+  // automatic capture (DOM/markdown/screenshot/console/dialog artifacts)
+  // for the rest of this session until resume_capture; an explicit
+  // screenshot also refuses while paused. Neither takes a payload.
+  PAUSE_CAPTURE = "pause_capture",
+  RESUME_CAPTURE = "resume_capture",
   // Chrome lifecycle control
   KILL_CHROME = "kill_chrome",
   RESTART_CHROME = "restart_chrome",
@@ -310,7 +317,7 @@ async function executeBrowserAction(params: UseBrowserInput): Promise<string> {
       // When a dialog is open, captureActionWithDiff skips AFTER-capture
       if (!typeResult.capture) {
         const target = selector ? `into ${selector}` : 'into current focus';
-        return formatCaptureResponse('Typed', target, null, typeResult.dialog, typeResult.artifacts, typeResult.credentialSuppressed, typeResult.suppressedReason);
+        return formatCaptureResponse('Typed', target, null, typeResult.dialog, typeResult.artifacts, typeResult.credentialSuppressed, typeResult.suppressedReason, typeResult.capturePaused);
       }
       return formatCaptureResponse(
         'Typed',
@@ -650,7 +657,7 @@ async function executeBrowserAction(params: UseBrowserInput): Promise<string> {
         'hover',
         () => chromeLib.hover(tabIndex, selector)
       );
-      return formatCaptureResponse('Hovered', selector, hoverResult.capture, hoverResult.dialog, hoverResult.artifacts, hoverResult.credentialSuppressed, hoverResult.suppressedReason);
+      return formatCaptureResponse('Hovered', selector, hoverResult.capture, hoverResult.dialog, hoverResult.artifacts, hoverResult.credentialSuppressed, hoverResult.suppressedReason, hoverResult.capturePaused);
     }
 
     case BrowserAction.DRAG_DROP: {
@@ -722,7 +729,7 @@ async function executeBrowserAction(params: UseBrowserInput): Promise<string> {
       const targetDesc = typeof dragTarget === 'object'
         ? `(${dragTarget.x}, ${dragTarget.y})`
         : dragTarget;
-      return formatCaptureResponse('Dragged', `${source} → ${targetDesc}`, dragResult.capture, dragResult.dialog, dragResult.artifacts, dragResult.credentialSuppressed, dragResult.suppressedReason);
+      return formatCaptureResponse('Dragged', `${source} → ${targetDesc}`, dragResult.capture, dragResult.dialog, dragResult.artifacts, dragResult.credentialSuppressed, dragResult.suppressedReason, dragResult.capturePaused);
     }
 
     case BrowserAction.MOUSE_MOVE: {
@@ -815,7 +822,7 @@ async function executeBrowserAction(params: UseBrowserInput): Promise<string> {
         'dblclick',
         () => chromeLib.doubleClick(tabIndex, selector)
       );
-      return formatCaptureResponse('Double-clicked', selector, dblClickResult.capture, dblClickResult.dialog, dblClickResult.artifacts, dblClickResult.credentialSuppressed, dblClickResult.suppressedReason);
+      return formatCaptureResponse('Double-clicked', selector, dblClickResult.capture, dblClickResult.dialog, dblClickResult.artifacts, dblClickResult.credentialSuppressed, dblClickResult.suppressedReason, dblClickResult.capturePaused);
     }
 
     case BrowserAction.RIGHT_CLICK: {
@@ -828,7 +835,7 @@ async function executeBrowserAction(params: UseBrowserInput): Promise<string> {
         'rightclick',
         () => chromeLib.rightClick(tabIndex, selector)
       );
-      return formatCaptureResponse('Right-clicked', selector, rightClickResult.capture, rightClickResult.dialog, rightClickResult.artifacts, rightClickResult.credentialSuppressed, rightClickResult.suppressedReason);
+      return formatCaptureResponse('Right-clicked', selector, rightClickResult.capture, rightClickResult.dialog, rightClickResult.artifacts, rightClickResult.credentialSuppressed, rightClickResult.suppressedReason, rightClickResult.capturePaused);
     }
 
     case BrowserAction.FILE_UPLOAD: {
@@ -861,7 +868,8 @@ async function executeBrowserAction(params: UseBrowserInput): Promise<string> {
         uploadResult.dialog,
         uploadResult.artifacts,
         uploadResult.credentialSuppressed,
-        uploadResult.suppressedReason
+        uploadResult.suppressedReason,
+        uploadResult.capturePaused
       );
     }
 
@@ -888,7 +896,8 @@ async function executeBrowserAction(params: UseBrowserInput): Promise<string> {
         keyResult.dialog,
         keyResult.artifacts,
         keyResult.credentialSuppressed,
-        keyResult.suppressedReason
+        keyResult.suppressedReason,
+        keyResult.capturePaused
       );
     }
 
@@ -957,6 +966,16 @@ async function executeBrowserAction(params: UseBrowserInput): Promise<string> {
     case BrowserAction.CLEAR_CONSOLE_MESSAGES: {
       await chromeLib.clearConsoleMessages(tabIndex);
       return `Console messages cleared`;
+    }
+
+    case BrowserAction.PAUSE_CAPTURE: {
+      chromeLib.pauseCapture();
+      return capturePause.CAPTURE_PAUSED_NOTICE;
+    }
+
+    case BrowserAction.RESUME_CAPTURE: {
+      chromeLib.resumeCapture();
+      return 'Capture resumed: automatic DOM/markdown/screenshot/console/dialog captures are back on.';
     }
 
     case BrowserAction.KILL_CHROME: {
@@ -1035,6 +1054,7 @@ show_browser, hide_browser, browser_mode → Toggle headless/headed mode
 set_viewport, clear_viewport, get_viewport → Device emulation (mobile/tablet/desktop)
 clear_cookies → Clear all browser cookies
 set_profile, get_profile → Manage Chrome profiles
+pause_capture, resume_capture → Stop/restart automatic captures (use around a secret reveal)
 kill_chrome, restart_chrome → Chrome lifecycle control (recovery)
 
 ## Schema: 4 parameters
@@ -1147,8 +1167,14 @@ Every DOM action auto-captures to the session dir:
 Files use sequential prefixes: 001-navigate, 002-click, etc.
 Prefer reading these files to using 'extract' or 'screenshot' whenever possible.
 
+## Capture Pause
+pause_capture: {"action": "pause_capture"} → turn off every automatic capture (DOM/markdown/screenshot/console/dialog artifacts) for the rest of this session
+resume_capture: {"action": "resume_capture"} → turn automatic captures back on
+
+Use this around a step that reveals a secret with no recognizable shape and no secret-looking id/name/class — a "show password" toggle, a generated-password dialog, backup/recovery codes, a TOTP seed — where neither the token-shape scan nor the data-sen-secret marker would catch it. pause_capture, do the reveal, read the value through the credential broker, then resume_capture once it's off-screen. Every following action's response says capture is paused, so forgetting to resume is visible rather than silent; capture simply stays off for the rest of the session (it does NOT auto-resume on navigation — a same-origin route change can still carry the secret forward). While paused, screenshot refuses outright (an explicit shot could write the exact secret you paused to hide); extract never wrote to disk in the first place, so pausing does not change it. The action itself (click, type, eval, ...) still runs while paused — only the auto-capture artifacts are skipped.
+
 ## Credential-Shaped Pages
-If a page shows credential-shaped content (Slack/GitHub/1Password tokens, otpauth:// seeds, or any element with a data-sen-secret attribute), auto-capture for that action writes no files and returns only metadata with a "⚠️ Page shows credential-shaped content" line; screenshot refuses; token-shaped substrings (not the data-sen-secret marker itself, which has no substring to redact) are replaced by [REDACTED credential-shaped] everywhere else. eval refuses outright — with no value-blind exception — while ANY element on the page carries data-sen-secret, checked live at the moment of the call (a point check that does not remember a page was ever marked). extract and attr instead read off an inert clone with data-sen-secret content removed, or refuse if the resolved element OR ANY ANCESTOR of it (through shadow-root hosts) is marked; markup inside an iframe's srcdoc attribute is not stripped (extract html and attr srcdoc return it verbatim). The marker scan covers the top document, open shadow roots and same-origin iframe/frame/object/embed. set_attr is a separate write-only action (see above) that is NOT gated by any of this — it takes no caller JavaScript; its ok/no-match/refused responses act as a limited prefix oracle over page content — except that it refuses to touch an element already marked data-sen-secret unless the write IS the (re-)marking itself. Its attribute name must be exactly "data-sen-nonce" or "data-sen-secret" (no other data-*/aria-* name — arbitrary data-*/aria-* attributes are routinely wired to page behavior, e.g. data-action/aria-controls, so they are not assumed inert): use "data-sen-nonce" to write a broker nonce onto an unmarked sibling element on a page that already has a captured secret, and "data-sen-secret" to mark every matching element (hidden duplicates included) yourself as soon as the action that revealed it returns — capture files written before the mark keep the value and are not deleted. Marking only ever tightens what eval/extract/attr will refuse, never loosens or removes an existing mark. Use a credential broker to capture secret values. THIS IS NOT A SECURITY BOUNDARY: eval runs in the same JS realm as a marked element and can already read/fetch/stash its value or erase the marker itself; don't mark then eval on a page expecting the value to stay contained. SUPERPOWERS_CHROME_ALLOW_CREDENTIAL_CAPTURE=1 disables all of this.
+If a page shows a token-shaped credential in clear (Slack/GitHub/1Password tokens, otpauth:// seeds), auto-capture for that action writes no files and returns only metadata with a "⚠️ Page shows credential-shaped content" line; screenshot refuses; token-shaped substrings are replaced by [REDACTED credential-shaped] everywhere else. An element carrying data-sen-secret is handled differently: auto-capture still writes that action's .html/.md, but the marked element and its ENTIRE SUBTREE are blanked in both — the same full-container blanking a secret-looking id/name/class gets (see "Auto-Capture System" above) — so the rest of the page's capture still reaches disk instead of the whole action being suppressed. screenshot still refuses outright on a marked page regardless (pixels can't be selectively redacted), and so does eval refuse outright — with no value-blind exception — while ANY element on the page carries data-sen-secret, checked live at the moment of the call (a point check that does not remember a page was ever marked). extract and attr instead read off an inert clone with data-sen-secret content removed, or refuse if the resolved element OR ANY ANCESTOR of it (through shadow-root hosts) is marked; markup inside an iframe's srcdoc attribute is not stripped (extract html and attr srcdoc return it verbatim). The marker scan covers the top document, open shadow roots and same-origin iframe/frame/object/embed. set_attr is a separate write-only action (see above) that is NOT gated by any of this — it takes no caller JavaScript; its ok/no-match/refused responses act as a limited prefix oracle over page content — except that it refuses to touch an element already marked data-sen-secret unless the write IS the (re-)marking itself. Its attribute name must be exactly "data-sen-nonce" or "data-sen-secret" (no other data-*/aria-* name — arbitrary data-*/aria-* attributes are routinely wired to page behavior, e.g. data-action/aria-controls, so they are not assumed inert): use "data-sen-nonce" to write a broker nonce onto an unmarked sibling element on a page that already has a captured secret, and "data-sen-secret" to mark every matching element (hidden duplicates included) yourself as soon as the action that revealed it returns — capture files written before the mark keep the value and are not deleted. Marking only ever tightens what eval/extract/attr will refuse, never loosens or removes an existing mark. Use a credential broker to capture secret values. THIS IS NOT A SECURITY BOUNDARY: eval runs in the same JS realm as a marked element and can already read/fetch/stash its value or erase the marker itself; don't mark then eval on a page expecting the value to stay contained. SUPERPOWERS_CHROME_ALLOW_CREDENTIAL_CAPTURE=1 disables all of this.
 
 ## Selectors
 CSS: "button.submit", "#email", ".form input[name=password]"

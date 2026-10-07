@@ -34,6 +34,8 @@ Every DOM action (navigate, click, type, select, eval, keyboard_press, hover, dr
 
 Files are saved to the session directory with sequential prefixes (001-navigate, 002-click, etc.). You must check these before using extract or screenshot actions.
 
+**Pause switch (`pause_capture`/`resume_capture`):** the shape/marker/URL defenses below only catch a secret with a recognized shape, an opt-in `data-sen-secret` mark, or a known-sensitive URL. A page that reveals a secret a different way — a "show password"/"reveal" click that renders the plaintext into an ordinary, unremarkable element (no secret-looking id/name/class, no sensitive URL) — slips past all three, and the very next auto-capture writes it to disk. Call `pause_capture` immediately BEFORE any action you expect to reveal a secret this way; every auto-capture (DOM/markdown/screenshot/console/dialog) is skipped — no CDP call is even made — until you call `resume_capture`. The action that triggers the reveal still runs normally; only its capture is skipped. An explicit `screenshot` call also refuses outright while paused. Pause state lives on the session and persists across actions until you resume: forgetting to call `resume_capture` just means no more captures for the rest of the session, never a silent leak. Use the credential broker to capture the value itself while paused; resume as soon as the secret is off-screen.
+
 **Credential-shaped pages:** when a page shows a token or secret (Slack `xoxb-`/`xapp-`, GitHub `ghp_`/`github_pat_`, 1Password `ops_`/`A3-` keys, `otpauth://` seeds, or any element marked `data-sen-secret`), no files are written for that action and the response says `⚠️ Page shows credential-shaped content; auto-capture and DOM output suppressed.` with only metadata. Token-shaped values in `extract`/`eval` output are replaced by `[REDACTED credential-shaped]`, and `screenshot` refuses. Capture secrets with a credential broker. On a token-shaped page, use `eval` only for value-blind queries (e.g. "is the token field present?"). On a page with any `data-sen-secret` element, `eval` refuses outright, and `extract`/`attr` refuse for the marked element or strip it from HTML/markdown output. The marker scan covers the top document, open shadow roots, and same-origin `iframe`/`frame`/`object`/`embed`; it does not see closed shadow roots or cross-origin frames. Markup inside an `<iframe srcdoc="…">` attribute is not stripped: `extract` html and `attr srcdoc` return it verbatim.
 
 **When to mark a secret:** mark its element with `set_attr` (`data-sen-secret`) as soon as the action that revealed it returns, before any other action on that page, then capture the value with the credential broker. Marking only affects later actions. The capture files the revealing action already wrote (e.g. `003-click.html`/`.md`) still hold the value and are not deleted, so don't read them back. This is an accident guard for a cooperating agent, not a security boundary. `SUPERPOWERS_CHROME_ALLOW_CREDENTIAL_CAPTURE=1` turns all of this off.
@@ -238,6 +240,17 @@ Capture browser console output for the active tab. Buffer is keyed by the page s
 
 - **clear_console_messages**: Reset the buffer
   - Example: `{action: "clear_console_messages"}`
+
+### Capture Control
+See "Pause switch" under Auto-Capture above for the full rationale.
+
+- **pause_capture**: Suspend every automatic capture (DOM/markdown/screenshot/console/dialog) for the rest of this session
+  - Example: `{action: "pause_capture"}`
+  - Call this immediately BEFORE an action you expect to reveal a secret with no recognized shape, marker, or sensitive URL (e.g. a "show password" click). The action still runs; only its capture is skipped. An explicit `screenshot` call also refuses while paused.
+
+- **resume_capture**: Restore normal auto-capture
+  - Example: `{action: "resume_capture"}`
+  - Call this as soon as the secret is off-screen. Pause state persists across actions until you call this.
 
 ### Dialog Handling
 Native dialogs (JS alert/confirm/prompt, beforeunload, HTTP basic-auth, permission prompts, device choosers) pause the page. While a dialog is open, page-targeted actions (`extract`, `click`, `eval`, etc.) return a refusal whose text contains `Page is behind a dialog` and lists the available `dialog::*` selectors.

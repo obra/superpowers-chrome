@@ -4,6 +4,19 @@ All notable changes to the superpowers-chrome MCP project.
 
 ## [Unreleased]
 
+## [3.1.0] - 2026-10-07 - Pause switch for an unrecognized reveal; data-sen-secret-marked subtree text redacted too
+
+### Added
+- `pause_capture`/`resume_capture` actions: a worker-controlled switch that suspends every automatic capture (DOM/markdown/screenshot/console-log/synthetic-dialog artifacts) for the rest of the session. Closes the gap left by #61's default secret-pattern detection and the `data-sen-secret` marker: both require a recognizable shape, id/class, or an explicit mark, and neither helps a secret revealed into a plain, unremarkable element with none of those (e.g. a "show password"/"reveal" click, or the Google Admin console's reset-password dialog rendering the generated password into a bare `div`). The action that triggers the reveal still runs normally while paused; only its capture is skipped, with no CDP call made to read the page at all. An explicit `screenshot` action also refuses outright while paused instead of silently taking and discarding the shot. Pause state lives on the session and persists across actions until `resume_capture` is called.
+
+### Security
+- `data-sen-secret`-marked elements: `page-scripts/html-with-scrub.js` and `page-scripts/markdown.js` now redact a marked element's full text subtree (not just its own `value`/`data-*`/`aria-*` attributes) the same way a pattern-matched secret container is wholesale-blanked, bringing an element marked by a page we control (or via `set_attr`) in line with pattern-matched secrets. In the current auto-capture pipeline the whole-page credential-shape check already suppresses the entire capture whenever a marker is present in the top-level document, so this mainly closes the gap for any caller that reads these page-scripts directly rather than through `capture.js`'s suppression gate.
+
+### Tests
+- `test/lib/capture-pause.test.mjs`: pausing skips the HTML/markdown/screenshot/console-log capture, a dialog that is open (or opens mid-action) while paused still reports its `kind` but writes no synthetic artifact, pausing persists across multiple actions with no `resume_capture` in between, `resume_capture` restores normal capture on the next action, and an explicit `screenshot` refuses outright while paused.
+- `test/lib/navigation.test.mjs` and the `clickWithCapture`-wrapper coverage in `test/lib/capture-pause.test.mjs`: `navigate`/`click`/`fill`/`select`/`eval`/`set_attr` each forward `capturePageArtifacts`' `capturePaused` flag onto their own merged result, so the MCP response layer shows the pause notice instead of a bogus `???.html/.md/.png` file list.
+- `test/lib/page-scripts/html-with-scrub.test.mjs` and `test/lib/page-scripts/markdown.test.mjs`: a `data-sen-secret`-marked element's own text, and its descendants' text, are redacted in both artifacts; an unmarked sibling is left untouched.
+
 ## [3.0.11] - 2026-10-06 - Default redaction for secrets present at page load; known-sensitive URLs suppressed outright
 
 ### Security

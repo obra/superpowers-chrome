@@ -166,6 +166,29 @@ describe('navigation', () => {
     assert.equal(msgs.length, 0, 'navigate does not write to consoleMessages (console-logging.js is sole writer)');
   });
 
+  it('navigate forwards capturePageArtifacts\' capturePaused flag onto its own return value (pause_capture while navigating)', async () => {
+    const state = { consoleMessages: new Map(), dialogs: new Map() };
+    const ps = makePageSessionFake({ 'Page.navigate': () => ({ frameId: 'F1' }) });
+    const capturePageArtifacts = async () => ({
+      capturePrefix: null,
+      sessionDir: '/tmp/whatever',
+      files: null,
+      capturePaused: true,
+    });
+    const evaluate = async () => undefined;
+    const getPageSession = async () => ps;
+    const { navigate } = attachNavigation({ state, getPageSession, capturePageArtifacts, evaluate });
+
+    setImmediate(() => {
+      ps.injectEvent({ method: 'Page.frameNavigated', params: { frame: { id: 'F1' } } });
+      ps.injectEvent({ method: 'Page.loadEventFired', params: { timestamp: 1 } });
+    });
+
+    const result = await navigate(0, 'https://example.com', /* autoCapture= */ true);
+    assert.equal(result.capturePaused, true, 'navigate must forward capturePageArtifacts\' capturePaused flag');
+    assert.equal(result.files, null);
+  });
+
   it('console messages NOT captured when autoCapture is false', async () => {
     const { navigate, ps, state } = setup(
       { 'Page.navigate': () => ({ frameId: 'F1' }) },
