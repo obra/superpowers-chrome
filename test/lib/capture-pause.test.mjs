@@ -73,7 +73,10 @@ function setup({ dialogOpen = null } = {}) {
     screenshot: async (_tab, file) => { calls.screenshot++; fs.writeFileSync(file, 'PNG'); return file; },
     actions: {
       click: async () => ({ clicked: true }),
+      fill: async () => ({ filled: true }),
+      selectOption: async () => ({ selected: true }),
       evaluate: async () => 42,
+      setAttribute: async () => ({ set: true }),
     },
     dialogs,
   });
@@ -190,26 +193,43 @@ describe('pause_capture / resume_capture', () => {
     });
   });
 
-  describe('clickWithCapture (and the other *WithCapture wrappers) while paused', () => {
-    it('propagates capturePaused:true onto the merged result, so formatCaptureFiles shows the pause notice instead of a bogus ???.html/.md/.png file list', async () => {
-      const { pauseCapture, clickWithCapture, state, calls } = setup();
-      pauseCapture();
-      const result = await clickWithCapture(0, '#button');
+  // jc (PR #64 review, finding 4): the CHANGELOG/PR body claimed this is
+  // tested for fill/select/eval/set_attr too, but only clickWithCapture was
+  // actually exercised — removing the forwarding line from any of the
+  // other four left the suite green. Parametrized over all five *WithCapture
+  // wrappers so that claim is actually true.
+  const WRAPPERS = {
+    clickWithCapture: (api) => api.clickWithCapture(0, '#button'),
+    fillWithCapture: (api) => api.fillWithCapture(0, '#input', 'value'),
+    selectOptionWithCapture: (api) => api.selectOptionWithCapture(0, '#select', 'opt1'),
+    evaluateWithCapture: (api) => api.evaluateWithCapture(0, '1+1'),
+    setAttributeWithCapture: (api) => api.setAttributeWithCapture(0, '#el', 'data-sen-nonce', 'n'),
+  };
 
-      assert.equal(result.capturePaused, true, "clickWithCapture must forward capturePageArtifacts' capturePaused flag");
-      assert.equal(result.files, null);
-      assert.deepEqual(sessionFiles(state), []);
-      assert.equal(calls.screenshot, 0);
-    });
+  describe('every *WithCapture wrapper propagates capturePaused while paused', () => {
+    for (const [name, call] of Object.entries(WRAPPERS)) {
+      describe(name, () => {
+        it('propagates capturePaused:true onto the merged result, so formatCaptureFiles shows the pause notice instead of a bogus ???.html/.md/.png file list', async () => {
+          const api = setup();
+          api.pauseCapture();
+          const result = await call(api);
 
-    it('takes effect again once resumed', async () => {
-      const { pauseCapture, resumeCapture, clickWithCapture } = setup();
-      pauseCapture();
-      resumeCapture();
-      const result = await clickWithCapture(0, '#button');
-      assert.ok(!result.capturePaused);
-      assert.ok(result.files);
-    });
+          assert.equal(result.capturePaused, true, `${name} must forward capturePageArtifacts' capturePaused flag`);
+          assert.equal(result.files, null);
+          assert.deepEqual(sessionFiles(api.state), []);
+          assert.equal(api.calls.screenshot, 0);
+        });
+
+        it('takes effect again once resumed', async () => {
+          const api = setup();
+          api.pauseCapture();
+          api.resumeCapture();
+          const result = await call(api);
+          assert.ok(!result.capturePaused);
+          assert.ok(result.files);
+        });
+      });
+    }
   });
 
   describe('explicit screenshot while paused', () => {

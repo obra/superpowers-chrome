@@ -171,7 +171,16 @@ module.exports = `
         continue;
       }
 
-      if (tag === 'a') {
+      // jc (PR #64 review, finding 3): the "link's own visible text is a
+      // UI label" rationale below is about the PATTERN-match case (a
+      // secret-looking id/class on a link whose text and href were never
+      // the secret, e.g. a copy-seed button rendered as an <a>). It does
+      // not hold for an explicit data-sen-secret opt-in mark, so a marked
+      // <a> skips this branch entirely and falls through to the general
+      // __senRedactedText path below, which honors the mark (via
+      // __senShouldRedact's __senHasMarkerOrAncestor check) and renders
+      // '[REDACTED]' instead of a clear [text](href) link.
+      if (tag === 'a' && !__senHasMarkerOrAncestor(el)) {
         // Never pattern-redacted -- a link's own visible text is a UI
         // label, not the secret it operates on, even when it or an
         // ancestor matches (see module comment).

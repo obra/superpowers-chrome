@@ -72,19 +72,31 @@ export function formatActionResponse(actionResult, actionDescription) {
         // url/pageSize/capturePrefix off a top level where they don't exist.
         const dialogDesc = actionResult.artifacts?.markdown
             || (actionResult.dialog ? `Dialog opened: ${actionResult.dialog.kind}` : 'Dialog opened');
-        const suppressedNotice = actionResult.actionResult?.capturePaused
+        // capturePaused is set in two independent places for this wrapper: the
+        // wrapper's OWN top level (dialogs.js's dialogResultWhilePaused, set
+        // unconditionally whenever state.capturePaused is true) and the INNER
+        // actionResult (clickWithCapture et al forward capturePageArtifacts'
+        // own capturePaused when ITS dialog-aware branch also sees the same
+        // open dialog). Check both rather than relying on either alone.
+        const suppressedNotice = (actionResult.capturePaused || actionResult.actionResult?.capturePaused)
             ? `\n\n${capturePause.CAPTURE_PAUSED_NOTICE}`
             : actionResult.actionResult?.credentialSuppressed
                 ? `\n\n${suppressedNoticeFor(actionResult.actionResult?.suppressedReason)}`
                 : '';
         return `${actionDescription}\n\nDialog is now open — page is waiting for user input.${suppressedNotice}\n\n${dialogDesc}`;
     }
-    const response = [
-        `${actionDescription}`,
-        `Current URL: ${actionResult.url || 'unknown'}`,
-        `Size: ${actionResult.pageSize?.width}×${actionResult.pageSize?.height}`,
-        ...formatCaptureFiles(actionResult)
-    ];
+    // While paused, capturePageArtifacts never read the page at all, so there
+    // is no real url/pageSize to report — showing "Current URL: unknown" /
+    // "Size: undefined×undefined" would just be noise, not a leak, but it's
+    // sloppy and worth skipping rather than printing placeholder values.
+    const response = actionResult.capturePaused
+        ? [`${actionDescription}`, ...formatCaptureFiles(actionResult)]
+        : [
+            `${actionDescription}`,
+            `Current URL: ${actionResult.url || 'unknown'}`,
+            `Size: ${actionResult.pageSize?.width}×${actionResult.pageSize?.height}`,
+            ...formatCaptureFiles(actionResult)
+        ];
     // Add console messages if any
     if (actionResult.consoleLog && actionResult.consoleLog.length > 0) {
         response.push(`Console: ${actionResult.consoleLog.length} messages`);

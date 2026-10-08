@@ -479,6 +479,34 @@ module.exports = `
       }
     }
 
+    // A marker-specific variant of blankMatchedSubtree: an explicit
+    // data-sen-secret mark is a stronger, opt-in signal than a pattern
+    // match, so (jc, PR #64 review, finding 3) it does NOT get the
+    // PATTERN_SKIP_TAGS exemption that keeps a <button>/<a>'s own text
+    // (and, for <a>, its href) out of pattern-match blanking -- that
+    // exemption exists because a pattern match can hit a UI label ("Copy"
+    // on a copy-seed button) that was never the secret itself, which isn't
+    // a risk an explicit opt-in mark runs. Also strips href/title, which
+    // the generic attribute-scrub pass above only does for data-*/aria-*.
+    function blankMarkedSubtree(node) {
+      if (node.nodeType === 1) {
+        node.removeAttribute('value');
+        node.removeAttribute('href');
+        node.removeAttribute('title');
+        for (const name of node.getAttributeNames()) {
+          if (name.indexOf('data-') === 0 || name.indexOf('aria-') === 0) node.removeAttribute(name);
+        }
+      }
+      for (const child of Array.from(node.childNodes)) {
+        if (child.nodeType === 3 && child.textContent && child.textContent.trim()) {
+          child.textContent = '[REDACTED]';
+        }
+      }
+      for (const child of Array.from(node.children || [])) {
+        blankMarkedSubtree(child);
+      }
+    }
+
     // data-sen-secret-marked elements get the same full-subtree blanking
     // as a pattern-matched element: this is an opt-in attribute a page we
     // control can put on a secret-bearing element with no recognizable
@@ -488,7 +516,7 @@ module.exports = `
     // ATTR_SCRUB_SELECTOR pass removed the marker attribute itself) rather
     // than re-querying MARKER_SELECTOR here.
     for (const el of markedEls) {
-      blankMatchedSubtree(el);
+      blankMarkedSubtree(el);
     }
 
     // outerHTML's two entity-escaping rules: an attribute value escapes &/"/</> and U+00A0; text-node content

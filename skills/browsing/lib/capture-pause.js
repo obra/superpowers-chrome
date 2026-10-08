@@ -30,6 +30,18 @@
  * with the value still in a toast). An agent-driven resume_capture is the
  * one signal that actually means "the secret is gone now" — the pause
  * is already fail-safe (captures just stay off) if that call is forgotten.
+ *
+ * Caveat (jc, PR #64 review, finding 5): state.capturePaused lives on the
+ * in-memory per-session state bag (session-state.js), not anywhere
+ * persisted — it survives restart_chrome (same process, same state
+ * object) but NOT the MCP SERVER process restarting and re-adopting an
+ * already-running Chrome (chrome-process.js's orphan-adoption path, or
+ * meta.json). A server restart always comes back with a fresh
+ * capturePaused:false, even if the revealed secret is still sitting on
+ * the readopted page. This is fail-OPEN for that one scenario — the only
+ * signal is that the pause notice stops appearing in responses — and is
+ * a documented gap (see SKILL.md/README.md), not something this module
+ * works around.
  */
 
 const CAPTURE_PAUSED_NOTICE =

@@ -77,9 +77,12 @@ describe('dialogs wiring — withDialogAwareness integration', () => {
 // Helper: build a dialogs instance with a staged alert dialog on the given wsUrl.
 // Uses attachToPageSession with a fake page session so dialog state is stored under
 // a sessionId; registers the targetId→sessionId mapping so getOpen(wsUrl) works.
-async function stageAlertDialog(wsUrl) {
+// `dialogsInstance` lets a caller stage the dialog against an EXISTING session's
+// own `dialogs` handle (so it shares that session's `state`, including
+// `capturePaused`) instead of a throwaway standalone instance.
+async function stageAlertDialog(wsUrl, dialogsInstance, message = 'unit-test-alert') {
   const state = { dialogs: new Map() };
-  const dialogs = attachDialogs({ state });
+  const dialogs = dialogsInstance || attachDialogs({ state });
 
   // Extract targetId from wsUrl so attachToPageSession can register the mapping.
   const m = /\/devtools\/page\/([^/]+)$/.exec(wsUrl);
@@ -100,7 +103,7 @@ async function stageAlertDialog(wsUrl) {
     method: 'Page.javascriptDialogOpening',
     params: {
       type: 'alert',
-      message: 'unit-test-alert',
+      message,
       url: 'https://example.com/',
       hasBrowserHandler: false,
       defaultPrompt: '',
@@ -236,5 +239,61 @@ describe('session-boundary dialog gate — PAGE_TARGET_SESSION_METHODS', () => {
 
     assert.ok(!PAGE_TARGET_SESSION_METHODS.has('captureActionWithDiff'),
       'captureActionWithDiff excluded from set so its actionType arg never triggers the gate');
+  });
+});
+
+describe('session-boundary dialog gate (wrapWithDialogGate) is pause-aware', () => {
+  const SECRET = 'Sup3rSecretPw-from-gate';
+
+  it('throws DialogRefusedError with the FULL message when not paused (sanity, unchanged behavior)', async () => {
+    const session = createSession();
+    const wsUrl = 'ws://127.0.0.1:9222/devtools/page/gate-test-1';
+    await stageAlertDialog(wsUrl, session.dialogs, 'Your new password is ' + SECRET);
+
+    await assert.rejects(
+      () => session.click(wsUrl, '#button'),
+      (err) => {
+        assert.equal(err.refused, true);
+        assert.equal(err.dialog.kind, 'alert');
+        assert.ok(err.artifacts.markdown.includes(SECRET), 'unpaused: message should still render (unchanged behavior)');
+        return true;
+      },
+    );
+  });
+
+  it('throws DialogRefusedError with dialog:{kind} only and artifacts:null while capturePaused is set', async () => {
+    const session = createSession();
+    const wsUrl = 'ws://127.0.0.1:9222/devtools/page/gate-test-2';
+    await stageAlertDialog(wsUrl, session.dialogs, 'Your new password is ' + SECRET);
+    session.state.capturePaused = true;
+
+    await assert.rejects(
+      () => session.click(wsUrl, '#button'),
+      (err) => {
+        assert.equal(err.refused, true);
+        assert.deepEqual(err.dialog, { kind: 'alert' }, 'dialog must be narrowed to {kind} only');
+        assert.equal(err.artifacts, null, 'artifacts must be null, not a rendered string');
+        assert.ok(!JSON.stringify({ dialog: err.dialog, artifacts: err.artifacts }).includes(SECRET),
+          'secret must not leak into the thrown error dialog/artifacts');
+        return true;
+      },
+    );
+  });
+
+  it('this gate wraps clickWithCapture too (not just the raw click), so the capture-wrapper path is also covered', async () => {
+    const session = createSession();
+    const wsUrl = 'ws://127.0.0.1:9222/devtools/page/gate-test-3';
+    await stageAlertDialog(wsUrl, session.dialogs, 'Your new password is ' + SECRET);
+    session.state.capturePaused = true;
+
+    await assert.rejects(
+      () => session.clickWithCapture(wsUrl, '#button'),
+      (err) => {
+        assert.equal(err.refused, true);
+        assert.deepEqual(err.dialog, { kind: 'alert' });
+        assert.equal(err.artifacts, null);
+        return true;
+      },
+    );
   });
 });
