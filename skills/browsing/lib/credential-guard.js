@@ -45,6 +45,8 @@ const TOKEN_PATTERNS = [
   'otpauth://[^\\s"\'<>]*[?&;]secret=[A-Za-z0-9=]{16,}',
 ];
 
+const { codeListDetected } = require('./code-list-detector');
+
 // Page marker: an element attribute named exactly data-sen-secret. Single
 // source of truth for the literal — secret-marker.js, extraction.js,
 // set-attribute.js, capture.js and mcp/src/index.ts all import this rather
@@ -99,6 +101,50 @@ function secretMarkerRefusal(action) {
   );
 }
 
+// PRI-3360: the element-scoped counterpart to secretMarkerRefusal above.
+// extract/attr with a real element selector (not the whole page -- see
+// sensitive-url.js's isWholePageSelector/pageTextReadRefused for that
+// case) are allowed to run, but the resolved text is checked HERE, inside
+// the tool, before anything is returned to the caller. A match (either a
+// token shape or the code-list density heuristic) refuses the whole read
+// outright rather than redacting it -- redacting would mean the caller
+// already received a result built from a secret the tool read; refusing
+// means it never leaves this function.
+//
+// This function does not itself re-check credentialCaptureAllowed() --
+// same as throwIfSecretMarked's marker check in extraction.js, its only
+// callers (extraction.js's extractText/getSanitizedHtml/getAttribute) only
+// reach this call at all on the guarded (non-override) code path; the
+// override's branch in each of those functions reads the raw, unchecked
+// value directly and never calls this. That keeps PRI-3360's new check
+// subject to the exact same operator-only escape hatch as every other
+// guard in this codebase, which is the correct scope for it: the escape
+// hatch was confirmed (see sensitive-url.js's pageTextReadRefused doc) to
+// be unreachable from anything an agent controls at runtime, so there is
+// no "worker wave this through for itself" risk in also letting it cover
+// this check.
+function elementReadRefusal(action, selector) {
+  return (
+    `${action} refused: the content read from ${JSON.stringify(selector)} looks credential- or code-shaped. ` +
+    'Target a different, narrower element instead -- e.g. a button, status message, or error-banner selector ' +
+    'that does not contain the secret itself. Use the credential broker to capture the value you actually need.'
+  );
+}
+
+// Throws elementReadRefusal(action, selector) when `text` is credential-
+// shaped (containsCredentialShaped) or looks like a dense list of secret
+// codes (codeListDetected); otherwise returns `text` unchanged. Call this
+// on the RESULT of an element-scoped extract/attr read, before returning
+// it to the caller. A non-string value (null/undefined -- selector didn't
+// resolve) passes through untouched; there is nothing to scan.
+function refuseIfTextLeaksSecret(text, action, selector) {
+  if (typeof text !== 'string' || text === '') return text;
+  if (containsCredentialShaped(text) || codeListDetected(text)) {
+    throw new Error(elementReadRefusal(action, selector));
+  }
+  return text;
+}
+
 module.exports = {
   MARKER_ATTR,
   containsCredentialShaped,
@@ -107,5 +153,7 @@ module.exports = {
   CREDENTIAL_ADVICE,
   CREDENTIAL_SUPPRESSED_NOTICE,
   secretMarkerRefusal,
+  elementReadRefusal,
+  refuseIfTextLeaksSecret,
   REDACTION,
 };

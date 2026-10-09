@@ -208,3 +208,97 @@ describe('sensitive-url', () => {
     assert.equal(urlLooksSensitive('https://example.test/dashboard'), false);
   });
 });
+
+// PRI-3360: isWholePageSelector / pageTextReadRefused -- the whole-page
+// text-read gate for eval/extract/attr.
+describe('isWholePageSelector', () => {
+  const { isWholePageSelector } = require('../../skills/browsing/lib/sensitive-url.js');
+
+  it('treats no selector at all as whole-page', () => {
+    assert.equal(isWholePageSelector(undefined), true);
+    assert.equal(isWholePageSelector(null), true);
+    assert.equal(isWholePageSelector(''), true);
+  });
+
+  it('treats body/html (any case, trimmed) as whole-page', () => {
+    assert.equal(isWholePageSelector('body'), true);
+    assert.equal(isWholePageSelector('BODY'), true);
+    assert.equal(isWholePageSelector('  html  '), true);
+    assert.equal(isWholePageSelector('Html'), true);
+  });
+
+  it('treats any real element selector as element-scoped, not whole-page', () => {
+    assert.equal(isWholePageSelector('#app'), false);
+    assert.equal(isWholePageSelector('.error-banner'), false);
+    assert.equal(isWholePageSelector('button[type=submit]'), false);
+    assert.equal(isWholePageSelector('body.main'), false); // not EXACTLY "body"
+  });
+});
+
+describe('pageTextReadRefused', () => {
+  const { pageTextReadRefused } = require('../../skills/browsing/lib/sensitive-url.js');
+  const CRED_ENV = 'SUPERPOWERS_CHROME_ALLOW_CREDENTIAL_CAPTURE';
+  afterEach(() => { delete process.env[CRED_ENV]; });
+
+  // A minimal page-session fake: dispatches Runtime.evaluate by
+  // expression content, the same discrimination extraction.test.mjs uses,
+  // since pageTextReadRefused issues up to three DIFFERENT evaluate calls
+  // (URL, marker, density) that a single canned response can't usefully
+  // distinguish.
+  function makePs({ url = 'https://example.test/dashboard', marker = false, text = 'Welcome to the dashboard.' } = {}) {
+    const calls = [];
+    return {
+      calls,
+      send: async (method, params) => {
+        calls.push({ method, params });
+        if (method !== 'Runtime.evaluate') return { result: { value: undefined } };
+        const expr = params.expression;
+        if (expr === 'location.href') return { result: { value: url } };
+        if (expr.includes('hasMarker')) return { result: { value: marker } };
+        if (expr.includes('document.body.textContent')) return { result: { value: text } };
+        return { result: { value: undefined } };
+      },
+    };
+  }
+
+  it('allows a plain page (no URL match, no marker, no code density)', async () => {
+    assert.equal(await pageTextReadRefused(makePs(), 'eval'), null);
+  });
+
+  it('refuses on a known-sensitive URL, with a message steering to an element-scoped read', async () => {
+    const refusal = await pageTextReadRefused(
+      makePs({ url: 'https://acme.slack.com/account/settings/2fa_app' }),
+      'eval'
+    );
+    assert.match(refusal, /eval refused/);
+    assert.match(refusal, /sensitive/i);
+    assert.match(refusal, /ELEMENT-SCOPED/);
+    assert.match(refusal, /button|status message|error-banner/i);
+  });
+
+  it('refuses when a live data-sen-secret marker is present, even off the URL list', async () => {
+    const refusal = await pageTextReadRefused(makePs({ marker: true }), 'extract');
+    assert.match(refusal, /extract refused/);
+    assert.match(refusal, /data-sen-secret/);
+  });
+
+  it('refuses via the code-list density signal alone, on a page off the URL list with no marker', async () => {
+    const codeDenseText = '7f3k-9d2m a83f-29dk qq1z-88mn x0p4-rr3e 8k2j-m9vd zz91-3bqa';
+    const refusal = await pageTextReadRefused(makePs({ text: codeDenseText }), 'attr');
+    assert.match(refusal, /attr refused/);
+    assert.match(refusal, /dense list of secret-shaped codes/);
+  });
+
+  it('is not overridable from anything the agent controls: only credentialCaptureAllowed() (an env var read once at process startup) can suppress it', async () => {
+    const ps = makePs({ url: 'https://acme.slack.com/account/settings/2fa_app' });
+    assert.notEqual(await pageTextReadRefused(ps, 'eval'), null);
+    process.env[CRED_ENV] = '1';
+    assert.equal(await pageTextReadRefused(ps, 'eval'), null);
+    // The refusal message itself documents that this is operator-only,
+    // not something settable mid-session.
+    delete process.env[CRED_ENV];
+    const refusal = await pageTextReadRefused(ps, 'eval');
+    assert.match(refusal, /cannot be lifted by the agent at runtime/);
+    assert.match(refusal, /no tool call, page script, or eval expression/);
+  });
+});

@@ -4,6 +4,29 @@ All notable changes to the superpowers-chrome MCP project.
 
 ## [Unreleased]
 
+## [3.2.0] - 2026-10-09 - Gate eval/extract/attr on a sensitive page the same way auto-capture already is
+
+### Added
+- **Whole-page text reads refused on a sensitive page.** `eval`, a selector-less `extract`, `extract`/`attr` with a `body`/`html` selector, and the markdown-format `extract` branch (the one path that built its own inline `evaluate()` call and was never routed through `capture.js`/`extraction.js` at all) now all refuse outright -- before running -- on a page flagged by ANY of three independent signals: a known-sensitive URL pattern (`sensitive-url.js`'s existing list), a live `data-sen-secret` marker, or a new code-list density heuristic (`skills/browsing/lib/code-list-detector.js`: >=6 distinct, similarly-sized, clustered alphanumeric tokens -- catches a recovery/backup-code list or bare-digit TOTP codes with no fixed token shape, on a page off the URL pattern list too). Closes the gap PRI-3360 was opened for: PRI-3319/#61 taught *auto-capture* to refuse this content, but the explicit, caller-requested readers (`eval`/`extract`/`attr`) were never wired to the same checks -- a worker's `eval`/`extract` could still read backup codes or a session token straight off a sensitive page into its own transcript.
+- **Element-scoped reads stay allowed, but are content-checked before returning.** `extract`/`attr` with a real element selector (not the whole page) still runs, but the result is checked -- inside the tool, before anything is returned to the caller -- against the same token-shape detector `redactCredentialShaped` already uses, plus the new code-list heuristic. A match refuses the whole read rather than redacting it: reading the text in-process to decide isn't the leak, returning it to the agent is. This keeps a value-blind check (e.g. "did my code submit?" against a button or error-banner selector) working on a sensitive page, which an unconditional whole-page refusal alone would have blocked.
+- **No agent-settable override.** Deliberately does not add any new override. The existing `SUPERPOWERS_CHROME_ALLOW_CREDENTIAL_CAPTURE` escape hatch still applies (consistent with every other guard in this codebase), and was confirmed -- not merely assumed -- to already be operator-only: it is read once from `process.env` inside the already-running MCP server process; no `use_browser` action sets or exposes it, and `eval`'s `expression` argument runs in the BROWSER PAGE's own JS realm over CDP (a separate process from the MCP server), which has no Node `process` global to touch in the first place. See `skills/browsing/lib/sensitive-url.js`'s `pageTextReadRefused` doc and `test/lib/sensitive-url.test.mjs`/`test/credential-guard-mcp.test.mjs`'s override tests for how this was verified against a real Chrome.
+
+### Files
+- `skills/browsing/lib/code-list-detector.js` (new): the code-list density heuristic, with its own fixture-based test corpus.
+- `skills/browsing/lib/sensitive-url.js`: `isWholePageSelector`, `wholePageReadRefusal`, `pageTextReadRefused` -- the whole-page gate, combining the URL-pattern check (existing), the live marker check, and the density heuristic.
+- `skills/browsing/lib/credential-guard.js`: `elementReadRefusal`, `refuseIfTextLeaksSecret` -- the element-scoped content check.
+- `skills/browsing/lib/capture.js`: `evaluateWithCapture`/`extractPageText` call the whole-page gate instead of their old marker-only check; new `pageTextReadRefused(tabIndexOrWsUrl, action)` wrapper exported for `mcp/src/index.ts`'s markdown branch.
+- `skills/browsing/lib/extraction.js`: `extractText`/`getSanitizedHtml`/`getAttribute` route a `body`/`html`/no selector through the whole-page gate, and route any other selector's result through the element-scoped content check.
+- `mcp/src/index.ts`: the `EXTRACT` action's markdown-format branch (previously ungated) now calls the whole-page gate first.
+- `skills/browsing/chrome-ws-lib.js`: exports `pageTextReadRefused` from `createSession()`.
+
+### Tests
+- `test/lib/code-list-detector.test.mjs` (new): the density heuristic's fixture corpus (positive: mixed-alnum and bare-numeric backup-code lists, codes with surrounding prose; negative: button labels, prose, changelogs, sequentially-numbered SKU tables, inline `<code>` snippets, codes too far apart to cluster).
+- `test/lib/sensitive-url.test.mjs`: `isWholePageSelector` and `pageTextReadRefused` unit tests, including the override test confirmed against a real Chrome realm (see below).
+- `test/lib/extraction.test.mjs`: updated -- a whole-page `getSanitizedHtml` now refuses outright on any marker (including `<body>` itself) instead of stripping and returning; new coverage for a `body`/`html` selector being treated as whole-page.
+- `test/credential-guard-mcp.test.mjs` (real Chrome): new end-to-end coverage for an outerHTML `eval` and a backup-codes `extract` on a sensitive URL (both refused), the markdown branch on a sensitive URL (refused), the density signal alone on a page off the URL list (refused), a plain button label and attribute read on the same sensitive URL (still succeed), an element-scoped read of dense codes vs. an unrelated element on the same page (refused vs. succeeds), and the override tests. Updated three pre-existing marker tests that asserted the old strip-and-return behavior for a whole-page `extract`, to assert the new outright refusal instead.
+- Full suite (`npm test` = lint + bundle-freshness check + `node --test`), run against a real Chrome install already present in this container: **1068 tests, 1066 pass, 2 fail**. The 2 failures (the same `findPidOnPort`/`getBrowserMode` port-scan PID flakes noted in every prior release in this file) reproduce identically on this branch's base commit (3.1.0, pre-fix) -- not a regression.
+
 ## [3.1.0] - 2026-10-07 - Pause switch for an unrecognized reveal; data-sen-secret-marked subtree text redacted too
 
 ### Added

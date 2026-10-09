@@ -7,9 +7,9 @@ const markdownScript = require('./page-scripts/markdown');
 const domSummaryScript = require('./page-scripts/dom-summary');
 const renderedTextScript = require('./page-scripts/rendered-text');
 const htmlWithScrubScript = require('./page-scripts/html-with-scrub');
-const { containsCredentialShaped, credentialCaptureAllowed, secretMarkerRefusal } = require('./credential-guard');
+const { containsCredentialShaped, credentialCaptureAllowed } = require('./credential-guard');
 const { pageHasSecretMarker } = require('./secret-marker');
-const { urlLooksSensitive } = require('./sensitive-url');
+const { urlLooksSensitive, pageTextReadRefused: pageTextReadRefusedForPs } = require('./sensitive-url');
 const { capturePausedScreenshotRefusal } = require('./capture-pause');
 
 // Size cap for the markdown artifact.
@@ -177,6 +177,18 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
     });
     throwIfExceptionDetails(result);
     return result.result.value;
+  }
+
+  // PRI-3360: tabIndexOrWsUrl-level wrapper around sensitive-url.js's
+  // ps-based pageTextReadRefused -- every chromeLib method in this file
+  // takes a tabIndexOrWsUrl, not a raw page session, so this is the shape
+  // evaluateWithCapture/extractPageText below (and mcp/src/index.ts's
+  // EXTRACT markdown branch, which has no `ps` of its own either) need.
+  // Returns a refusal message (string) or null; callers throw it
+  // themselves so each keeps its own action label in the thrown Error.
+  async function pageTextReadRefused(tabIndexOrWsUrl, action) {
+    const ps = await getPageSession(tabIndexOrWsUrl);
+    return pageTextReadRefusedForPs(ps, action);
   }
 
   // Render the page to markdown for token-efficient consumption. Includes
@@ -879,16 +891,18 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
   // whatever it returns, verbatim — there is no result shape to inspect
   // and redact after the fact the way a plain-text extraction can be
   // scanned. So this checks BEFORE running the expression at all and
-  // refuses outright when the marker is present, rather than trying to
-  // run the expression and filter its result: a value-blind expression
-  // (`.textContent.length`) is fine for a token-shaped secret (whose shape
-  // lets the final redaction pass confirm nothing leaked) but not for a
-  // data-sen-secret page, which by definition has no shape to verify
-  // against. Refusing is also what keeps this from ever mutating the live
-  // DOM to get a safe answer: the expression simply never runs.
+  // refuses outright when the page is flagged sensitive, rather than
+  // trying to run the expression and filter its result: a value-blind
+  // expression (`.textContent.length`) is fine for a token-shaped secret
+  // (whose shape lets the final redaction pass confirm nothing leaked)
+  // but not for a data-sen-secret page, a known-sensitive URL, or a
+  // code-dense page, none of which has a shape to verify an arbitrary
+  // eval result against. Refusing is also what keeps this from ever
+  // mutating the live DOM to get a safe answer: the expression simply
+  // never runs.
   //
-  // Deliberately a point check, not a boundary: this is the ONLY marker
-  // check eval gets — no re-check after the expression runs, and nothing
+  // Deliberately a point check, not a boundary: this is the ONLY check
+  // eval gets — no re-check after the expression runs, and nothing
   // sticky remembered across calls.
   // Gating eval any harder can't stop a deliberately adversarial
   // expression: eval runs in the same JS realm as the secret, so an
@@ -897,15 +911,21 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
   // (throw the value instead of returning it, console.log it, alert() it,
   // or erase the marker with removeAttribute as its last synchronous
   // step). This refusal exists only to catch the ACCIDENTAL case: you
-  // already marked a secret and then ran eval on that same page. Don't
-  // mark a page and then eval on it if you need eval to be trustworthy —
-  // it never is, on any page, marked or not.
+  // already marked a secret, navigated to a known-sensitive URL, or
+  // landed on a code-dense page, and then ran eval there. Don't eval on
+  // such a page if you need eval to be trustworthy — it never is, on any
+  // page, flagged or not. PRI-3360: this check used to be the marker-only
+  // test now folded into pageTextReadRefused (URL pattern OR marker OR
+  // code-list density; see sensitive-url.js) — a real incident leaked a
+  // session token off a sensitive URL via exactly this path (an outerHTML
+  // eval), with no marker present at all.
   async function evaluateWithCapture(tabIndexOrWsUrl, expression) {
     const ps = await getPageSession(tabIndexOrWsUrl);
     const pinnedTab = { id: ps.targetId };
     const run = async () => {
-      if (!credentialCaptureAllowed() && await pageHasSecretMarker(ps)) {
-        throw new Error(secretMarkerRefusal('eval'));
+      const refusal = await pageTextReadRefusedForPs(ps, 'eval');
+      if (refusal) {
+        throw new Error(refusal);
       }
       const result = await actions.evaluate(tabIndexOrWsUrl, expression);
       const artifacts = await capturePageArtifacts(pinnedTab, 'eval');
@@ -936,11 +956,17 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
   // which only reads right off the live, laid-out DOM — unlike extractText
   // and getSanitizedHtml (lib/extraction.js), there is no detached-clone
   // trick available here, since a clone has no layout for innerText to
-  // read. So this refuses outright on a marker instead, the same as eval.
+  // read. So this refuses outright on a flagged-sensitive page instead,
+  // the same as eval. PRI-3360: this check used to be marker-only; now
+  // folded into pageTextReadRefused (URL pattern OR marker OR code-list
+  // density) — a real incident leaked backup codes off a 2FA settings
+  // page via exactly this path (a selector-less extract), with no marker
+  // present at all.
   async function extractPageText(tabIndexOrWsUrl) {
     const ps = await getPageSession(tabIndexOrWsUrl);
-    if (!credentialCaptureAllowed() && await pageHasSecretMarker(ps)) {
-      throw new Error(secretMarkerRefusal('extract'));
+    const refusal = await pageTextReadRefusedForPs(ps, 'extract');
+    if (refusal) {
+      throw new Error(refusal);
     }
     return actions.evaluate(tabIndexOrWsUrl, 'document.body.innerText');
   }
@@ -971,6 +997,10 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
     pauseCapture,
     resumeCapture,
     isCapturePaused,
+    // PRI-3360: exported so mcp/src/index.ts's EXTRACT markdown branch (no
+    // `ps` of its own, only a tabIndex) can run the same whole-page gate
+    // evaluateWithCapture/extractPageText above use internally.
+    pageTextReadRefused,
   };
 }
 

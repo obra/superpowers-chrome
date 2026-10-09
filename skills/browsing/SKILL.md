@@ -137,11 +137,13 @@ These use CDP Input.dispatchMouseEvent, bypassing synthetic event restrictions.
   - `selector`: Optional - limit to element
   - Example: `{action: "extract", payload: "markdown"}`
   - Example: `{action: "extract", payload: "text", selector: "h1"}`
+  - **On a sensitive page** (URL matches a known-sensitive pattern, a `data-sen-secret` marker is present anywhere on the page, or the page text looks like a dense list of secret-shaped codes), a WHOLE-PAGE form — no `selector`, or `selector` is `body`/`html` — refuses outright, regardless of what it would have returned. A selector naming a real element still runs, but refuses if the resolved text looks credential- or code-shaped, rather than returning it. Use a narrower, element-scoped selector (a button, status message, error banner) instead of the whole page; use the credential broker for the value itself. Not disabled by anything the agent can set at runtime.
 
 - **attr**: Get element attribute
   - `selector`: CSS selector
   - `payload`: Attribute name
   - Example: `{action: "attr", selector: "a.download", payload: "href"}`
+  - Same sensitive-page behavior as `extract` above: a `body`/`html` selector is treated as whole-page and refuses outright; any other selector still runs but refuses if the attribute value looks credential- or code-shaped.
 
 - **set_attr**: Write-only attribute setter, restricted to EXACTLY two attribute names — `data-sen-nonce` and `data-sen-secret` itself (nothing else, not any other `data-*`/`aria-*` name; see `skills/browsing/lib/set-attribute.js`'s `ALLOWED_ATTRIBUTE_NAMES` constant)
   - `selector`: CSS or XPath selector
@@ -155,6 +157,7 @@ These use CDP Input.dispatchMouseEvent, bypassing synthetic event restrictions.
   - `payload`: JavaScript code
   - Example: `{action: "eval", payload: "document.title"}`
   - Refuses outright (no value-blind exception) while any element on the page carries `data-sen-secret`, checked live at the moment of the call — see `set_attr` above for the write-only escape hatch. **This is an accident guard, not a security boundary**: eval runs in the same JS realm as the marked element, so it can already read the value directly, exfiltrate it via `fetch()`/`window.name`/storage, or erase the marker with `removeAttribute` as its own last step — none of which this check can catch, by design. Don't mark an element and then eval on that page expecting the value to stay contained; after marking, use the credential broker for the value and `set_attr` for writes.
+  - `eval` is always a WHOLE-PAGE read (no selector concept), so it also refuses outright on a known-sensitive URL or a code-dense page, the same as `extract` with no selector — not just the marker check above. There is no value-blind exception for a sensitive page: the refusal is unconditional on the page being flagged, not on what the expression would have returned. Not disabled by anything the agent can set at runtime — `eval`'s own JavaScript runs in the browser page's JS realm, which has no access to the MCP server process's environment at all.
 
 ### Export
 - **screenshot**: Capture screenshot of a specific element

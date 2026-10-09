@@ -84,7 +84,21 @@
  * suppresses a capture that would otherwise have been harmless. Never
  * touches the live page -- this only ever decides what gets written to
  * disk.
+ *
+ * PRI-3360 addendum: this module now also gates explicit, caller-
+ * requested WHOLE-PAGE text reads (eval, a selector-less extract, extract/
+ * getSanitizedHtml on body/html, and the index.ts markdown branch) via
+ * pageTextReadRefused/isWholePageSelector below -- see those functions'
+ * own doc comments. The URL-pattern check above (urlLooksSensitive) is
+ * one of three signals that gate now consults; the other two (a live
+ * data-sen-secret marker, and the code-list density heuristic) live in
+ * secret-marker.js and code-list-detector.js respectively and are pulled
+ * in here only for that orchestration, not duplicated.
  */
+const { throwIfExceptionDetails } = require('./cdp-utils');
+const { credentialCaptureAllowed } = require('./credential-guard');
+const { pageHasSecretMarker } = require('./secret-marker');
+const { codeListDetected } = require('./code-list-detector');
 
 const DEFAULT_SENSITIVE_URL_PATTERNS = [
   // Anchored on the LEFT by the literal "/" (always true for any path
@@ -184,9 +198,121 @@ const URL_SUPPRESSED_NOTICE =
   `Set ${ENV_VAR} to extend the pattern list (comma-separated regexes, ADDED to the defaults, never a replacement); ` +
   'SUPERPOWERS_CHROME_ALLOW_CREDENTIAL_CAPTURE=1 disables this.';
 
+// PRI-3360: isWholePageSelector/wholePageReadRefusal/pageTextReadRefused
+// below gate explicit, caller-requested WHOLE-PAGE text reads -- eval,
+// extract/extractPageText with no selector (or a selector that is just
+// `body`/`html`), the index.ts markdown branch, and getSanitizedHtml on
+// body/html. Unlike URL_SUPPRESSED_NOTICE's auto-capture/screenshot gate
+// above, these are reads the caller explicitly asked for -- but the real
+// incident behind this ticket happened through exactly this path:
+// eval/extract reading backup codes off a 2FA settings page straight into
+// the worker's own transcript, before the value was ever captured
+// through the credential broker.
+//
+// isWholePageSelector(selector): true for no selector at all, or a
+// selector that (after trimming/lowercasing) is exactly `body` or `html`.
+// Anything else -- a real element selector -- is ELEMENT-scoped; see
+// credential-guard.js's refuseIfTextLeaksSecret for how those are handled
+// instead (content-checked AFTER reading, not refused unconditionally by
+// this function).
+function isWholePageSelector(selector) {
+  if (!selector) return true;
+  const normalized = String(selector).trim().toLowerCase();
+  return normalized === 'body' || normalized === 'html';
+}
+
+function wholePageReadRefusal(action, reason) {
+  return (
+    `${action} refused: this page is flagged sensitive (${reason}). ` +
+    'Whole-page reads (eval, a selector-less extract, or extract/getSanitizedHtml on body/html) are always refused ' +
+    'on a sensitive page, regardless of what they would have returned. ' +
+    'Use a narrower, ELEMENT-SCOPED read instead -- extract or attr with a selector for ONE specific element, ' +
+    'such as a particular button, status message, or error-banner selector -- not the whole page/body/html. ' +
+    'Use the credential broker to capture any value you actually need from this page. ' +
+    "This refusal cannot be lifted by the agent at runtime: SUPERPOWERS_CHROME_ALLOW_CREDENTIAL_CAPTURE is read " +
+    "once from the MCP server process's own environment at startup (set by whoever launched the server, e.g. the " +
+    'MCP host\'s own config) -- no tool call, page script, or eval expression run through this server can set or ' +
+    'see it.'
+  );
+}
+
+/**
+ * pageTextReadRefused(ps, action): the whole-page gate itself. `ps` is a
+ * resolved page session (an object with an async `.send(method, params)`
+ * method -- the same shape getPageSession(...) returns in capture.js and
+ * extraction.js). `action` is a short label ('eval' | 'extract' | 'attr')
+ * used only in the refusal message.
+ *
+ * Returns a refusal message (string) when the page is flagged sensitive by
+ * ANY of three independent signals -- a known-sensitive URL pattern, a
+ * live data-sen-secret marker, or the code-list density heuristic over
+ * the page's own visible text -- and returns null when none apply (the
+ * caller's whole-page read may proceed). Deliberately a nullable-string
+ * return, not a throw, so callers can decide whether to throw immediately
+ * or fold the message into a larger response.
+ *
+ * Reads page text via `document.body.textContent` (not `.innerText`)
+ * purely to run the content heuristic IN-PROCESS -- that text is never
+ * returned to the caller, only scanned; see credential-guard.js's
+ * refuseIfTextLeaksSecret for the longer version of "reading in-process
+ * isn't the leak, returning text to the agent is." textContent (not
+ * innerText) is used because it needs no page layout, matching the same
+ * choice index.ts's markdown branch already makes for the same reason.
+ */
+async function pageTextReadRefused(ps, action) {
+  // Deliberately checked first, same as every other existing guard in
+  // this codebase (screenshotUnlessCredentialShaped, mustSuppress, the
+  // marker checks) -- and that is fine under PRI-3360's "no agent-
+  // settable override" requirement because this env var already was
+  // operator-only before this change: it is read exactly once, from
+  // process.env, inside the already-running MCP server process. Nothing
+  // reachable from an MCP tool call can change it mid-session --
+  // confirmed by reading the dispatch table in mcp/src/index.ts (no
+  // action writes process.env, and there is no "set env"/"configure"
+  // action at all) and by eval's own execution model: the `expression`
+  // argument runs in the BROWSER PAGE's JS realm over
+  // Runtime.evaluate, which has no Node `process` global to touch in the
+  // first place (see test/lib/sensitive-url.test.mjs's "agent cannot set
+  // the override" case, which proves this empirically against a real
+  // Chrome page). The only way to change this value is to restart the
+  // MCP server process with a different environment -- an operator
+  // action, not an agent one.
+  if (credentialCaptureAllowed()) return null;
+
+  const urlResult = await ps.send('Runtime.evaluate', {
+    expression: 'location.href',
+    returnByValue: true,
+  });
+  throwIfExceptionDetails(urlResult);
+  if (urlLooksSensitive(urlResult.result.value)) {
+    return wholePageReadRefusal(
+      action,
+      'the URL matches a known-sensitive pattern (2FA/MFA/TOTP setup, recovery or backup codes, security keys)'
+    );
+  }
+
+  if (await pageHasSecretMarker(ps)) {
+    return wholePageReadRefusal(action, 'an element on the page is marked data-sen-secret');
+  }
+
+  const textResult = await ps.send('Runtime.evaluate', {
+    expression: "(document.body ? document.body.textContent : '') || ''",
+    returnByValue: true,
+  });
+  throwIfExceptionDetails(textResult);
+  if (codeListDetected(textResult.result.value)) {
+    return wholePageReadRefusal(action, 'the page text looks like a dense list of secret-shaped codes');
+  }
+
+  return null;
+}
+
 module.exports = {
   DEFAULT_SENSITIVE_URL_PATTERNS,
   ENV_VAR,
   urlLooksSensitive,
   URL_SUPPRESSED_NOTICE,
+  isWholePageSelector,
+  wholePageReadRefusal,
+  pageTextReadRefused,
 };

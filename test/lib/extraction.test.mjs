@@ -172,13 +172,25 @@ describe('extractText / getAttribute / getSanitizedHtml: data-sen-secret guard',
     assert.match(call.params.expression, /clone\.innerHTML/);
   });
 
+  // PRI-3360: getSanitizedHtml with no selector is now a WHOLE-PAGE read,
+  // gated by sensitive-url.js's pageTextReadRefused BEFORE the clone-and-
+  // strip call runs at all (location.href, then the marker check, then
+  // the code-list density check). This mock discriminates those pre-check
+  // calls by expression so the test can simulate "page is not flagged"
+  // and still inspect the real clone-and-strip call's shape.
   it('getSanitizedHtml with no selector strips a whole-page clone, not the live document', async () => {
     const { getSanitizedHtml, ps } = setup({
-      'Runtime.evaluate': () => ({ result: { value: '<html></html>' } })
+      'Runtime.evaluate': (params) => {
+        const expr = params.expression;
+        if (expr === 'location.href') return { result: { value: 'https://example.com/' } };
+        if (expr.includes('hasMarker')) return { result: { value: false } };
+        if (expr.includes('document.body.textContent')) return { result: { value: 'ordinary page text' } };
+        return { result: { value: '<html></html>' } };
+      }
     });
     await getSanitizedHtml(0);
-    const call = ps.calls.find(c => c.method === 'Runtime.evaluate');
-    assert.match(call.params.expression, /const el = document\.documentElement/);
+    const call = ps.calls.find(c => c.method === 'Runtime.evaluate' && c.params.expression.includes('const el = document.documentElement'));
+    assert.ok(call, 'expected a clone-and-strip call targeting document.documentElement');
     // Clone via __senInertClone (imports into
     // document.implementation.createHTMLDocument), not el.cloneNode(true) in
     // the live document — a live-document clone still fires onload/onerror
@@ -187,6 +199,20 @@ describe('extractText / getAttribute / getSanitizedHtml: data-sen-secret guard',
     assert.match(call.params.expression, /__senInertClone\(el\)/);
     assert.doesNotMatch(call.params.expression, /el\.cloneNode/);
     assert.match(call.params.expression, /clone\.outerHTML/);
+  });
+
+  // PRI-3360: a `body`/`html` selector is treated the same as no selector
+  // at all (isWholePageSelector) -- refused via the whole-page gate, never
+  // reaching the element-scoped content check.
+  it('getSanitizedHtml refuses on a sensitive URL even with a `body` selector (whole-page, not element-scoped)', async () => {
+    const { getSanitizedHtml } = setup({
+      'Runtime.evaluate': (params) => {
+        if (params.expression === 'location.href') return { result: { value: 'https://x.slack.com/account/settings/2fa_app' } };
+        return { result: { value: 'unused' } };
+      }
+    });
+    await assert.rejects(() => getSanitizedHtml(0, 'body'), /extract refused.*sensitive/);
+    await assert.rejects(() => getSanitizedHtml(0, 'HTML'), /extract refused.*sensitive/);
   });
 
   it('getHtml (the raw, capture.js-internal form) is untouched: no clone, no marker check', async () => {
@@ -244,11 +270,19 @@ describe('extractText / getAttribute / getSanitizedHtml: marker on an ANCESTOR (
     await assert.rejects(() => getSanitizedHtml(0, '#val'), /extract refused.*data-sen-secret/);
   });
 
-  it('getSanitizedHtml (whole page) strips a marked descendant of documentElement rather than refusing', async () => {
+  // PRI-3360: a whole-page getSanitizedHtml now refuses OUTRIGHT the
+  // moment ANY marker is present anywhere on the page, via
+  // sensitive-url.js's pageTextReadRefused -- it no longer strips the
+  // marked subtree and returns the rest. (Element-SCOPED reads, a
+  // selector that isn't body/html, still get the strip-and-return
+  // treatment when the marker is on an unrelated part of the page; see
+  // the selector-form tests above.) This is a deliberate behavior change
+  // from the pre-PRI-3360 code: refusing the whole read is safer than
+  // trusting a strip pass to have caught everything on a page already
+  // known to render a secret somewhere.
+  it('getSanitizedHtml (whole page) refuses outright when ANY element on the page is marked, rather than stripping it', async () => {
     const { getSanitizedHtml } = setupJsdom(WRAPPED);
-    const html = await getSanitizedHtml(0);
-    assert.ok(!html.includes('the-seed'), `seed leaked into whole-page HTML: ${html}`);
-    assert.ok(html.includes('not secret'));
+    await assert.rejects(() => getSanitizedHtml(0), /extract refused.*data-sen-secret/);
   });
 
   it('extractText on the marked element itself still refuses (self case, not regressed by the ancestor-walk change)', async () => {
@@ -264,7 +298,9 @@ describe('extractText / getAttribute / getSanitizedHtml: marker on an ANCESTOR (
   // "querySelectorAll on a clone never matches the clone ROOT" -- here the
   // root is documentElement, and body is a proper descendant of it, so it
   // must still be found and stripped.
-  it('getSanitizedHtml (whole page) strips the page when <body> ITSELF (not a descendant div) is marked', async () => {
+  // PRI-3360: same behavior change as the test above, for the "<body>
+  // itself is marked" case specifically.
+  it('getSanitizedHtml (whole page) refuses outright when <body> ITSELF (not a descendant div) is marked', async () => {
     const dom = new JSDOM(
       '<!DOCTYPE html><html><body data-sen-secret>' +
       '<span id="val">the-seed</span></body></html>',
@@ -280,7 +316,6 @@ describe('extractText / getAttribute / getSanitizedHtml: marker on an ANCESTOR (
     };
     const { getSanitizedHtml } = attachExtraction({ getPageSession: async () => ps });
 
-    const html = await getSanitizedHtml(0);
-    assert.ok(!html.includes('the-seed'), `seed leaked into whole-page HTML with body itself marked: ${html}`);
+    await assert.rejects(() => getSanitizedHtml(0), /extract refused.*data-sen-secret/);
   });
 });
