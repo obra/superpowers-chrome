@@ -316,6 +316,84 @@ describe('navigation', () => {
     assert.ok(caught.artifacts, 'DialogRefusedError must carry rendered artifacts');
   });
 
+  // Regression for jc's PR #64 re-review finding 1: an alert() that fires
+  // during navigate (e.g. on page load) hits the same dialogWon branch as the
+  // basic-auth case above, but with no state.capturePaused check -- so the
+  // dialog's rendered message (which can carry a just-revealed secret, the
+  // exact scenario pause_capture exists for) still went out in `artifacts`.
+  it('navigate withholds the dialog message when a dialog fires mid-load while paused', async () => {
+    const { navigate, ps, state } = setup(
+      {
+        'Page.navigate': () => new Promise((resolve) => {
+          setTimeout(() => resolve({ frameId: 'F1' }), 30000);
+        }),
+      },
+      { sessionId: 'S-alert' }
+    );
+    state.capturePaused = true;
+
+    setImmediate(() => {
+      state.dialogs.set('S-alert', {
+        kind: 'alert',
+        openedAt: Date.now(),
+        payload: { message: 'Your backup code is BACKUP-CODE-123456', url: 'http://localhost:8766/' },
+        staged: {},
+      });
+      ps.injectEvent({ method: 'Page.javascriptDialogOpening', params: {} });
+    });
+
+    let caught;
+    try {
+      await navigate(0, 'http://localhost:8766/');
+    } catch (e) {
+      caught = e;
+    }
+    assert.ok(caught, 'navigate must throw when a dialog fires mid-load');
+    assert.equal(caught.name, 'DialogRefusedError');
+    assert.equal(caught.refused, true);
+    assert.equal(caught.dialog && caught.dialog.kind, 'alert', 'kind must still be reported');
+    assert.equal(caught.dialog.payload, undefined, 'the dialog payload (message) must not be forwarded while paused');
+    assert.equal(caught.artifacts, null, 'artifacts must be null while paused -- no rendered message');
+    assert.ok(
+      !JSON.stringify(caught).includes('BACKUP-CODE-123456'),
+      'the secret message must not appear anywhere on the thrown error while paused'
+    );
+  });
+
+  it('navigate still renders the dialog message when a dialog fires mid-load and capture is NOT paused', async () => {
+    // Sanity check alongside the paused test above: unpaused behavior is
+    // unchanged -- the message is still rendered into artifacts.
+    const { navigate, ps, state } = setup(
+      {
+        'Page.navigate': () => new Promise((resolve) => {
+          setTimeout(() => resolve({ frameId: 'F1' }), 30000);
+        }),
+      },
+      { sessionId: 'S-alert-unpaused' }
+    );
+
+    setImmediate(() => {
+      state.dialogs.set('S-alert-unpaused', {
+        kind: 'alert',
+        openedAt: Date.now(),
+        payload: { message: 'Your backup code is BACKUP-CODE-123456', url: 'http://localhost:8766/' },
+        staged: {},
+      });
+      ps.injectEvent({ method: 'Page.javascriptDialogOpening', params: {} });
+    });
+
+    let caught;
+    try {
+      await navigate(0, 'http://localhost:8766/');
+    } catch (e) {
+      caught = e;
+    }
+    assert.ok(caught, 'navigate must throw when a dialog fires mid-load');
+    assert.equal(caught.dialog && caught.dialog.kind, 'alert');
+    assert.ok(caught.artifacts && caught.artifacts.markdown.includes('BACKUP-CODE-123456'),
+      'unpaused behavior must be unchanged: message still rendered');
+  });
+
   it('navigate ignores a pre-existing dialog from before this navigation', async () => {
     // If state.dialogs already had something stored for this session BEFORE
     // navigate() ran, the dialog race must not match it — otherwise every

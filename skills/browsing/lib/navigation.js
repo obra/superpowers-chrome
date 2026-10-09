@@ -152,6 +152,17 @@ function attachNavigation({ state, getPageSession, capturePageArtifacts, evaluat
       if (unsubDialog) unsubDialog();
       unsubConsole();
       unsubFrameNav();
+      // Pause-aware: a dialog that fires during navigate (e.g. an alert() on
+      // page load) can carry a revealed secret in its rendered message, same
+      // as the dialog sites in dialogs.js and chrome-ws-lib.js's
+      // wrapWithDialogGate. While state.capturePaused is set, narrow `dialog`
+      // to {kind} only and never render the message/defaultPrompt text.
+      if (state.capturePaused) {
+        throw new DialogRefusedError({
+          dialog: { kind: dialogWon.kind },
+          artifacts: null,
+        });
+      }
       throw new DialogRefusedError({
         dialog: dialogWon,
         artifacts: renderSyntheticArtifacts(dialogWon),
