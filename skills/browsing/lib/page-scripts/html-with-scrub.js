@@ -481,7 +481,7 @@ module.exports = `
 
     // A marker-specific variant of blankMatchedSubtree: an explicit
     // data-sen-secret mark is a stronger, opt-in signal than a pattern
-    // match, so (jc, PR #64 review, finding 3) it does NOT get the
+    // match, so it does NOT get the
     // PATTERN_SKIP_TAGS exemption that keeps a <button>/<a>'s own text
     // (and, for <a>, its href) out of pattern-match blanking -- that
     // exemption exists because a pattern match can hit a UI label ("Copy"

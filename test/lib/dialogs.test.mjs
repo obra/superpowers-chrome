@@ -338,7 +338,7 @@ describe('dialogs.withDialogAwarenessForSession', () => {
   });
 });
 
-// Review finding (jc, PR #64): a paused click/fill/select/eval/set_attr that
+// A paused click/fill/select/eval/set_attr that
 // hits a dialog -- either because one was ALREADY open (the refused branch)
 // or because the action itself opened one (the midFlight branch) -- must
 // never hand back the dialog's rendered message/defaultPrompt text. Both

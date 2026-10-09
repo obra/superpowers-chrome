@@ -12,8 +12,10 @@
  */
 /**
  * Format a DialogRefusedError into a human-readable tool response string.
- * Uses duck typing (error.refused && error.artifacts) rather than instanceof
- * because class identity can be unreliable across CommonJS require boundaries.
+ * Uses duck typing (error.refused) rather than instanceof because class
+ * identity can be unreliable across CommonJS require boundaries. While
+ * capture is paused the refusal carries no artifacts (the dialog's message
+ * may hold the secret being revealed), so only the dialog's kind is named.
  */
 export declare function formatDialogRefusal(error: any): string;
 /**

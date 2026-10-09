@@ -338,7 +338,7 @@ describe('page-scripts/markdown', () => {
       assert.match(md, /Welcome back, Alice/);
     });
 
-    // jc (PR #64 review, finding 3): an <a> is rendered via its own early
+    // An <a> is rendered via its own early
     // branch (`[text](href)`), BEFORE __senShouldRedact / __senRedactedText
     // ever run on it — so a marked link's text and href used to reach the
     // markdown output in clear regardless of the marker, unlike every

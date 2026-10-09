@@ -31,7 +31,7 @@
  * one signal that actually means "the secret is gone now" — the pause
  * is already fail-safe (captures just stay off) if that call is forgotten.
  *
- * Caveat (jc, PR #64 review, finding 5): state.capturePaused lives on the
+ * Caveat: state.capturePaused lives on the
  * in-memory per-session state bag (session-state.js), not anywhere
  * persisted — it survives restart_chrome (same process, same state
  * object) but NOT the MCP SERVER process restarting and re-adopting an

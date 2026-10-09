@@ -246,7 +246,7 @@ describe('page-scripts/html-with-scrub', () => {
     );
     assert.doesNotMatch(value.scrubbed, /Sup3rSecretPw/);
     assert.doesNotMatch(value.scrubbed, /Your new password is:/);
-    // jc (PR #64 review, finding 3): unlike the pattern-matched container
+    // Unlike the pattern-matched container
     // case, a marked container's skip-tag CONTROL descendants are NOT
     // exempted -- the "link/button text is a UI label, not the secret"
     // rationale is specifically about an ambiguous pattern match (a

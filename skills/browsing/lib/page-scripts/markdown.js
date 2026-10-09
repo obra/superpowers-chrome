@@ -171,7 +171,7 @@ module.exports = `
         continue;
       }
 
-      // jc (PR #64 review, finding 3): the "link's own visible text is a
+      // The "link's own visible text is a
       // UI label" rationale below is about the PATTERN-match case (a
       // secret-looking id/class on a link whose text and href were never
       // the secret, e.g. a copy-seed button rendered as an <a>). It does

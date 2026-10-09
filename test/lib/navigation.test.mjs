@@ -316,11 +316,10 @@ describe('navigation', () => {
     assert.ok(caught.artifacts, 'DialogRefusedError must carry rendered artifacts');
   });
 
-  // Regression for jc's PR #64 re-review finding 1: an alert() that fires
-  // during navigate (e.g. on page load) hits the same dialogWon branch as the
-  // basic-auth case above, but with no state.capturePaused check -- so the
-  // dialog's rendered message (which can carry a just-revealed secret, the
-  // exact scenario pause_capture exists for) still went out in `artifacts`.
+  // An alert() that fires during navigate (e.g. on page load) hits the same
+  // dialogWon branch as the basic-auth case above. Its rendered message can
+  // carry a just-revealed secret -- the scenario pause_capture exists for --
+  // so while paused only the dialog's kind may come back.
   it('navigate withholds the dialog message when a dialog fires mid-load while paused', async () => {
     const { navigate, ps, state } = setup(
       {

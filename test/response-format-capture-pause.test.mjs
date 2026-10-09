@@ -3,9 +3,7 @@
  * `capturePaused` (mcp/src/response-format.ts, compiled to
  * mcp/dist/response-format.js).
  *
- * jc (PR #64 review, finding 4): the CHANGELOG/PR body said these paused
- * branches were tested; they weren't. This file pins them directly, each
- * against the shape its real caller in mcp/src/index.ts actually produces:
+ * Pins each paused branch directly, against the shape its real caller in mcp/src/index.ts actually produces:
  *   - formatCaptureFiles: the capturePaused:true branch (used standalone
  *     by formatActionResponse's non-midFlight path, and by the NAVIGATE
  *     case's inline response array).
@@ -13,7 +11,7 @@
  *     (actionResult.actionResult.capturePaused), and the plain paused
  *     result shape (no midFlight), which must also skip the
  *     "Current URL"/"Size" lines rather than print placeholder values
- *     (jc finding 6).
+ *    .
  *   - formatCaptureResponse: both the null-capture (dialog) paused shape
  *     and the normal paused capture shape.
  *
@@ -28,7 +26,7 @@ import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const { formatCaptureFiles, formatActionResponse, formatCaptureResponse } =
+const { formatCaptureFiles, formatActionResponse, formatCaptureResponse, formatDialogRefusal } =
   await import(path.join(__dirname, '..', 'mcp', 'dist', 'response-format.js'));
 
 const PAUSE_NOTICE_FRAGMENT = 'Capture is paused for this session';
@@ -139,5 +137,18 @@ describe('formatCaptureResponse: capturePaused', () => {
       'credential-shape',
     );
     assert.doesNotMatch(text, new RegExp(PAUSE_NOTICE_FRAGMENT));
+  });
+});
+
+describe('formatDialogRefusal: paused refusal (artifacts: null)', () => {
+  it('still names the dialog kind, and never a message', () => {
+    const text = formatDialogRefusal({
+      refused: true,
+      message: 'Page is behind a dialog. Handle dialog::accept or dialog::dismiss first.',
+      dialog: { kind: 'alert' },
+      artifacts: null,
+    });
+    assert.match(text, /Dialog open: alert/);
+    assert.match(text, /dialog::accept or dialog::dismiss/);
   });
 });

@@ -193,7 +193,7 @@ describe('pause_capture / resume_capture', () => {
     });
   });
 
-  // jc (PR #64 review, finding 4): the CHANGELOG/PR body claimed this is
+  // The CHANGELOG/PR body claimed this is
   // tested for fill/select/eval/set_attr too, but only clickWithCapture was
   // actually exercised — removing the forwarding line from any of the
   // other four left the suite green. Parametrized over all five *WithCapture

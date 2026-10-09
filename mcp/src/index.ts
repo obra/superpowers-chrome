@@ -1289,7 +1289,7 @@ Use action='help' for full per-action payload shapes.`,
       // DialogRefusedError: page-target action blocked by open native dialog.
       // Surface as a synthetic tool response rather than a generic error so the
       // model receives the dialog description and knows how to proceed.
-      if (error && (error as any).refused === true && (error as any).artifacts) {
+      if (error && (error as any).refused === true) {
         return {
           content: [{
             type: "text" as const,

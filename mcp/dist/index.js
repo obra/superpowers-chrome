@@ -21291,6 +21291,9 @@ function formatDialogRefusal(error2) {
   if (error2.artifacts?.markdown) {
     lines.push("");
     lines.push(error2.artifacts.markdown);
+  } else if (error2.dialog?.kind) {
+    lines.push("");
+    lines.push(`Dialog open: ${error2.dialog.kind}`);
   }
   return lines.join("\n");
 }
@@ -22317,7 +22320,7 @@ Use action='help' for full per-action payload shapes.`,
         }]
       };
     } catch (error2) {
-      if (error2 && error2.refused === true && error2.artifacts) {
+      if (error2 && error2.refused === true) {
         return {
           content: [{
             type: "text",
