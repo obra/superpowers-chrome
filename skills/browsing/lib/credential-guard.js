@@ -16,8 +16,10 @@
  *     round 4 (PRI-3360, jc + Reeve): catches a value TRUNCATED down to
  *     just its prefix (`el.value.slice(0,8)` of a real token), which the
  *     full-shape patterns above no longer match.
- *   - A bare alphanumeric run with a digit in it (hasLongAlnumRunWithDigit)
- *     -- jc's rule for an unprefixed TOTP/HOTP seed (bare base32).
+ *   - A bare alphanumeric run that MIXES letters and digits
+ *     (hasLongMixedAlnumRun) -- jc's rule for an unprefixed TOTP/HOTP seed
+ *     (bare base32), narrowed in round 5 to exempt an all-digit or
+ *     all-letter run (an ordinary DOM identifier, not a secret).
  *   - An explicit opt-in marker: any element carrying the
  *     `data-sen-secret` attribute. Use it for secrets with no distinctive
  *     shape at all (backup codes with no uniform prefix or run length).
@@ -111,18 +113,28 @@ function hasKnownTokenPrefix(text) {
 // a single space) specifically to catch a seed someone has broken into
 // even-width groups for display/typing ("JBSW Y3DP EHPK 3PXP") -- gluing
 // the groups back together is exactly what defeats that split. Deliberately
-// a SEPARATE, looser rule from the two above: any 6+ alnum run with a
-// digit in it, no specific prefix required -- which is loose enough that
-// it is only applied where the extra false-positive risk is accepted; see
-// stringLooksLikeSecret below and its callers.
+// a SEPARATE, looser rule from the two above: a 6+ alnum run that MIXES
+// letters and digits, no specific prefix required.
+//
+// Round 5 (jc + Reeve, after a real false positive): a run of ALL digits
+// or ALL letters is exempt, even at 6+ characters -- an id like Slack's
+// own `app_level_tokens_row_12277846587778` (a data-qa value on the
+// App-Level Tokens page, all-digit suffix) is an ordinary DOM identifier,
+// not a secret, and the original any-digit version of this rule refused
+// it outright. A base32 TOTP seed still trips this version every time:
+// base32 is deliberately letters-and-digits by construction, so a real
+// seed always mixes the two. The rule is loose enough on its own (no
+// prefix check at all) that it is only applied where the extra
+// false-positive risk is accepted; see stringLooksLikeSecret below and
+// its callers.
 const MIN_ALNUM_RUN = 6;
 
-function hasLongAlnumRunWithDigit(text) {
+function hasLongMixedAlnumRun(text) {
   if (typeof text !== 'string' || text === '') return false;
   const collapsed = text.replace(/\s+/g, '');
   const runs = collapsed.match(/[A-Za-z0-9]{6,}/g);
   if (!runs) return false;
-  return runs.some((run) => run.length >= MIN_ALNUM_RUN && /\d/.test(run));
+  return runs.some((run) => run.length >= MIN_ALNUM_RUN && /[A-Za-z]/.test(run) && /[0-9]/.test(run));
 }
 
 // Page marker: an element attribute named exactly data-sen-secret. Single
@@ -240,8 +252,9 @@ function evalResultRefusal(expression) {
  *      weaker signal off that list (PRI-3360 round 2, jc review of #65:
  *      it false-positived on ordinary pages there), but a page ALREADY
  *      flagged sensitive by its URL doesn't need the extra keyword cue.
- *   4. hasLongAlnumRunWithDigit(text) -- a bare TOTP/HOTP seed with no
- *      prefix and no otpauth:// URI (jc's rule).
+ *   4. hasLongMixedAlnumRun(text) -- a bare TOTP/HOTP seed with no prefix
+ *      and no otpauth:// URI (jc's rule, narrowed in round 5 -- see that
+ *      function's own doc comment).
  * A non-string value (or empty string) never matches -- nothing to scan.
  */
 function stringLooksLikeSecret(text, { densityAloneSufficient = false } = {}) {
@@ -249,7 +262,7 @@ function stringLooksLikeSecret(text, { densityAloneSufficient = false } = {}) {
   if (containsCredentialShaped(text)) return true;
   if (hasKnownTokenPrefix(text)) return true;
   if (densityAloneSufficient ? codeListDetected(text) : codeListNearBackupKeyword(text)) return true;
-  if (hasLongAlnumRunWithDigit(text)) return true;
+  if (hasLongMixedAlnumRun(text)) return true;
   return false;
 }
 
@@ -299,7 +312,7 @@ module.exports = {
   MARKER_ATTR,
   containsCredentialShaped,
   hasKnownTokenPrefix,
-  hasLongAlnumRunWithDigit,
+  hasLongMixedAlnumRun,
   stringLooksLikeSecret,
   valueLeaksSecret,
   redactCredentialShaped,

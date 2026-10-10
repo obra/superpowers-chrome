@@ -9,7 +9,7 @@ const require = createRequire(import.meta.url);
 const {
   containsCredentialShaped,
   hasKnownTokenPrefix,
-  hasLongAlnumRunWithDigit,
+  hasLongMixedAlnumRun,
   stringLooksLikeSecret,
   valueLeaksSecret,
   redactCredentialShaped,
@@ -198,27 +198,43 @@ describe('hasKnownTokenPrefix', () => {
 });
 
 // Rule 4: jc's rule for a bare TOTP/HOTP seed with no prefix at all.
-describe('hasLongAlnumRunWithDigit', () => {
+// Round 5 (jc + Reeve): narrowed to require a MIX of letters and digits
+// in the run -- an all-digit or all-letter run of 6+ is exempt, since
+// that's an ordinary DOM identifier shape, not a secret. A real base32
+// seed always mixes the two by construction, so this doesn't weaken the
+// seed detection at all.
+describe('hasLongMixedAlnumRun', () => {
   it('matches a bare base32 TOTP seed', () => {
-    assert.equal(hasLongAlnumRunWithDigit('JBSWY3DPEHPK3PXP'), true);
+    assert.equal(hasLongMixedAlnumRun('JBSWY3DPEHPK3PXP'), true);
   });
 
   it('matches the SAME seed deliberately split into spaced groups', () => {
-    assert.equal(hasLongAlnumRunWithDigit('JBSW Y3DP EHPK 3PXP'), true);
+    assert.equal(hasLongMixedAlnumRun('JBSW Y3DP EHPK 3PXP'), true);
   });
 
   it('does not match a run with no digit in it at all', () => {
-    assert.equal(hasLongAlnumRunWithDigit('abcdefghijklmnop'), false);
+    assert.equal(hasLongMixedAlnumRun('abcdefghijklmnop'), false);
+  });
+
+  // Slack's own data-qa identifier for the App-Level Tokens row: an
+  // all-digit suffix, 14 characters long -- an ordinary DOM id, not a
+  // secret, must NOT trip this rule just because it is long.
+  it("does not match an all-digit run, however long (Slack's app_level_tokens_row_<id> case)", () => {
+    assert.equal(hasLongMixedAlnumRun('app_level_tokens_row_12277846587778'), false);
+  });
+
+  it('does not match an all-letter run, however long', () => {
+    assert.equal(hasLongMixedAlnumRun('abcdefghijklmnopqrstuvwxyz'), false);
   });
 
   it('does not match a short run even with a digit', () => {
-    assert.equal(hasLongAlnumRunWithDigit('a1b2'), false);
+    assert.equal(hasLongMixedAlnumRun('a1b2'), false);
   });
 
   it('treats non-strings and empty strings as no match', () => {
-    assert.equal(hasLongAlnumRunWithDigit(''), false);
-    assert.equal(hasLongAlnumRunWithDigit(null), false);
-    assert.equal(hasLongAlnumRunWithDigit(undefined), false);
+    assert.equal(hasLongMixedAlnumRun(''), false);
+    assert.equal(hasLongMixedAlnumRun(null), false);
+    assert.equal(hasLongMixedAlnumRun(undefined), false);
   });
 });
 
@@ -268,7 +284,7 @@ describe('stringLooksLikeSecret', () => {
   // numbering suggests for this common a layout.
   it('a whitespace-separated (not comma-separated) code list also trips rule 4 on its own, independent of rule 3', () => {
     const spaceSeparated = '7f3k-9d2m a83f-29dk qq1z-88mn x0p4-rr3e 8k2j-m9vd zz91-3bqa';
-    assert.equal(hasLongAlnumRunWithDigit(spaceSeparated), true);
+    assert.equal(hasLongMixedAlnumRun(spaceSeparated), true);
     assert.equal(stringLooksLikeSecret(spaceSeparated, { densityAloneSufficient: false }), true);
   });
 });

@@ -1377,7 +1377,7 @@ const FAKE_SESSION_TOKEN = 'sess_8f3k9d2mq7h1x0p4rr3ezz913bqa';
 const FAKE_BACKUP_CODES = ['7f3k-9d2m', 'a83f-29dk', 'qq1z-88mn', 'x0p4-rr3e', '8k2j-m9vd', 'zz91-3bqa'];
 // PRI-3360 round 4 (jc's rule): the SAME seed as BASE32_SEED above, split
 // into 4-char groups with spaces -- jc's own "deliberately split to dodge
-// a naive scan" test case. hasLongAlnumRunWithDigit strips ALL whitespace
+// a naive scan" test case. hasLongMixedAlnumRun strips ALL whitespace
 // before scanning specifically to glue groups like this back together.
 const BASE32_SEED_SPACED = 'JBSW Y3DP EHPK 3PXP JBSW Y3DP EHPK 3PXP';
 const FAKE_APP_TOKEN = ['xapp', '1', 'A01234ABCD', 'FAKEfakeFAKEfakeFAKEfakeFAKEfake'].join('-');
@@ -1406,9 +1406,12 @@ describe('PRI-3360: whole-page text reads refused on a sensitive page (real Chro
     );
     // PRI-3360 round 4 (jc + Reeve's final design): a TOTP setup page,
     // same /2fa_app sensitive route as SESSION_URL above, with a bare
-    // base32 seed (rule 4), a harmless data-qa identifier that must NOT
-    // false-positive (rule 4 requires a digit; this has none), and an
-    // app-level-token-shaped field (rules 1/2) for Reeve's truncation case.
+    // base32 seed (rule 4, mixed), a harmless data-qa identifier that
+    // must NOT false-positive (letters only, no digit at all), a SECOND
+    // harmless data-qa identifier that is Slack's own real shape for the
+    // App-Level Tokens row (an all-digit suffix, round 5's own must-allow
+    // case), and an app-level-token-shaped field (rules 1/2) for Reeve's
+    // truncation case.
     fs.mkdirSync(path.join(dir, 'account', 'settings', '2fa_app', 'totp'), { recursive: true });
     fs.writeFileSync(
       path.join(dir, 'account', 'settings', '2fa_app', 'totp', 'index.html'),
@@ -1416,6 +1419,7 @@ describe('PRI-3360: whole-page text reads refused on a sensitive page (real Chro
       `<span id="seed">${BASE32_SEED}</span>` +
       `<span id="spacedSeed">${BASE32_SEED_SPACED}</span>` +
       '<button id="qa" data-qa="app_level_token_string">Continue</button>' +
+      '<button id="qaRow" data-qa="app_level_tokens_row_12277846587778">Row</button>' +
       `<input id="el" type="text" value="${FAKE_APP_TOKEN}">` +
       '<button id="b">Done</button>'
     );
@@ -1433,8 +1437,8 @@ describe('PRI-3360: whole-page text reads refused on a sensitive page (real Chro
   // up front merely because the URL is sensitive -- it RUNS, then the
   // RESULT is checked. This outerHTML read still refuses here, but now
   // because the RESULT (the session-token-like string, glued letters and
-  // digits with no separator, 6+ chars) trips rule 4
-  // (hasLongAlnumRunWithDigit) on the sensitive URL, not because of a
+  // digits with no separator, 6+ chars, MIXING both) trips rule 4
+  // (hasLongMixedAlnumRun) on the sensitive URL, not because of a
   // blanket pre-run block.
   it('an outerHTML eval on a sensitive URL is refused, because the result itself looks token-shaped', async () => {
     await server.call({ action: 'navigate', payload: SESSION_URL() });
@@ -1541,6 +1545,20 @@ describe('PRI-3360: whole-page text reads refused on a sensitive page (real Chro
     });
     assert.equal(isError, false, text);
     assert.match(text, /app_level_token_string/);
+  });
+
+  // Round 5 (jc + Reeve): Slack's REAL data-qa shape for the App-Level
+  // Tokens row -- an all-digit suffix, 14 characters. The original
+  // any-digit version of rule 4 refused this outright; the mixed-only
+  // version must allow it.
+  it('eval returning app_level_tokens_row_<all-digit-id> on this sensitive URL is allowed (round 5, real Slack shape)', async () => {
+    await server.call({ action: 'navigate', payload: TOTP_URL() });
+    const { text, isError } = await server.call({
+      action: 'eval',
+      payload: "document.getElementById('qaRow').getAttribute('data-qa')",
+    });
+    assert.equal(isError, false, text);
+    assert.match(text, /app_level_tokens_row_12277846587778/);
   });
 
   // Reeve's own case: truncating a real app-level token down to its first
