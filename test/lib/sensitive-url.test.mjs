@@ -207,6 +207,55 @@ describe('sensitive-url', () => {
     process.env[ENV_VAR] = '(unterminated[';
     assert.equal(urlLooksSensitive('https://example.test/dashboard'), false);
   });
+
+  // PRI-3360 round 3 (Reeve): host-qualified patterns -- see
+  // sensitive-url.js's module comment for why these are matched against
+  // hostname+pathname+hash rather than pathname alone (the path segment
+  // alone, on each of these, is too ordinary a word to accept matching
+  // on any site the way "backup-codes"/"totp" are).
+  describe('host-qualified patterns (hostname + pathname, not pathname alone)', () => {
+    it("matches Slack's App-Level Tokens page (api.slack.com/apps/<id>/general)", () => {
+      assert.equal(urlLooksSensitive('https://api.slack.com/apps/A01234ABCD/general'), true);
+    });
+
+    it('does not match an unrelated site with the same path shape ("apps"/"general" alone are too generic)', () => {
+      assert.equal(urlLooksSensitive('https://example.test/apps/123/general'), false);
+    });
+
+    it('does not match a DIFFERENT tab on the same Slack app (only /general is the token page)', () => {
+      assert.equal(urlLooksSensitive('https://api.slack.com/apps/A01234ABCD/oauth'), false);
+    });
+
+    for (const path of ['/settings/tokens', '/settings/tokens/new', '/settings/personal-access-tokens']) {
+      it(`matches GitHub's personal access token page (github.com${path})`, () => {
+        assert.equal(urlLooksSensitive(`https://github.com${path}`), true);
+      });
+    }
+
+    it('does not match an unrelated site with a "/settings/tokens" path ("tokens" alone is too generic)', () => {
+      assert.equal(urlLooksSensitive('https://example.test/settings/tokens'), false);
+    });
+
+    it("matches Google's App Passwords page (myaccount.google.com/apppasswords)", () => {
+      assert.equal(urlLooksSensitive('https://myaccount.google.com/apppasswords'), true);
+    });
+
+    it("matches Linear's personal API keys page (linear.app/settings/account/security)", () => {
+      assert.equal(urlLooksSensitive('https://linear.app/settings/account/security'), true);
+    });
+
+    it('does not match an unrelated site with the same generic settings path', () => {
+      assert.equal(urlLooksSensitive('https://example.test/settings/account/security'), false);
+    });
+
+    it('a malformed URL (no parseable hostname) never matches a host-qualified pattern', () => {
+      // DEFAULT_SENSITIVE_URL_PATTERNS (pathname-only) can still match a
+      // raw, unparseable string -- but DEFAULT_SENSITIVE_HOST_PATH_PATTERNS
+      // never does, since there's no reliable hostname to qualify
+      // against (see urlLooksSensitive's catch block).
+      assert.equal(urlLooksSensitive('github.com/settings/tokens'), false);
+    });
+  });
 });
 
 // PRI-3360: pageTextReadRefused -- the whole-page text-read gate for
@@ -224,8 +273,9 @@ describe('pageTextReadRefused', () => {
   // A minimal page-session fake: dispatches Runtime.evaluate by
   // expression content, the same discrimination extraction.test.mjs uses,
   // since pageTextReadRefused issues up to three DIFFERENT evaluate calls
-  // (URL, marker, density) that a single canned response can't usefully
-  // distinguish.
+  // (URL, marker, visible-text -- the last one checked against BOTH the
+  // credential-shape pattern and code-list density/keyword) that a single
+  // canned response can't usefully distinguish.
   function makePs({ url = 'https://example.test/dashboard', marker = false, text = 'Welcome to the dashboard.' } = {}) {
     const calls = [];
     return {
@@ -268,6 +318,28 @@ describe('pageTextReadRefused', () => {
     const refusal = await pageTextReadRefused(makePs({ text: codeDenseText }), 'attr');
     assert.match(refusal, /attr refused/);
     assert.match(refusal, /dense list of secret-shaped codes/);
+  });
+
+  // PRI-3360 round 3 (Reeve): a LONE credential-shaped token -- no
+  // sensitive URL, no marker, and nowhere near 6+ code-shaped tokens for
+  // the density signal to fire -- must still refuse a whole-page read.
+  // Before this round, it did not: eval/a selector-less extract would
+  // have returned it in clear, even though the SAME token on the SAME
+  // page already refused an element-scoped extract/attr of it
+  // (credential-guard.js's refuseIfTextLeaksSecret).
+  it('refuses on a lone credential-shaped token alone, off the URL list, with no marker and no code-list density', async () => {
+    // Assembled from parts at runtime, like FAKE_TOKEN elsewhere in this
+    // codebase, so no complete token-shaped literal sits in the source
+    // (GitHub push protection rejects those even when obviously fake).
+    const fakeToken = ['xoxb', '1111111111', '2222222222', 'FAKEfakeFAKEfakeFAKEfake'].join('-');
+    const tokenOnlyText = `Your new bot token: ${fakeToken}`;
+    const refusal = await pageTextReadRefused(makePs({ text: tokenOnlyText }), 'eval');
+    assert.match(refusal, /eval refused/);
+    assert.match(refusal, /credential-shaped/);
+  });
+
+  it('a single ordinary word does not false-positive the credential-shape check', async () => {
+    assert.equal(await pageTextReadRefused(makePs({ text: 'Welcome back, Jordan.' }), 'eval'), null);
   });
 
   // PRI-3360 round 2 (jc review of #65): density ALONE, with no nearby

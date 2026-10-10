@@ -122,6 +122,25 @@ describe('codeListNearBackupKeyword', () => {
     assert.equal(codeListNearBackupKeyword(text), true);
   });
 
+  // PRI-3360 round 3 (jc, approving the keyword rule): the set must also
+  // cover "single-use" and "verification code(s)" -- GitHub, Google and
+  // Slack phrase their own code/token pages this way. Dedicated tests for
+  // each, in addition to the "one-time codes" case above.
+  it('refuses with "single-use codes" nearby (Slack-style phrasing)', () => {
+    const text = 'These are your single-use codes -- each one only works once: 482910, 839201, 710284, 920817, 118402, 553291';
+    assert.equal(codeListNearBackupKeyword(text), true);
+  });
+
+  it('refuses with "verification codes" nearby (Google-style phrasing)', () => {
+    const text = 'Print or save your verification codes in case you lose your phone: 482910, 839201, 710284, 920817, 118402, 553291';
+    assert.equal(codeListNearBackupKeyword(text), true);
+  });
+
+  it('refuses with singular "verification code" nearby too', () => {
+    const text = 'Your verification code list: 482910, 839201, 710284, 920817, 118402, 553291';
+    assert.equal(codeListNearBackupKeyword(text), true);
+  });
+
   it('does NOT refuse a code-dense cluster with no nearby keyword at all', () => {
     const text = '7f3k-9d2m a83f-29dk qq1z-88mn x0p4-rr3e 8k2j-m9vd zz91-3bqa';
     assert.equal(codeListNearBackupKeyword(text), false);

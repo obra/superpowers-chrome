@@ -384,6 +384,62 @@ describe('capturePageArtifacts credential guard', () => {
   });
 });
 
+// PRI-3360 round 3 (Reeve): workers have read auto-capture .md/.html
+// files under /work/.cache/superpowers/browser/ directly with file
+// reads, bypassing the tool entirely -- so capturePageArtifacts' write
+// decision is the ONLY guard for those files, with no second chance at
+// read time the way eval/extract/attr get from sensitive-url.js's
+// pageTextReadRefused. This round added a KEYWORD requirement to the
+// code-list density signal for WHOLE-PAGE READS
+// (codeListNearBackupKeyword, sensitive-url.js) -- this suite proves
+// that change has NO effect here: mustSuppress (capture.js) calls
+// containsCredentialShaped directly and never calls codeListDetected or
+// codeListNearBackupKeyword at all, so a token-shaped string still
+// suppresses the write with no keyword, no code-list density, and
+// nothing else on the page to cue it.
+describe('PRI-3360 round 3: the code-list keyword rule does not loosen auto-capture (Reeve)', () => {
+  // Deliberately contains NONE of the backup/recovery/one-time/single-
+  // use/verification/2FA words this round added to
+  // BACKUP_CODE_KEYWORD_PATTERNS, and no code-list density (one token,
+  // not six+) -- isolates containsCredentialShaped's own token-shape
+  // match from every other signal in this codebase.
+  const TOKEN_WITH_NO_KEYWORD_PAGE = {
+    html: `<html><body><p>Integration configured.</p><code>${FAKE_TOKEN}</code></body></html>`,
+    markdown: `Integration configured.\n\n${FAKE_TOKEN}`,
+    domSummary: 'Integration configured.\nInteractive: 0 buttons, 0 inputs, 0 links\nHeadings: ""\nLayout: body',
+    renderedText: '',
+  };
+
+  it('still writes no files for a token-shaped string with no backup/recovery keyword anywhere on the page', async () => {
+    const { capturePageArtifacts, state, calls } = setup({ before: TOKEN_WITH_NO_KEYWORD_PAGE });
+    const result = await capturePageArtifacts(0, 'navigate');
+
+    assert.equal(result.credentialSuppressed, true);
+    assert.deepEqual(sessionFiles(state), [], 'no capture artifacts may be written');
+    assert.equal(calls.screenshot, 0, 'no screenshot may be taken');
+    assert.equal(result.files, null);
+    assertNoLeak(result);
+  });
+
+  it("confirms the page itself has none of this round's keywords, so this is really testing the token-shape path, not the keyword-gated one", () => {
+    const { BACKUP_CODE_KEYWORD_PATTERNS } = require('../../skills/browsing/lib/code-list-detector.js');
+    const pageText = `${TOKEN_WITH_NO_KEYWORD_PAGE.html} ${TOKEN_WITH_NO_KEYWORD_PAGE.markdown}`;
+    for (const re of BACKUP_CODE_KEYWORD_PATTERNS) {
+      assert.doesNotMatch(pageText, re, `fixture page unexpectedly matches ${re} -- rewrite it so this test isolates the right code path`);
+    }
+  });
+
+  it('a raw fs.readFileSync of the session dir finds nothing at all (the exact bypass Reeve described)', async () => {
+    const { capturePageArtifacts, state } = setup({ before: TOKEN_WITH_NO_KEYWORD_PAGE });
+    await capturePageArtifacts(0, 'navigate');
+
+    // No sessionDir is even created when everything is suppressed (see
+    // sessionFiles() above) -- so there is no directory a worker's direct
+    // file read could find the token in, let alone a file containing it.
+    assert.ok(!state.sessionDir || !fs.existsSync(state.sessionDir) || fs.readdirSync(state.sessionDir).length === 0);
+  });
+});
+
 // sensitive-url.js: a page suppressed purely because its URL matches a
 // known-sensitive pattern (2FA/MFA/recovery-codes/...), independent of
 // the credential-shape scan and html-with-scrub.js's default
@@ -431,6 +487,75 @@ describe('capturePageArtifacts URL-pattern suppression (sensitive-url.js)', () =
     assert.equal(clicked.credentialSuppressed, true);
     assert.equal(clicked.suppressedReason, 'sensitive-url');
     assert.equal(clicked.files, null);
+  });
+});
+
+// PRI-3360 round 3 (Reeve, finding 4): Slack's App-Level Tokens page
+// (api.slack.com/apps/<id>/general) with the token dialog open. Fake
+// xapp-1-... token, assembled from parts at runtime like FAKE_TOKEN
+// above so no complete token-shaped literal sits in the source. Belt
+// and suspenders by construction: this page is suppressed BOTH by the
+// new host-qualified URL pattern (sensitive-url.js's
+// DEFAULT_SENSITIVE_HOST_PATH_PATTERNS) and independently by the
+// pre-existing xapp- token-shape pattern (credential-guard.js's
+// TOKEN_PATTERNS) -- either alone is already sufficient, which this
+// suite's URL-only clean-content counterpart test below isolates.
+const FAKE_SLACK_APP_TOKEN = ['xapp', '1', 'A01234ABCD', 'FAKEfakeFAKEfakeFAKEfakeFAKEfake'].join('-');
+const SLACK_APP_TOKEN_PAGE = {
+  url: 'https://api.slack.com/apps/A01234ABCD/general',
+  html:
+    '<html><body><h1>Basic Information</h1>' +
+    '<section><h2>App-Level Tokens</h2>' +
+    '<div role="dialog" aria-label="Token generated">' +
+    `<p>Add scopes to create an app-level token</p><code>${FAKE_SLACK_APP_TOKEN}</code>` +
+    '<button>Done</button></div></section>' +
+    '</body></html>',
+  markdown: `# Basic Information\n\n## App-Level Tokens\n\n${FAKE_SLACK_APP_TOKEN}`,
+  domSummary: 'Basic Information\nInteractive: 1 buttons, 0 inputs, 0 links\nHeadings: "Basic Information", "App-Level Tokens"\nLayout: body',
+  renderedText: '',
+};
+
+// Same URL, no token anywhere -- isolates the URL-pattern suppression
+// from the token-shape scan, the same way SENSITIVE_URL_CLEAN_PAGE does
+// for Slack's 2FA setup route above.
+const SLACK_APP_TOKEN_URL_CLEAN_PAGE = {
+  ...CLEAN_PAGE,
+  url: 'https://api.slack.com/apps/A01234ABCD/general',
+};
+
+describe("PRI-3360 round 3 (Reeve): Slack's App-Level Tokens page", () => {
+  it('writes no files and returns only metadata with the token dialog open', async () => {
+    const { capturePageArtifacts, state, calls } = setup({ before: SLACK_APP_TOKEN_PAGE });
+    const result = await capturePageArtifacts(0, 'navigate');
+
+    assert.equal(result.credentialSuppressed, true);
+    assert.deepEqual(sessionFiles(state), [], 'no capture artifacts may be written');
+    assert.equal(calls.screenshot, 0, 'no screenshot may be taken');
+    assert.equal(result.files, null);
+
+    const text = JSON.stringify(result);
+    assert.ok(!text.includes(FAKE_SLACK_APP_TOKEN), `token leaked into result: ${text}`);
+    assert.ok(!text.includes('FAKEfake'), `token fragment leaked into result: ${text}`);
+  });
+
+  it('suppresses purely from the URL too, even with no token on the page (isolates the new host-qualified pattern)', async () => {
+    const { capturePageArtifacts, state } = setup({ before: SLACK_APP_TOKEN_URL_CLEAN_PAGE });
+    const result = await capturePageArtifacts(0, 'navigate');
+
+    assert.equal(result.credentialSuppressed, true);
+    assert.equal(result.suppressedReason, 'sensitive-url');
+    assert.deepEqual(sessionFiles(state), []);
+  });
+
+  it('eval refuses outright on this URL -- the whole-page read gate, not just a capture-side suppression flag', async () => {
+    // Unlike TOKEN_PAGE (an ORDINARY URL) above, where eval still runs
+    // and only the capture metadata is suppressed, this page's URL is
+    // itself flagged sensitive -- sensitive-url.js's pageTextReadRefused
+    // (via evaluateWithCapture's pageTextReadRefusedForPs call) refuses
+    // BEFORE the expression ever runs, same as it would for Slack's 2FA
+    // setup page.
+    const { evaluateWithCapture } = setup({ before: SLACK_APP_TOKEN_PAGE });
+    await assert.rejects(() => evaluateWithCapture(0, 'document.title'), /eval refused.*sensitive/i);
   });
 });
 

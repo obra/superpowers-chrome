@@ -430,21 +430,47 @@ describe('credential guard through the MCP server (real Chrome)', { skip: !CHROM
     assert.equal(server.capturedFiles().length, filesBefore);
   });
 
-  it('extract redacts the token and eval redacts it but still returns ordinary values', async () => {
+  // PRI-3360 round 3 (Reeve): whole-page extract('text')/eval on a page
+  // showing a credential-shaped token now refuse OUTRIGHT (sensitive-
+  // url.js's pageTextReadRefused, containsCredentialShaped signal) --
+  // they used to run and come back REDACTED instead (response-format.ts's
+  // own, older, separate redactCredentialShaped pass over the formatted
+  // response text). Refusing outright is strictly more protective: a
+  // redacted-but-returned result can still leak information a refusal
+  // can't (the token's LENGTH, as the "blind" eval below used to prove
+  // still worked) -- and it's the exact same treatment every other
+  // pageTextReadRefused signal (URL/marker/density+keyword) already gets.
+  // Narrower, ELEMENT-SCOPED reads of something else on the SAME page
+  // still work fine; only the whole-page forms are affected.
+  it('extract/eval refuse outright on a page showing a credential-shaped token (whole-page forms)', async () => {
     const extracted = await server.call({ action: 'extract', payload: 'text' });
-    assert.equal(extracted.isError, false, extracted.text);
-    assert.ok(extracted.text.includes(REDACTION), extracted.text);
-    assert.ok(!extracted.text.includes(FAKE_TOKEN), extracted.text);
+    assert.equal(extracted.isError, true, extracted.text);
+    assert.match(extracted.text, /extract refused/);
+    assert.match(extracted.text, /credential-shaped/);
+    assertNoLeak(extracted.text);
 
     const html = await server.call({ action: 'extract', payload: 'html' });
-    assert.ok(!html.text.includes(FAKE_TOKEN), html.text);
+    assert.equal(html.isError, true, html.text);
+    assert.match(html.text, /extract refused/);
+    assertNoLeak(html.text);
 
     const leaked = await server.call({ action: 'eval', payload: "document.getElementById('tok').textContent" });
-    assert.ok(leaked.text.includes(`Result: ${REDACTION}`), leaked.text);
+    assert.equal(leaked.isError, true, leaked.text);
+    assert.match(leaked.text, /eval refused/);
     assertNoLeak(leaked.text);
 
+    // The "blind" length-only query used to still run (and reveal the
+    // token's length even while redacting its value) -- it's refused
+    // outright now too, same as any other eval on this page.
     const blind = await server.call({ action: 'eval', payload: "document.getElementById('tok').textContent.length" });
-    assert.ok(blind.text.includes(`Result: ${FAKE_TOKEN.length}`), blind.text);
+    assert.equal(blind.isError, true, blind.text);
+    assert.match(blind.text, /eval refused/);
+
+    // A narrower, element-scoped read of something ELSE on the same page
+    // still works -- only the whole-page forms refuse.
+    const button = await server.call({ action: 'extract', selector: '#b', payload: 'text' });
+    assert.equal(button.isError, false, button.text);
+    assert.equal(button.text, 'Done');
   });
 
   it('screenshot refuses on a page showing a token', async () => {
@@ -1577,5 +1603,72 @@ describe('PRI-3360: the credential-capture override cannot be set from the agent
     } finally {
       fs.rmSync(dir2, { recursive: true, force: true });
     }
+  });
+});
+
+const FAKE_SLACK_APP_TOKEN = ['xapp', '1', 'A01234ABCD', 'FAKEfakeFAKEfakeFAKEfakeFAKEfake'].join('-');
+
+describe('PRI-3360 round 3 (Reeve): Slacks App-Level Tokens page (real Chrome)', {
+  skip: !CHROME_AVAILABLE && 'Chrome not installed',
+}, () => {
+  let server;
+  let dir;
+  before(async () => {
+    server = await startServer();
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'slack-app-token-'));
+    fs.writeFileSync(
+      path.join(dir, 'general.html'),
+      '<title>Slack API: Applications</title><h1>Basic Information</h1>' +
+      '<section><h2>App-Level Tokens</h2>' +
+      '<div role="dialog" aria-label="Token generated">' +
+      `<p>Add scopes to create an app-level token</p><code id="token">${FAKE_SLACK_APP_TOKEN}</code>` +
+      '<button id="done">Done</button></div></section>'
+    );
+  });
+  after(async () => {
+    await server?.stop();
+    if (dir) fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('the token never reaches an auto-capture file', async () => {
+    const filesBefore = server.capturedFiles().length;
+    await server.call({ action: 'navigate', payload: `file://${path.join(dir, 'general.html')}` });
+
+    for (const file of server.capturedFiles().slice(filesBefore)) {
+      const written = fs.readFileSync(file);
+      assert.ok(!written.includes(Buffer.from(FAKE_SLACK_APP_TOKEN)), `token leaked into ${file}`);
+      assert.ok(!written.includes(Buffer.from('FAKEfake')), `token fragment leaked into ${file}`);
+    }
+  });
+
+  it('eval(outerHTML) is refused, not returned in clear', async () => {
+    await server.call({ action: 'navigate', payload: `file://${path.join(dir, 'general.html')}` });
+    const { text, isError } = await server.call({ action: 'eval', payload: 'document.documentElement.outerHTML' });
+    assert.equal(isError, true, text);
+    assert.match(text, /eval refused/);
+    assert.doesNotMatch(text, new RegExp(FAKE_SLACK_APP_TOKEN), `token leaked into refusal text:\n${text}`);
+  });
+
+  it('a whole-page extract is refused too', async () => {
+    await server.call({ action: 'navigate', payload: `file://${path.join(dir, 'general.html')}` });
+    const { text, isError } = await server.call({ action: 'extract', payload: 'text' });
+    assert.equal(isError, true, text);
+    assert.match(text, /extract refused/);
+    assert.doesNotMatch(text, new RegExp(FAKE_SLACK_APP_TOKEN), `token leaked into refusal text:\n${text}`);
+  });
+
+  it('an element-scoped read of the token specifically is refused too (content-shape check, not just the whole-page gate)', async () => {
+    await server.call({ action: 'navigate', payload: `file://${path.join(dir, 'general.html')}` });
+    const { text, isError } = await server.call({ action: 'extract', selector: '#token', payload: 'text' });
+    assert.equal(isError, true, text);
+    assert.match(text, /extract refused/);
+    assert.doesNotMatch(text, new RegExp(FAKE_SLACK_APP_TOKEN), `token leaked into refusal text:\n${text}`);
+  });
+
+  it('an element-scoped read of the UNRELATED Done button on the same page still succeeds', async () => {
+    await server.call({ action: 'navigate', payload: `file://${path.join(dir, 'general.html')}` });
+    const { text, isError } = await server.call({ action: 'extract', selector: '#done', payload: 'text' });
+    assert.equal(isError, false, text);
+    assert.equal(text, 'Done');
   });
 });
