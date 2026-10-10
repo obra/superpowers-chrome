@@ -122,10 +122,10 @@ describe('codeListNearBackupKeyword', () => {
     assert.equal(codeListNearBackupKeyword(text), true);
   });
 
-  // PRI-3360 round 3 (jc, approving the keyword rule): the set must also
-  // cover "single-use" and "verification code(s)" -- GitHub, Google and
-  // Slack phrase their own code/token pages this way. Dedicated tests for
-  // each, in addition to the "one-time codes" case above.
+  // The set also covers "single-use" and "verification code(s)" --
+  // GitHub, Google and Slack phrase their own code/token pages this
+  // way. Dedicated tests for each, in addition to the "one-time codes"
+  // case above.
   it('refuses with "single-use codes" nearby (Slack-style phrasing)', () => {
     const text = 'These are your single-use codes -- each one only works once: 482910, 839201, 710284, 920817, 118402, 553291';
     assert.equal(codeListNearBackupKeyword(text), true);

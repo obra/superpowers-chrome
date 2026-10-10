@@ -101,10 +101,9 @@
  * why (`:root`, `*`, `html > body`, etc. all resolve to the same scope
  * but don't match that literal list).
  *
- * PRI-3360 round 3 (Reeve), confirmed in round 4: Slack's App-Level
- * Tokens page, GitHub's personal access token pages, Google's App
- * Passwords page, and Linear's personal API keys page JOIN this same
- * sensitive-page set -- urlLooksSensitive below is the ONE function every
+ * Slack's App-Level Tokens page, GitHub's personal access token pages,
+ * Google's App Passwords page, and Linear's personal API keys page JOIN
+ * this same sensitive-page set -- urlLooksSensitive below is the ONE function every
  * caller (the read gate below AND capture.js's write-side suppression)
  * ever consults, with no separate "capture-only" category. They live in
  * DEFAULT_SENSITIVE_HOST_PATH_PATTERNS, a SECOND list matched against
@@ -336,26 +335,23 @@ function wholePageReadRefusal(action, reason) {
  *      actually showing backup/recovery codes, not just text that
  *      happens to cluster densely.
  *
- * PRI-3360 round 3 (Reeve) briefly added a fourth signal here --
- * containsCredentialShaped on the page's own visible text, unconditional
- * -- to catch a lone credential-shaped token with nothing else to flag
- * the page. Round 4 (jc, round 4 review) removed it again: it
- * false-positived on Slack's own token-TYPES documentation page (an
- * UNLISTED page that legitimately shows example token strings to explain
- * their format), the same class of problem round 2 found with code-list
- * density. Catching a lone token is now EVAL's job specifically, done
+ * This function deliberately does NOT also check containsCredentialShaped
+ * on the page's own visible text, unconditionally, to catch a lone
+ * credential-shaped token with nothing else to flag the page -- that
+ * false-positives on a real, unlisted page that legitimately shows
+ * example token strings to explain their format (a token-types
+ * documentation page), the same class of problem density-alone has off
+ * the URL list. Catching a lone token is EVAL's job specifically, done
  * AFTER running (see capture.js's evaluateWithCapture and credential-
  * guard.js's stringLooksLikeSecret/valueLeaksSecret), gated on the page's
  * URL already being on the sensitive-URL list -- not a blanket whole-page
  * pre-check that would block this pre-check function's only two OTHER
  * callers (extractPageText/getSanitizedHtml's whole-page form) from ever
- * reading an unlisted page with an example token on it, the exact page
- * class this round's own test fixture (the Slack token-types docs page)
- * is built to prove stays readable. Output-level redaction
- * (response-format.ts's redactCredentialShaped) still masks any token
- * shape that reaches the final response text regardless, on every page,
- * listed or not -- that layer was never removed and still does its job
- * for a page this function doesn't refuse.
+ * reading an unlisted page with an example token on it. Output-level
+ * redaction (response-format.ts's redactCredentialShaped) still masks
+ * any token shape that reaches the final response text regardless, on
+ * every page, listed or not -- that layer stays independent of this
+ * function's own decision not to refuse.
  *
  * Returns null when none apply (the caller's whole-page read may
  * proceed). Deliberately a nullable-string return, not a throw, so

@@ -893,34 +893,30 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
     return run();
   }
 
-  // PRI-3360 round 4 (jc + Reeve's final design): eval USED TO be gated
-  // the same way a selector-less extract is -- refused outright before
-  // running, on a sensitive URL, a marker, or dense code-shaped text --
-  // because there was "no result shape to inspect and redact after the
-  // fact." That blanket refusal was too broad: it blocked a `.length`/
+  // eval does NOT refuse outright before running on a sensitive URL, a
+  // marker, or dense code-shaped text, the way a selector-less extract
+  // does -- a blanket refusal there would also block a `.length`/
   // boolean/numeric query that never reveals the secret's VALUE at all,
-  // on pages where nothing else was wrong. Round 4's fix is a real result
-  // shape check, not a skip: eval now ALWAYS RUNS (except when a live
-  // data-sen-secret marker is present -- see below for why that ONE
-  // signal still has to be a pre-check), and its RETURN VALUE is
-  // inspected before anything is handed back. Numbers, booleans, null and
-  // undefined always pass through -- none of those types can carry a
-  // token-shaped string. Every string in the result (recursively, for an
-  // object or array eval returns) is checked by credential-guard.js's
-  // valueLeaksSecret -- but ONLY when the page's OWN URL is already on
-  // the sensitive-URL list (urlLooksSensitive): off that list, eval
-  // behaves exactly as it did before PRI-3360 existed at all (runs
-  // freely; response-format.ts's own, separate, unconditional
-  // redactCredentialShaped pass still masks any token shape that reaches
-  // the final response text, on every page, listed or not). This is
-  // deliberately NOT applied everywhere: PRI-3360 round 2 already found
-  // that a density-based check misfires on ordinary pages (GitHub/HN);
-  // round 3 found the SAME is true of a bare credential-shape check on at
-  // least one real page (Slack's own token-TYPES documentation, which
-  // legitimately prints example token strings to explain their format) --
-  // scoping the stricter check to pages ALREADY flagged sensitive by
-  // their URL keeps it from reaching ordinary pages that were never the
-  // concern in the first place.
+  // on pages where nothing else is wrong. Instead eval ALWAYS RUNS
+  // (except when a live data-sen-secret marker is present -- see below
+  // for why that ONE signal still has to be a pre-check), and its RETURN
+  // VALUE is inspected before anything is handed back. Numbers, booleans,
+  // null and undefined always pass through -- none of those types can
+  // carry a token-shaped string. Every string in the result (recursively,
+  // for an object or array eval returns) is checked by credential-
+  // guard.js's valueLeaksSecret -- but ONLY when the page's OWN URL is
+  // already on the sensitive-URL list (urlLooksSensitive): off that
+  // list, eval runs freely (response-format.ts's own, separate,
+  // unconditional redactCredentialShaped pass still masks any token
+  // shape that reaches the final response text, on every page, listed
+  // or not). This is deliberately NOT applied everywhere: a density-
+  // based check misfires on ordinary pages (GitHub/HN), and a bare
+  // credential-shape check misfires on a real page that legitimately
+  // prints example token strings to explain their format (e.g. a
+  // provider's own token-TYPES documentation) -- scoping the stricter
+  // check to pages ALREADY flagged sensitive by their URL keeps it from
+  // reaching ordinary pages that were never the concern in the first
+  // place.
   //
   // The marker check stays a PRE-run gate, unlike the URL/content check
   // above: by the time eval produces a plain value, the marker (a live-

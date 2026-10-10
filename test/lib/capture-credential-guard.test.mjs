@@ -206,10 +206,10 @@ function setup({
   dialog = null,
   dialogAfterAction = dialog,
   secretMarkerLive = false,
-  // PRI-3360 round 4: what actions.evaluate returns for any expression
-  // OTHER than 'document.body.innerText' -- lets a test control what an
-  // eval() call's RESULT looks like, now that evaluateWithCapture checks
-  // the result instead of refusing before running.
+  // What actions.evaluate returns for any expression OTHER than
+  // 'document.body.innerText' -- lets a test control what an eval()
+  // call's RESULT looks like, since evaluateWithCapture checks the
+  // result instead of refusing before running.
   evalResult = 42,
 }) {
   const pageRef = { current: before };
@@ -389,25 +389,24 @@ describe('capturePageArtifacts credential guard', () => {
   });
 });
 
-// PRI-3360 round 3 (Reeve): workers have read auto-capture .md/.html
-// files under /work/.cache/superpowers/browser/ directly with file
-// reads, bypassing the tool entirely -- so capturePageArtifacts' write
-// decision is the ONLY guard for those files, with no second chance at
-// read time the way eval/extract/attr get from sensitive-url.js's
-// pageTextReadRefused. This round added a KEYWORD requirement to the
-// code-list density signal for WHOLE-PAGE READS
-// (codeListNearBackupKeyword, sensitive-url.js) -- this suite proves
-// that change has NO effect here: mustSuppress (capture.js) calls
-// containsCredentialShaped directly and never calls codeListDetected or
-// codeListNearBackupKeyword at all, so a token-shaped string still
-// suppresses the write with no keyword, no code-list density, and
-// nothing else on the page to cue it.
-describe('PRI-3360 round 3: the code-list keyword rule does not loosen auto-capture (Reeve)', () => {
+// Workers have read auto-capture .md/.html files under
+// /work/.cache/superpowers/browser/ directly with file reads, bypassing
+// the tool entirely -- so capturePageArtifacts' write decision is the
+// ONLY guard for those files, with no second chance at read time the
+// way eval/extract/attr get from sensitive-url.js's
+// pageTextReadRefused. The code-list density signal for WHOLE-PAGE
+// READS requires a nearby keyword (codeListNearBackupKeyword,
+// sensitive-url.js) -- this suite proves that requirement has NO effect
+// here: mustSuppress (capture.js) calls containsCredentialShaped
+// directly and never calls codeListDetected or codeListNearBackupKeyword
+// at all, so a token-shaped string still suppresses the write with no
+// keyword, no code-list density, and nothing else on the page to cue it.
+describe('the code-list keyword rule does not loosen auto-capture', () => {
   // Deliberately contains NONE of the backup/recovery/one-time/single-
-  // use/verification/2FA words this round added to
-  // BACKUP_CODE_KEYWORD_PATTERNS, and no code-list density (one token,
-  // not six+) -- isolates containsCredentialShaped's own token-shape
-  // match from every other signal in this codebase.
+  // use/verification/2FA words in BACKUP_CODE_KEYWORD_PATTERNS, and no
+  // code-list density (one token, not six+) -- isolates
+  // containsCredentialShaped's own token-shape match from every other
+  // signal in this codebase.
   const TOKEN_WITH_NO_KEYWORD_PAGE = {
     html: `<html><body><p>Integration configured.</p><code>${FAKE_TOKEN}</code></body></html>`,
     markdown: `Integration configured.\n\n${FAKE_TOKEN}`,
@@ -426,7 +425,7 @@ describe('PRI-3360 round 3: the code-list keyword rule does not loosen auto-capt
     assertNoLeak(result);
   });
 
-  it("confirms the page itself has none of this round's keywords, so this is really testing the token-shape path, not the keyword-gated one", () => {
+  it('confirms the page itself has none of the backup/recovery keywords, so this is really testing the token-shape path, not the keyword-gated one', () => {
     const { BACKUP_CODE_KEYWORD_PATTERNS } = require('../../skills/browsing/lib/code-list-detector.js');
     const pageText = `${TOKEN_WITH_NO_KEYWORD_PAGE.html} ${TOKEN_WITH_NO_KEYWORD_PAGE.markdown}`;
     for (const re of BACKUP_CODE_KEYWORD_PATTERNS) {
@@ -434,7 +433,7 @@ describe('PRI-3360 round 3: the code-list keyword rule does not loosen auto-capt
     }
   });
 
-  it('a raw fs.readFileSync of the session dir finds nothing at all (the exact bypass Reeve described)', async () => {
+  it('a raw fs.readFileSync of the session dir finds nothing at all (the exact bypass this isolates)', async () => {
     const { capturePageArtifacts, state } = setup({ before: TOKEN_WITH_NO_KEYWORD_PAGE });
     await capturePageArtifacts(0, 'navigate');
 
@@ -495,12 +494,11 @@ describe('capturePageArtifacts URL-pattern suppression (sensitive-url.js)', () =
   });
 });
 
-// PRI-3360 round 3 (Reeve, finding 4): Slack's App-Level Tokens page
-// (api.slack.com/apps/<id>/general) with the token dialog open. Fake
-// xapp-1-... token, assembled from parts at runtime like FAKE_TOKEN
-// above so no complete token-shaped literal sits in the source. Belt
-// and suspenders by construction: this page is suppressed BOTH by the
-// new host-qualified URL pattern (sensitive-url.js's
+// Slack's App-Level Tokens page (api.slack.com/apps/<id>/general) with
+// the token dialog open. Fake xapp-1-... token, assembled from parts at
+// runtime like FAKE_TOKEN above so no complete token-shaped literal
+// sits in the source. Belt and suspenders by construction: this page is
+// suppressed BOTH by the host-qualified URL pattern (sensitive-url.js's
 // DEFAULT_SENSITIVE_HOST_PATH_PATTERNS) and independently by the
 // pre-existing xapp- token-shape pattern (credential-guard.js's
 // TOKEN_PATTERNS) -- either alone is already sufficient, which this
@@ -528,7 +526,7 @@ const SLACK_APP_TOKEN_URL_CLEAN_PAGE = {
   url: 'https://api.slack.com/apps/A01234ABCD/general',
 };
 
-describe("PRI-3360 round 3 (Reeve): Slack's App-Level Tokens page", () => {
+describe("Slack's App-Level Tokens page", () => {
   it('writes no files and returns only metadata with the token dialog open', async () => {
     const { capturePageArtifacts, state, calls } = setup({ before: SLACK_APP_TOKEN_PAGE });
     const result = await capturePageArtifacts(0, 'navigate');
@@ -552,8 +550,8 @@ describe("PRI-3360 round 3 (Reeve): Slack's App-Level Tokens page", () => {
     assert.deepEqual(sessionFiles(state), []);
   });
 
-  // PRI-3360 round 4 (jc + Reeve's final design): eval no longer refuses
-  // up front on a sensitive URL -- it RUNS, and the RESULT is checked.
+  // eval does not refuse up front on a sensitive URL -- it RUNS, and the
+  // RESULT is checked.
   it('eval that returns something harmless on this sensitive URL still succeeds', async () => {
     const { evaluateWithCapture } = setup({ before: SLACK_APP_TOKEN_PAGE, evalResult: 42 });
     const evaluated = await evaluateWithCapture(0, 'document.title');
@@ -574,7 +572,7 @@ describe("PRI-3360 round 3 (Reeve): Slack's App-Level Tokens page", () => {
     );
   });
 
-  it('eval that returns a TRUNCATED prefix of the token is refused too (Reeve case: el.value.slice(0,8))', async () => {
+  it('eval that returns a TRUNCATED prefix of the token is refused too (el.value.slice(0,8))', async () => {
     const sliced = FAKE_SLACK_APP_TOKEN.slice(0, 8);
     const { evaluateWithCapture } = setup({ before: SLACK_APP_TOKEN_PAGE, evalResult: sliced });
     await assert.rejects(

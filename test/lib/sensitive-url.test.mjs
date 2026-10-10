@@ -208,11 +208,11 @@ describe('sensitive-url', () => {
     assert.equal(urlLooksSensitive('https://example.test/dashboard'), false);
   });
 
-  // PRI-3360 round 3 (Reeve): host-qualified patterns -- see
-  // sensitive-url.js's module comment for why these are matched against
-  // hostname+pathname+hash rather than pathname alone (the path segment
-  // alone, on each of these, is too ordinary a word to accept matching
-  // on any site the way "backup-codes"/"totp" are).
+  // Host-qualified patterns -- see sensitive-url.js's module comment for
+  // why these are matched against hostname+pathname+hash rather than
+  // pathname alone (the path segment alone, on each of these, is too
+  // ordinary a word to accept matching on any site the way
+  // "backup-codes"/"totp" are).
   describe('host-qualified patterns (hostname + pathname, not pathname alone)', () => {
     it("matches Slack's App-Level Tokens page (api.slack.com/apps/<id>/general)", () => {
       assert.equal(urlLooksSensitive('https://api.slack.com/apps/A01234ABCD/general'), true);
@@ -320,18 +320,16 @@ describe('pageTextReadRefused', () => {
     assert.match(refusal, /dense list of secret-shaped codes/);
   });
 
-  // PRI-3360 round 3 (Reeve) briefly added a fourth signal here --
-  // containsCredentialShaped on the page's own visible text, unconditional
-  // -- specifically to catch a lone credential-shaped token with no other
-  // signal. Round 4 (jc) removed it again: it false-positived on an
-  // UNLISTED page that legitimately prints example token strings (Slack's
-  // own token-types documentation -- see
-  // test/lib/fixtures/code-list-negatives/ and
-  // test/credential-guard-mcp.test.mjs's "Slack token-types docs page"
-  // coverage). A lone token with nothing else wrong on the page is now
-  // eval's job specifically, checked AFTER running and only on a page
-  // whose URL is ALREADY on the sensitive-URL list -- see
-  // credential-guard.js's valueLeaksSecret and capture.js's
+  // This function deliberately does NOT also check containsCredentialShaped
+  // on the page's own visible text, unconditionally, to catch a lone
+  // credential-shaped token with no other signal -- that false-positives
+  // on an UNLISTED page that legitimately prints example token strings
+  // (a token-types documentation page -- see test/lib/fixtures/
+  // code-list-negatives/ and test/credential-guard-mcp.test.mjs's
+  // "token-types docs page" coverage). A lone token with nothing else
+  // wrong on the page is EVAL's job specifically, checked AFTER running
+  // and only on a page whose URL is ALREADY on the sensitive-URL list --
+  // see credential-guard.js's valueLeaksSecret and capture.js's
   // evaluateWithCapture. extractPageText/getSanitizedHtml's whole-page
   // form (this function's other two callers) never gets this check at
   // all, by design: they have no narrower, value-blind fallback the way

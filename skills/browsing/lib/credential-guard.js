@@ -13,13 +13,13 @@
  *     prose that merely names a prefix ("bot tokens start with xoxb-")
  *     does not trip it.
  *   - Bare token PREFIXES (TOKEN_PREFIXES), no minimum trailing length --
- *     round 4 (PRI-3360, jc + Reeve): catches a value TRUNCATED down to
- *     just its prefix (`el.value.slice(0,8)` of a real token), which the
- *     full-shape patterns above no longer match.
+ *     catches a value TRUNCATED down to just its prefix (`el.value.
+ *     slice(0,8)` of a real token), which the full-shape patterns above
+ *     no longer match.
  *   - A bare alphanumeric run that MIXES letters and digits
- *     (hasLongMixedAlnumRun) -- jc's rule for an unprefixed TOTP/HOTP seed
- *     (bare base32), narrowed in round 5 to exempt an all-digit or
- *     all-letter run (an ordinary DOM identifier, not a secret).
+ *     (hasLongMixedAlnumRun), for an unprefixed TOTP/HOTP seed (bare
+ *     base32). An all-digit or all-letter run is exempt (an ordinary DOM
+ *     identifier, not a secret).
  *   - An explicit opt-in marker: any element carrying the
  *     `data-sen-secret` attribute. Use it for secrets with no distinctive
  *     shape at all (backup codes with no uniform prefix or run length).
@@ -56,21 +56,20 @@ const TOKEN_PATTERNS = [
   'otpauth://[^\\s"\'<>]*[?&;]secret=[A-Za-z0-9=]{16,}',
 ];
 
-// Round 4 (PRI-3360, jc + Reeve's final design): bare PREFIXES, not full
-// shapes -- a value a page or an eval expression TRUNCATES (`el.value.
-// slice(0,8)` of a real xoxb- token) no longer matches TOKEN_PATTERNS'
-// full regexes (those require 20-40+ trailing chars), but it still names
-// itself. Kept as a SEPARATE list from TOKEN_PATTERNS rather than derived
-// from it programmatically: several TOKEN_PATTERNS entries bundle more
-// than one prefix into a single alternation (`xox[abposr]-`,
-// `gh[pousr]_`), so mechanically stripping each pattern down to "whatever
-// comes before the first {n,}" would need the same character-class
-// expansion logic maintained twice; a short, explicit, hand-kept list next
-// to TOKEN_PATTERNS is more obviously correct and just as easy to extend.
-// Includes three prefixes with no full-shape entry in TOKEN_PATTERNS at
-// all yet (`tskey-` Tailscale, `sk-` OpenAI/Stripe-style, `lin_api_`
-// Linear) -- prefix-only detection is this round's answer for those until
-// a full shape is worth adding.
+// Bare PREFIXES, not full shapes -- a value a page or an eval expression
+// TRUNCATES (`el.value.slice(0,8)` of a real xoxb- token) no longer
+// matches TOKEN_PATTERNS' full regexes (those require 20-40+ trailing
+// chars), but it still names itself. Kept as a SEPARATE list from
+// TOKEN_PATTERNS rather than derived from it programmatically: several
+// TOKEN_PATTERNS entries bundle more than one prefix into a single
+// alternation (`xox[abposr]-`, `gh[pousr]_`), so mechanically stripping
+// each pattern down to "whatever comes before the first {n,}" would need
+// the same character-class expansion logic maintained twice; a short,
+// explicit, hand-kept list next to TOKEN_PATTERNS is more obviously
+// correct and just as easy to extend. Includes three prefixes with no
+// full-shape entry in TOKEN_PATTERNS at all yet (`tskey-` Tailscale,
+// `sk-` OpenAI/Stripe-style, `lin_api_` Linear) -- prefix-only detection
+// is the answer for those until a full shape is worth adding.
 const TOKEN_PREFIXES = [
   'xoxb-', 'xoxp-', 'xoxa-', 'xoxr-', 'xoxs-', 'xoxo-', // Slack bot/user/app/refresh/legacy
   'xoxe-', 'xoxe.', // Slack rotating
@@ -100,13 +99,12 @@ function escapeRegExp(s) {
 // from matching an ordinary word that merely CONTAINS one of these short
 // sequences mid-word.
 //
-// Round 6 (jc): NO case-insensitive flag, unlike before -- every prefix
-// here except `A3-` is already lowercase-canonical in real-world use
-// (Slack/GitHub/Tailscale/OpenAI/Linear tokens are never issued
-// uppercase), so dropping `i` costs nothing for those, and fixes a real
-// false match: `A3-` (1Password's Secret Key prefix, which IS always
-// uppercase) was matching ordinary lowercase text like "a3-paper" under
-// the old case-insensitive version.
+// No case-insensitive flag: every prefix here except `A3-` is already
+// lowercase-canonical in real-world use (Slack/GitHub/Tailscale/OpenAI/
+// Linear tokens are never issued uppercase), so matching case-sensitively
+// costs nothing for those, and keeps `A3-` (1Password's Secret Key
+// prefix, which IS always uppercase) from matching ordinary lowercase
+// text like "a3-paper".
 const TOKEN_PREFIX_PATTERN = new RegExp(`\\b(?:${TOKEN_PREFIXES.map(escapeRegExp).join('|')})`);
 
 function hasKnownTokenPrefix(text) {
@@ -114,36 +112,32 @@ function hasKnownTokenPrefix(text) {
   return TOKEN_PREFIX_PATTERN.test(text);
 }
 
-// jc's rule for a bare TOTP/HOTP seed with no prefix at all (base32, e.g.
+// A bare TOTP/HOTP seed with no prefix at all (base32, e.g.
 // `JBSWY3DPEHPK3PXP`) and no otpauth:// URI to match TOKEN_PATTERNS'
 // existing entry for one -- the seed is just letters and digits, nothing
 // else recognizes it. Deliberately a SEPARATE, looser rule from the two
 // above: a 6+ alnum run that MIXES letters and digits, no specific
 // prefix required.
 //
-// Round 5 (jc + Reeve, after a real false positive): a run of ALL digits
-// or ALL letters is exempt, even at 6+ characters -- an id like Slack's
-// own `app_level_tokens_row_12277846587778` (a data-qa value on the
-// App-Level Tokens page, all-digit suffix) is an ordinary DOM identifier,
-// not a secret. A base32 TOTP seed still trips this version every time:
-// base32 is deliberately letters-and-digits by construction, so a real
-// seed always mixes the two.
+// A run of ALL digits, or ALL letters, is exempt, even at 6+ characters
+// -- an id like `app_level_tokens_row_12277846587778` (a data-qa value
+// on a settings page, all-digit suffix) is an ordinary DOM identifier,
+// not a secret. A base32 TOTP seed still trips this every time: base32
+// is deliberately letters-and-digits by construction, so a real seed
+// always mixes the two.
 //
-// Round 6 (jc, blocking -- a real false positive this time, reproduced
-// against ordinary prose): the PREVIOUS version stripped ALL whitespace
-// before scanning, which glues any number onto an adjacent word --
-// "Released in 2026 by Prime Radiant" becomes "...in2026byPrime...", a
-// mixed run that was never actually ONE token on the page. This version
-// does NOT strip whitespace at all; it scans the ORIGINAL text for a
-// run that is ALREADY contiguous (no join across a space needed) --
-// "commit 3382d73" still refuses (the hash "3382d73" mixes on its own,
-// no join needed), but "Released in 2026 by Prime Radiant" no longer
-// does (none of its space-separated words mixes on its own). The ONE
-// whitespace-or-hyphen-crossing join this version still performs is
-// narrow and shape-specific: hasSplitBase32Seed below, for a seed
-// someone has broken into DISPLAY groups ("JBSW Y3DP EHPK 3PXP") --
-// that join is gated on the restricted base32 alphabet and a realistic
-// seed length, not on whitespace position alone.
+// This scans the ORIGINAL text for a run that is ALREADY contiguous (no
+// whitespace is stripped before matching) -- "commit 3382d73" refuses
+// (the hash "3382d73" mixes on its own, no join needed), but ordinary
+// prose like "Released in 2026 by Prime Radiant" does not (none of its
+// space-separated words mixes on its own; gluing "2026" onto an adjacent
+// word would be the only way to make that one match, and that is exactly
+// the false positive this scan avoids). The ONE whitespace-or-hyphen-
+// crossing join this still performs is narrow and shape-specific:
+// hasSplitBase32Seed below, for a seed someone has broken into DISPLAY
+// groups ("JBSW Y3DP EHPK 3PXP") -- that join is gated on the restricted
+// base32 alphabet and a realistic seed length, not on whitespace
+// position alone.
 const MIN_ALNUM_RUN = 6;
 
 // Matches a TOTP/HOTP seed split into uniform 4-character DISPLAY groups
@@ -153,10 +147,9 @@ const MIN_ALNUM_RUN = 6;
 // groups structurally (the regex itself), AND (checked separately below)
 // a realistic seed length of 16+ once the separators are stripped out --
 // since every group is exactly 4 characters, that floor in practice
-// requires 4+ groups. Deliberately narrower than the old plain
-// whitespace-strip-and-scan: this only reconnects text that already has
-// the SPECIFIC shape a chunked base32 seed has, not any number sitting
-// next to any word.
+// requires 4+ groups. Deliberately narrow: this only reconnects text
+// that already has the SPECIFIC shape a chunked base32 seed has, not any
+// number sitting next to any word.
 const SPLIT_BASE32_GROUP = '[A-Z2-7]{4}';
 const SPLIT_BASE32_PATTERN = new RegExp(`\\b(?:${SPLIT_BASE32_GROUP}[ -]){2,}${SPLIT_BASE32_GROUP}\\b`);
 const MIN_SPLIT_SEED_LENGTH = 16;
@@ -230,17 +223,17 @@ function secretMarkerRefusal(action) {
   );
 }
 
-// PRI-3360: the element-scoped (and, round 4, eval-result) counterpart to
+// PRI-3360: the element-scoped (and eval-result) counterpart to
 // secretMarkerRefusal above. extract/attr with a real element selector
 // (not the whole page -- see extraction.js's resolveIsWholePage/
 // sensitive-url.js's pageTextReadRefused for that case), and eval's
-// RETURN VALUE on a sensitive URL (round 4 -- see evalResultRefusal
-// below for eval's own wording), are allowed to run, but the resulting
-// text is checked HERE, inside the tool, before anything is returned to
-// the caller. A match refuses the whole read outright rather than
-// redacting it -- redacting would mean the caller already received a
-// result built from a secret the tool read; refusing means it never
-// leaves this function.
+// RETURN VALUE on a sensitive URL (see evalResultRefusal below for
+// eval's own wording), are allowed to run, but the resulting text is
+// checked HERE, inside the tool, before anything is returned to the
+// caller. A match refuses the whole read outright rather than redacting
+// it -- redacting would mean the caller already received a result built
+// from a secret the tool read; refusing means it never leaves this
+// function.
 //
 // This function does not itself re-check credentialCaptureAllowed() --
 // same as throwIfSecretMarked's marker check in extraction.js, its only
@@ -248,12 +241,12 @@ function secretMarkerRefusal(action) {
 // capture.js's evaluateWithCapture) only reach this call at all on the
 // guarded (non-override) code path; the override's branch in each of
 // those reads the raw, unchecked value directly and never calls this.
-// That keeps PRI-3360's checks subject to the exact same operator-only
-// escape hatch as every other guard in this codebase, which is the
-// correct scope for it: the escape hatch was confirmed (see
-// sensitive-url.js's pageTextReadRefused doc) to be unreachable from
-// anything an agent controls at runtime, so there is no "worker wave this
-// through for itself" risk in also letting it cover this check.
+// That keeps this check subject to the exact same operator-only escape
+// hatch as every other guard in this codebase, which is the correct
+// scope for it: the escape hatch was confirmed (see sensitive-url.js's
+// pageTextReadRefused doc) to be unreachable from anything an agent
+// controls at runtime, so there is no "worker wave this through for
+// itself" risk in also letting it cover this check.
 function elementReadRefusal(action, selector) {
   return (
     `${action} refused: the content read from ${JSON.stringify(selector)} looks credential- or code-shaped. ` +
@@ -262,7 +255,7 @@ function elementReadRefusal(action, selector) {
   );
 }
 
-// PRI-3360 round 4: eval's own wording for the same refusal, used when the
+// PRI-3360: eval's own wording for the same refusal, used when the
 // STRING check below trips on eval's return value (not an element
 // selector -- eval has no selector to name, so the message points at the
 // expression/page relationship instead).
@@ -276,51 +269,42 @@ function evalResultRefusal(expression) {
 
 /**
  * stringLooksLikeSecret(text, { densityAloneSufficient }): the unified
- * per-string check, PRI-3360 round 4 (jc + Reeve's final design). This
- * function has exactly ONE caller path off the sensitive-URL list:
- * extraction.js's elementResultCheck, for an ELEMENT-SCOPED extract/attr
- * read with a real, caller-chosen selector -- eval's own call site
- * (capture.js's evaluateWithCapture) only ever calls this AFTER already
- * confirming `urlLooksSensitive`, so it never reaches the off-list branch
- * at all. True when ANY of:
+ * per-string check. This function has exactly ONE caller path off the
+ * sensitive-URL list: extraction.js's elementResultCheck, for an
+ * ELEMENT-SCOPED extract/attr read with a real, caller-chosen selector --
+ * eval's own call site (capture.js's evaluateWithCapture) only ever
+ * calls this AFTER already confirming `urlLooksSensitive`, so it never
+ * reaches the off-list branch at all. True when ANY of:
  *   1. containsCredentialShaped(text) -- an existing, full-shape token
- *      pattern. Applies UNCONDITIONALLY, any URL -- this was already
- *      #65's own element-scoped behavior before PRI-3360 round 4 existed.
+ *      pattern. Applies UNCONDITIONALLY, any URL.
  *   2. hasKnownTokenPrefix(text) -- a bare, known token PREFIX, even
- *      truncated down to just that (round 4's own addition -- see
- *      TOKEN_PREFIXES above for why this needs to be separate from (1)).
- *      Round 6 (jc, blocking): ONLY on the sensitive-URL list -- see
- *      below.
+ *      truncated down to just that (see TOKEN_PREFIXES above for why
+ *      this needs to be separate from (1)). Applies ONLY on the
+ *      sensitive-URL list -- see below.
  *   3. codeListDetected(text) -- the code-list density signal, bare
  *      density with no keyword requirement, UNCONDITIONALLY (any URL).
- *      This is #65's own original element-scoped behavior, unchanged by
- *      any later round: an agent reading a SPECIFIC, caller-chosen
- *      selector that happens to be code-dense is a much stronger signal
- *      than density found by scanning an entire page's incidental text
- *      (the WHOLE-PAGE gate in sensitive-url.js is the one that needs a
- *      nearby keyword off the URL list -- see that module's own
- *      pageTextReadRefused, a separate, independent call that does not
- *      go through this function at all). No round of review has ever
- *      found an element-scoped false positive for bare density.
+ *      An agent reading a SPECIFIC, caller-chosen selector that happens
+ *      to be code-dense is a much stronger signal than density found by
+ *      scanning an entire page's incidental text (the WHOLE-PAGE gate in
+ *      sensitive-url.js is the one that needs a nearby keyword off the
+ *      URL list -- see that module's own pageTextReadRefused, a
+ *      separate, independent call that does not go through this
+ *      function at all).
  *   4. hasLongMixedAlnumRun(text) -- a bare TOTP/HOTP seed with no prefix
- *      and no otpauth:// URI (jc's rule, narrowed in round 5 -- see that
- *      function's own doc comment). Round 6 (jc, blocking): ONLY on the
- *      sensitive-URL list -- see below.
+ *      and no otpauth:// URI (see that function's own doc comment).
+ *      Applies ONLY on the sensitive-URL list -- see below.
  *
- * Round 6 (jc, blocking): rules 2 and 4 now apply ONLY when
- * `densityAloneSufficient` is true -- the SAME flag that already means
- * "the page's URL is on the sensitive-URL list" everywhere else in this
- * codebase. Both rules are loose enough (no minimum trailing length for
- * rule 2; any mixed 6+ run for rule 4) that they misfired on ordinary
- * text ANYWHERE -- "scikit sk-learn docs" (rule 2, a real library name)
- * and "Version 2 of the API"/"Open 24 hours" (rule 4, under the
- * PRE-round-6 whitespace-stripping version; round 6 also narrowed rule 4
- * itself -- see hasLongMixedAlnumRun). Gating them to pages already
- * flagged sensitive by their URL keeps that blast radius to exactly the
- * pages this whole gate exists for. Rule 3 (density) deliberately keeps
- * its OWN, separate on/off-list behavior (density alone either way for
- * THIS function, since it is element-scoped-only -- see rule 3's own
- * note above) rather than being folded into the same on/off split as
+ * Rules 2 and 4 apply ONLY when `densityAloneSufficient` is true -- the
+ * SAME flag that already means "the page's URL is on the sensitive-URL
+ * list" everywhere else in this codebase. Both rules are loose enough
+ * (no minimum trailing length for rule 2; any mixed 6+ run for rule 4)
+ * that applying them everywhere misfires on ordinary text -- a library
+ * name containing "sk-", a version number or date next to a word. Gating
+ * them to pages already flagged sensitive by their URL keeps that blast
+ * radius to exactly the pages this whole gate exists for. Rule 3
+ * (density) deliberately keeps its OWN behavior (bare density either
+ * way for THIS function, since it is element-scoped-only -- see rule 3's
+ * own note above) rather than being folded into the same on/off split as
  * rules 2 and 4.
  *
  * A non-string value (or empty string) never matches -- nothing to scan.
@@ -336,28 +320,23 @@ function stringLooksLikeSecret(text, { densityAloneSufficient = false } = {}) {
   return false;
 }
 
-// Round 4: eval can return an object or array (`{ token: "..." }`,
-// `[el1.value, el2.value]`), not just a bare string -- a worker handing
-// eval `JSON.stringify`-shaped work is common. Walks strings/arrays/plain
+// eval can return an object or array (`{ token: "..." }`, `[el1.value,
+// el2.value]`), not just a bare string -- a worker handing eval
+// `JSON.stringify`-shaped work is common. Walks strings/arrays/plain
 // objects recursively, applying stringLooksLikeSecret to every string
-// found (round 6, jc: OBJECT KEYS too, not just values -- `({ [el.value]:
-// 1 })` puts a token in a key, which `Object.values` alone never sees);
-// short-circuits true on the first match. Non-string/array/object values
-// (numbers, booleans, null, undefined) always pass -- these are exactly
-// the types PRI-3360 round 4's design keeps allowed through
+// found -- OBJECT KEYS too, not just values, since `({ [el.value]: 1 })`
+// puts a token in a key, which checking only `Object.values` would never
+// see; short-circuits true on the first match. Non-string/array/object
+// values (numbers, booleans, null, undefined) always pass through
 // unconditionally, since none of them can carry a token-shaped string.
 //
 // `MAX_VALUE_DEPTH` guards against a pathologically deep/cyclic structure
-// costing unbounded recursion. Round 6 (jc, blocking): past that limit
-// this now REFUSES (returns true) rather than passing -- the previous
-// version returned false past the limit, which is a fail-OPEN bug: a
-// token nested deep enough (`[[[[[[[[[[[["xoxb-..."]]]]]]]]]]]]`, 12
-// levels) walked straight past the check and came back clean. Refusing
-// past the depth limit means "this structure is too deep to vouch for,"
-// which is the correct default for a security check, not "no secret
-// found." CDP's own `returnByValue` serialization imposes a depth/size
-// limit of its own too, but that is not a reason to fail open here --
-// this check has to be correct on its own terms.
+// costing unbounded recursion. Past that limit this REFUSES (returns
+// true) rather than passing: "this structure is too deep to vouch for"
+// is the correct default for a security check, not "no secret found."
+// CDP's own `returnByValue` serialization imposes a depth/size limit of
+// its own too, but that is not a reason to fail open here -- this check
+// has to be correct on its own terms.
 const MAX_VALUE_DEPTH = 10;
 
 function valueLeaksSecret(value, opts = {}, depth = 0) {

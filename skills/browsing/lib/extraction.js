@@ -96,14 +96,14 @@ function attachExtraction({ getPageSession }) {
     return !!result.result.value;
   }
 
-  // PRI-3360 round 4 (jc + Reeve's final design): refuseIfTextLeaksSecret's
-  // code-list-density rule only needs a nearby backup/recovery keyword
-  // (densityAloneSufficient: false) UNLESS the page's own URL is already
-  // on the sensitive-URL list, in which case density alone is enough --
-  // same reasoning as eval's post-run check in capture.js. One extra CDP
-  // round trip per element-scoped read (only when the override isn't
-  // set); accepted for the same reason extractText/getSanitizedHtml/
-  // getAttribute already accept resolveIsWholePage's round trip above.
+  // refuseIfTextLeaksSecret's bare-prefix and mixed-alnum-run rules only
+  // apply when the page's own URL is already on the sensitive-URL list --
+  // same reasoning as eval's post-run check in capture.js: both rules are
+  // loose enough that applying them off that list misfires on ordinary
+  // text. One extra CDP round trip per element-scoped read (only when the
+  // override isn't set); accepted for the same reason extractText/
+  // getSanitizedHtml/getAttribute already accept resolveIsWholePage's
+  // round trip above.
   async function elementResultCheck(ps, value, action, selector) {
     const urlResult = await ps.send('Runtime.evaluate', { expression: 'location.href', returnByValue: true });
     throwIfExceptionDetails(urlResult);
