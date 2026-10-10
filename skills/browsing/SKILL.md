@@ -137,13 +137,13 @@ These use CDP Input.dispatchMouseEvent, bypassing synthetic event restrictions.
   - `selector`: Optional - limit to element
   - Example: `{action: "extract", payload: "markdown"}`
   - Example: `{action: "extract", payload: "text", selector: "h1"}`
-  - **On a sensitive page** (URL matches a known-sensitive pattern, a `data-sen-secret` marker is present anywhere on the page, or the page text looks like a dense list of secret-shaped codes), a WHOLE-PAGE form — no `selector`, or `selector` is `body`/`html` — refuses outright, regardless of what it would have returned. A selector naming a real element still runs, but refuses if the resolved text looks credential- or code-shaped, rather than returning it. Use a narrower, element-scoped selector (a button, status message, error banner) instead of the whole page; use the credential broker for the value itself. Not disabled by anything the agent can set at runtime.
+  - **On a sensitive page** (URL matches a known-sensitive pattern, a `data-sen-secret` marker is present anywhere on the page, or the page text looks like a dense list of secret-shaped codes NEAR a backup/recovery keyword), a WHOLE-PAGE form — no `selector`, or a `selector` that RESOLVES to the whole document (`body`, `html`, `:root`, `*`, `html > body`, or any other spelling of the same scope — decided by resolving the selector, not by matching its string) — refuses outright, regardless of what it would have returned. A selector naming a real element still runs, but refuses if the resolved text looks credential- or code-shaped (density alone is enough there — no keyword needed), rather than returning it. Use a narrower, element-scoped selector (a button, status message, error banner) instead of the whole page; use the credential broker for the value itself. Not disabled by anything the agent can set at runtime.
 
 - **attr**: Get element attribute
   - `selector`: CSS selector
   - `payload`: Attribute name
   - Example: `{action: "attr", selector: "a.download", payload: "href"}`
-  - Same sensitive-page behavior as `extract` above: a `body`/`html` selector is treated as whole-page and refuses outright; any other selector still runs but refuses if the attribute value looks credential- or code-shaped.
+  - Same sensitive-page behavior as `extract` above: a selector that RESOLVES to the whole document is treated as whole-page and refuses outright; any other selector still runs but refuses if the attribute value looks credential- or code-shaped.
 
 - **set_attr**: Write-only attribute setter, restricted to EXACTLY two attribute names — `data-sen-nonce` and `data-sen-secret` itself (nothing else, not any other `data-*`/`aria-*` name; see `skills/browsing/lib/set-attribute.js`'s `ALLOWED_ATTRIBUTE_NAMES` constant)
   - `selector`: CSS or XPath selector

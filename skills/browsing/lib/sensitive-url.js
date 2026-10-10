@@ -87,18 +87,24 @@
  *
  * PRI-3360 addendum: this module now also gates explicit, caller-
  * requested WHOLE-PAGE text reads (eval, a selector-less extract, extract/
- * getSanitizedHtml on body/html, and the index.ts markdown branch) via
- * pageTextReadRefused/isWholePageSelector below -- see those functions'
- * own doc comments. The URL-pattern check above (urlLooksSensitive) is
- * one of three signals that gate now consults; the other two (a live
+ * getSanitizedHtml on an element that resolves to the whole document, and
+ * the index.ts markdown branch) via pageTextReadRefused below -- see its
+ * own doc comment. The URL-pattern check above (urlLooksSensitive) is one
+ * of three signals that gate now consults; the other two (a live
  * data-sen-secret marker, and the code-list density heuristic) live in
  * secret-marker.js and code-list-detector.js respectively and are pulled
- * in here only for that orchestration, not duplicated.
+ * in here only for that orchestration, not duplicated. Round 2 (jc review
+ * of #65): whether a SELECTOR counts as whole-page is now decided by
+ * resolving it in the page and checking the resulting ELEMENT
+ * (extraction.js's resolveIsWholePage), not by matching the selector
+ * STRING against a `body`/`html` literal list -- see extraction.js for
+ * why (`:root`, `*`, `html > body`, etc. all resolve to the same scope
+ * but don't match that literal list).
  */
 const { throwIfExceptionDetails } = require('./cdp-utils');
 const { credentialCaptureAllowed } = require('./credential-guard');
 const { pageHasSecretMarker } = require('./secret-marker');
-const { codeListDetected } = require('./code-list-detector');
+const { codeListNearBackupKeyword, visibleTextFnSrc } = require('./code-list-detector');
 
 const DEFAULT_SENSITIVE_URL_PATTERNS = [
   // Anchored on the LEFT by the literal "/" (always true for any path
@@ -198,36 +204,23 @@ const URL_SUPPRESSED_NOTICE =
   `Set ${ENV_VAR} to extend the pattern list (comma-separated regexes, ADDED to the defaults, never a replacement); ` +
   'SUPERPOWERS_CHROME_ALLOW_CREDENTIAL_CAPTURE=1 disables this.';
 
-// PRI-3360: isWholePageSelector/wholePageReadRefusal/pageTextReadRefused
-// below gate explicit, caller-requested WHOLE-PAGE text reads -- eval,
-// extract/extractPageText with no selector (or a selector that is just
-// `body`/`html`), the index.ts markdown branch, and getSanitizedHtml on
-// body/html. Unlike URL_SUPPRESSED_NOTICE's auto-capture/screenshot gate
-// above, these are reads the caller explicitly asked for -- but the real
-// incident behind this ticket happened through exactly this path:
-// eval/extract reading backup codes off a 2FA settings page straight into
-// the worker's own transcript, before the value was ever captured
-// through the credential broker.
-//
-// isWholePageSelector(selector): true for no selector at all, or a
-// selector that (after trimming/lowercasing) is exactly `body` or `html`.
-// Anything else -- a real element selector -- is ELEMENT-scoped; see
-// credential-guard.js's refuseIfTextLeaksSecret for how those are handled
-// instead (content-checked AFTER reading, not refused unconditionally by
-// this function).
-function isWholePageSelector(selector) {
-  if (!selector) return true;
-  const normalized = String(selector).trim().toLowerCase();
-  return normalized === 'body' || normalized === 'html';
-}
-
+// PRI-3360: wholePageReadRefusal/pageTextReadRefused below gate explicit,
+// caller-requested WHOLE-PAGE text reads -- eval, extract/extractPageText
+// with no selector (or a selector that RESOLVES to the whole document --
+// see extraction.js's resolveIsWholePage), the index.ts markdown branch,
+// and getSanitizedHtml on the same. Unlike URL_SUPPRESSED_NOTICE's
+// auto-capture/screenshot gate above, these are reads the caller
+// explicitly asked for -- but the real incident behind this ticket
+// happened through exactly this path: eval/extract reading backup codes
+// off a 2FA settings page straight into the worker's own transcript,
+// before the value was ever captured through the credential broker.
 function wholePageReadRefusal(action, reason) {
   return (
     `${action} refused: this page is flagged sensitive (${reason}). ` +
-    'Whole-page reads (eval, a selector-less extract, or extract/getSanitizedHtml on body/html) are always refused ' +
-    'on a sensitive page, regardless of what they would have returned. ' +
+    'Whole-page reads (eval, a selector-less extract, or extract/getSanitizedHtml on a selector that resolves to ' +
+    'the whole document) are always refused on a sensitive page, regardless of what they would have returned. ' +
     'Use a narrower, ELEMENT-SCOPED read instead -- extract or attr with a selector for ONE specific element, ' +
-    'such as a particular button, status message, or error-banner selector -- not the whole page/body/html. ' +
+    'such as a particular button, status message, or error-banner selector -- not the whole page. ' +
     'Use the credential broker to capture any value you actually need from this page. ' +
     "This refusal cannot be lifted by the agent at runtime: SUPERPOWERS_CHROME_ALLOW_CREDENTIAL_CAPTURE is read " +
     "once from the MCP server process's own environment at startup (set by whoever launched the server, e.g. the " +
@@ -244,20 +237,38 @@ function wholePageReadRefusal(action, reason) {
  * used only in the refusal message.
  *
  * Returns a refusal message (string) when the page is flagged sensitive by
- * ANY of three independent signals -- a known-sensitive URL pattern, a
- * live data-sen-secret marker, or the code-list density heuristic over
- * the page's own visible text -- and returns null when none apply (the
- * caller's whole-page read may proceed). Deliberately a nullable-string
- * return, not a throw, so callers can decide whether to throw immediately
- * or fold the message into a larger response.
+ * ANY of three independent signals, checked in order and short-circuited
+ * on the first match:
+ *   1. A known-sensitive URL pattern (urlLooksSensitive) -- refuses
+ *      regardless of content, same as before.
+ *   2. A live data-sen-secret marker -- refuses regardless of content,
+ *      same as before.
+ *   3. Code-list density ALONE (off the URL list, no marker) is no
+ *      longer sufficient by itself (PRI-3360 round 2, jc review of #65:
+ *      density alone flagged ordinary pages -- GitHub PR/repo/REST-docs
+ *      pages, the HN front page -- and `eval` has no narrower form to
+ *      fall back to when that happens). This branch now also requires a
+ *      backup/recovery-style keyword within
+ *      code-list-detector.js's KEYWORD_PROXIMITY_CHARS of the code
+ *      cluster (codeListNearBackupKeyword) -- a concrete cue that the
+ *      page is actually showing backup/recovery codes, not just text
+ *      that happens to cluster densely.
+ * Returns null when none apply (the caller's whole-page read may
+ * proceed). Deliberately a nullable-string return, not a throw, so
+ * callers can decide whether to throw immediately or fold the message
+ * into a larger response.
  *
- * Reads page text via `document.body.textContent` (not `.innerText`)
- * purely to run the content heuristic IN-PROCESS -- that text is never
- * returned to the caller, only scanned; see credential-guard.js's
- * refuseIfTextLeaksSecret for the longer version of "reading in-process
- * isn't the leak, returning text to the agent is." textContent (not
- * innerText) is used because it needs no page layout, matching the same
- * choice index.ts's markdown branch already makes for the same reason.
+ * Reads page text via code-list-detector.js's visibleTextFnSrc (VISIBLE
+ * text only -- skips <script>/<style>/<template>/<noscript> content and
+ * hidden elements, with a block-level separator so adjacent-but-unrelated
+ * DOM nodes don't glue into one token) rather than raw
+ * `document.body.textContent`, purely to run the content heuristic
+ * IN-PROCESS -- that text is never returned to the caller, only scanned;
+ * see credential-guard.js's refuseIfTextLeaksSecret for the longer
+ * version of "reading in-process isn't the leak, returning text to the
+ * agent is." See code-list-detector.js's own doc comment for why this
+ * walker, not `.innerText`, even though the live page (unlike a detached
+ * clone elsewhere in this codebase) does have layout available.
  */
 async function pageTextReadRefused(ps, action) {
   // Deliberately checked first, same as every other existing guard in
@@ -296,12 +307,15 @@ async function pageTextReadRefused(ps, action) {
   }
 
   const textResult = await ps.send('Runtime.evaluate', {
-    expression: "(document.body ? document.body.textContent : '') || ''",
+    expression: `(() => { ${visibleTextFnSrc} return document.body ? __senVisibleText(document.body) : ''; })()`,
     returnByValue: true,
   });
   throwIfExceptionDetails(textResult);
-  if (codeListDetected(textResult.result.value)) {
-    return wholePageReadRefusal(action, 'the page text looks like a dense list of secret-shaped codes');
+  if (codeListNearBackupKeyword(textResult.result.value)) {
+    return wholePageReadRefusal(
+      action,
+      'the page text looks like a dense list of secret-shaped codes near a backup/recovery cue'
+    );
   }
 
   return null;
@@ -312,7 +326,6 @@ module.exports = {
   ENV_VAR,
   urlLooksSensitive,
   URL_SUPPRESSED_NOTICE,
-  isWholePageSelector,
   wholePageReadRefusal,
   pageTextReadRefused,
 };

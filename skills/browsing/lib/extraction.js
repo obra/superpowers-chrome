@@ -2,7 +2,7 @@ const { getElementSelector } = require('./element-selector');
 const { throwIfExceptionDetails } = require('./cdp-utils');
 const { MARKER_ATTR, credentialCaptureAllowed, secretMarkerRefusal, refuseIfTextLeaksSecret } = require('./credential-guard');
 const { ANCESTOR_MARKED_FN_SRC, INERT_CLONE_FN_SRC } = require('./secret-marker');
-const { isWholePageSelector, pageTextReadRefused } = require('./sensitive-url');
+const { pageTextReadRefused } = require('./sensitive-url');
 
 /**
  * Single-element extraction primitives — text content, HTML, attributes.
@@ -41,24 +41,61 @@ const { isWholePageSelector, pageTextReadRefused } = require('./sensitive-url');
  *     document that never has a browsing context, so it is never "fully
  *     active" and never runs that algorithm.
  *
- * PRI-3360 (WHOLE-PAGE vs ELEMENT-SCOPED reads): a `selector` that is
- * missing, or is just `body`/`html` (isWholePageSelector, sensitive-url.js),
- * is treated as a WHOLE-PAGE read: gated unconditionally on sensitive-url.js's
- * pageTextReadRefused (known-sensitive URL OR a live data-sen-secret marker
- * OR the code-list density heuristic) BEFORE anything runs, same as
- * capture.js's evaluateWithCapture/extractPageText. Any OTHER selector is
- * ELEMENT-scoped: the read runs (still subject to the existing marker/
- * ancestor check below), and its RESULT is checked by
+ * PRI-3360 (WHOLE-PAGE vs ELEMENT-SCOPED reads): resolveIsWholePage below
+ * decides which treatment a selector gets by resolving it IN THE PAGE and
+ * checking the resulting ELEMENT, not by matching the selector STRING.
+ * No selector at all is trivially whole-page (no CDP round trip needed).
+ * A selector that resolves to `document.documentElement`, `document.body`,
+ * or anything that CONTAINS `document.body` is WHOLE-PAGE: gated
+ * unconditionally on sensitive-url.js's pageTextReadRefused (known-
+ * sensitive URL OR a live data-sen-secret marker OR the code-list density
+ * heuristic near a backup/recovery cue) BEFORE anything runs, same as
+ * capture.js's evaluateWithCapture/extractPageText. Any OTHER resolved
+ * element is ELEMENT-scoped: the read runs (still subject to the existing
+ * marker/ancestor check below), and its RESULT is checked by
  * credential-guard.js's refuseIfTextLeaksSecret (token shape OR code-list
  * density) before being returned — a match refuses the whole read rather
- * than redacting it. Both checks are skipped when
- * credentialCaptureAllowed() is set, the same operator-only escape hatch
- * every other guard in this codebase already honors.
+ * than redacting it. Both checks are skipped when credentialCaptureAllowed()
+ * is set, the same operator-only escape hatch every other guard in this
+ * codebase already honors.
+ *
+ * Round 2 (jc review of #65, finding 2): the original check matched the
+ * selector STRING against a `body`/`html` literal list, which `:root`,
+ * `*` (whose first DOM-order match is `<html>`), `html > body`,
+ * `body:not(.x)`, and any other spelling that resolves to the same scope
+ * all skipped — each of those got only the (much narrower) element-scoped
+ * content check, exactly backwards for a selector that targets the whole
+ * document. Resolving in-page, through the SAME getElementSelector
+ * expression the actual read uses, means "is this whole-page" and "what
+ * element will be read" can never disagree, and covers every selector
+ * spelling by construction instead of by an ever-growing string list.
  *
  * `attachExtraction({ getPageSession })` returns the bound methods — no
  * session state needed.
  */
 function attachExtraction({ getPageSession }) {
+  // Resolves `selector` through getElementSelector (the SAME expression
+  // the actual read below will use) and decides whole-page-ness from the
+  // resolved element: documentElement, body, or an ancestor of body all
+  // count. No selector at all is trivially whole-page with no CDP call.
+  // A selector matching no element returns false (not found is handled by
+  // the normal "element not found" path later, not treated as whole-page).
+  async function resolveIsWholePage(ps, selector) {
+    if (!selector) return true;
+    const js = `(() => {
+      const el = (${getElementSelector(selector)});
+      if (!el) return false;
+      return el === document.documentElement || el === document.body ||
+        (typeof el.contains === 'function' && el.contains(document.body));
+    })()`;
+    const result = await ps.send('Runtime.evaluate', {
+      expression: js,
+      returnByValue: true
+    });
+    throwIfExceptionDetails(result);
+    return !!result.result.value;
+  }
+
   // Shared shape for "the resolved element itself, or any ancestor of it,
   // carries the marker" (self is covered because __senAncestorMarked
   // checks `start` before walking up) — stripping descendants can't help
@@ -90,7 +127,7 @@ function attachExtraction({ getPageSession }) {
 
   async function extractText(tabIndexOrWsUrl, selector) {
     const ps = await getPageSession(tabIndexOrWsUrl);
-    const wholePage = isWholePageSelector(selector);
+    const wholePage = await resolveIsWholePage(ps, selector);
     if (wholePage) {
       const refusal = await pageTextReadRefused(ps, 'extract');
       if (refusal) throw new Error(refusal);
@@ -129,13 +166,13 @@ function attachExtraction({ getPageSession }) {
   // [data-sen-secret] descendants from an inert clone before serializing;
   // refuses if the resolved element (or, with no selector, documentElement
   // itself) — or any ancestor of it — carries the marker. PRI-3360: a
-  // `selector` of `body`/`html` is treated the same as no selector at all
-  // (isWholePageSelector) — both read document.documentElement, and both
-  // are gated by pageTextReadRefused rather than the element-scoped
-  // content check below.
+  // selector that RESOLVES to the whole document (see resolveIsWholePage
+  // above) is treated the same as no selector at all — both read
+  // document.documentElement, and both are gated by pageTextReadRefused
+  // rather than the element-scoped content check below.
   async function getSanitizedHtml(tabIndexOrWsUrl, selector = null) {
     const ps = await getPageSession(tabIndexOrWsUrl);
-    const wholePage = isWholePageSelector(selector);
+    const wholePage = await resolveIsWholePage(ps, selector);
     if (wholePage) {
       const refusal = await pageTextReadRefused(ps, 'extract');
       if (refusal) throw new Error(refusal);
@@ -158,7 +195,7 @@ function attachExtraction({ getPageSession }) {
 
   async function getAttribute(tabIndexOrWsUrl, selector, attrName) {
     const ps = await getPageSession(tabIndexOrWsUrl);
-    const wholePage = isWholePageSelector(selector);
+    const wholePage = await resolveIsWholePage(ps, selector);
     if (wholePage) {
       const refusal = await pageTextReadRefused(ps, 'attr');
       if (refusal) throw new Error(refusal);

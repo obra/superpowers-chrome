@@ -209,32 +209,13 @@ describe('sensitive-url', () => {
   });
 });
 
-// PRI-3360: isWholePageSelector / pageTextReadRefused -- the whole-page
-// text-read gate for eval/extract/attr.
-describe('isWholePageSelector', () => {
-  const { isWholePageSelector } = require('../../skills/browsing/lib/sensitive-url.js');
-
-  it('treats no selector at all as whole-page', () => {
-    assert.equal(isWholePageSelector(undefined), true);
-    assert.equal(isWholePageSelector(null), true);
-    assert.equal(isWholePageSelector(''), true);
-  });
-
-  it('treats body/html (any case, trimmed) as whole-page', () => {
-    assert.equal(isWholePageSelector('body'), true);
-    assert.equal(isWholePageSelector('BODY'), true);
-    assert.equal(isWholePageSelector('  html  '), true);
-    assert.equal(isWholePageSelector('Html'), true);
-  });
-
-  it('treats any real element selector as element-scoped, not whole-page', () => {
-    assert.equal(isWholePageSelector('#app'), false);
-    assert.equal(isWholePageSelector('.error-banner'), false);
-    assert.equal(isWholePageSelector('button[type=submit]'), false);
-    assert.equal(isWholePageSelector('body.main'), false); // not EXACTLY "body"
-  });
-});
-
+// PRI-3360: pageTextReadRefused -- the whole-page text-read gate for
+// eval/extract/attr. (isWholePageSelector was retired in round 2 of jc's
+// review -- whole-page-ness is now decided by resolving the selector IN
+// THE PAGE and checking the resulting element, not by matching the
+// selector STRING; see extraction.js's resolveIsWholePage and its own
+// tests in test/lib/extraction.test.mjs for :root/*/html/body/html > body
+// coverage.)
 describe('pageTextReadRefused', () => {
   const { pageTextReadRefused } = require('../../skills/browsing/lib/sensitive-url.js');
   const CRED_ENV = 'SUPERPOWERS_CHROME_ALLOW_CREDENTIAL_CAPTURE';
@@ -255,7 +236,7 @@ describe('pageTextReadRefused', () => {
         const expr = params.expression;
         if (expr === 'location.href') return { result: { value: url } };
         if (expr.includes('hasMarker')) return { result: { value: marker } };
-        if (expr.includes('document.body.textContent')) return { result: { value: text } };
+        if (expr.includes('__senVisibleText')) return { result: { value: text } };
         return { result: { value: undefined } };
       },
     };
@@ -282,11 +263,21 @@ describe('pageTextReadRefused', () => {
     assert.match(refusal, /data-sen-secret/);
   });
 
-  it('refuses via the code-list density signal alone, on a page off the URL list with no marker', async () => {
-    const codeDenseText = '7f3k-9d2m a83f-29dk qq1z-88mn x0p4-rr3e 8k2j-m9vd zz91-3bqa';
+  it('refuses via the code-list density signal, on a page off the URL list with no marker, when a backup/recovery keyword is near the code cluster', async () => {
+    const codeDenseText = 'Save these backup codes: 7f3k-9d2m a83f-29dk qq1z-88mn x0p4-rr3e 8k2j-m9vd zz91-3bqa';
     const refusal = await pageTextReadRefused(makePs({ text: codeDenseText }), 'attr');
     assert.match(refusal, /attr refused/);
     assert.match(refusal, /dense list of secret-shaped codes/);
+  });
+
+  // PRI-3360 round 2 (jc review of #65): density ALONE, with no nearby
+  // backup/recovery cue, must NOT refuse a whole-page read on its own --
+  // this is exactly the false-positive jc found on ordinary pages (GitHub
+  // PR/repo/REST-docs, HN) whose visible text happens to cluster densely
+  // for reasons that have nothing to do with a secret.
+  it('does NOT refuse on code density alone with no nearby backup/recovery keyword', async () => {
+    const codeDenseTextNoKeyword = '7f3k-9d2m a83f-29dk qq1z-88mn x0p4-rr3e 8k2j-m9vd zz91-3bqa';
+    assert.equal(await pageTextReadRefused(makePs({ text: codeDenseTextNoKeyword }), 'attr'), null);
   });
 
   it('is not overridable from anything the agent controls: only credentialCaptureAllowed() (an env var read once at process startup) can suppress it', async () => {

@@ -1432,9 +1432,13 @@ describe('PRI-3360: whole-page text reads refused on a sensitive page (real Chro
 // with no data-sen-secret marker, whose own visible text is a dense list
 // of code-shaped tokens. data: URLs are NEVER matched by urlLooksSensitive
 // (see sensitive-url.js), so this isolates the density signal from the
-// URL-pattern signal entirely.
+// URL-pattern signal entirely. PRI-3360 round 2 (jc review of #65): a
+// WHOLE-PAGE refusal based on density alone also needs a nearby backup/
+// recovery keyword now -- the heading below supplies one ("Save these
+// backup codes") so this fixture still exercises the whole-page path, not
+// just the (unconditional) element-scoped density check.
 const CODE_DENSE_OFF_LIST_PAGE = dataUrl(
-  '<title>Internal tool</title><h1>Generated access codes</h1>' +
+  '<title>Internal tool</title><h1>Save these backup codes</h1>' +
   `<ul id="codes">${FAKE_BACKUP_CODES.map((c) => `<li>${c}</li>`).join('\n')}</ul>` +
   '<button id="b">Done</button>'
 );
@@ -1474,6 +1478,55 @@ describe('PRI-3360: code-list density signal, off the URL pattern list (real Chr
     assert.equal(isError, false, text);
     assert.equal(text, 'Done');
   });
+});
+
+// PRI-3360 round 2 (jc review of #65, finding 1): real pages jc found
+// tripping the density heuristic via document.body.textContent -- eval
+// and every whole-page extract would have been refused outright on all
+// four of these, with no narrower form for eval to fall back to. Saved,
+// trimmed HTML (see test/lib/fixtures/code-list-negatives/README.md for
+// provenance); navigated via file:// so these drive the exact same
+// whole-page gate (sensitive-url.js's pageTextReadRefused) the dataUrl()
+// fixtures elsewhere in this file do, over a real Chrome page -- not just
+// the pure-function coverage in test/lib/code-list-detector.test.mjs.
+describe('PRI-3360 round 2: real pages that must NOT be refused (jc review of #65, real Chrome)', {
+  skip: !CHROME_AVAILABLE && 'Chrome not installed',
+}, () => {
+  let server;
+  before(async () => { server = await startServer(); });
+  after(async () => { await server?.stop(); });
+
+  const FIXTURES_DIR = path.join(__dirname, 'lib', 'fixtures', 'code-list-negatives');
+  const FIXTURES = [
+    ['github-pr.html', 'a GitHub PR page'],
+    ['github-repo.html', 'a GitHub repo page'],
+    ['github-rest-docs.html', 'a GitHub REST API docs page (Next.js SSR __NEXT_DATA__ JSON)'],
+    ['hn-front-page.html', 'the HN front page'],
+  ];
+
+  for (const [file, label] of FIXTURES) {
+    // isError alone is the correct signal here -- NOT a /refused/i check
+    // on the extracted text. github-pr.html IS this PR's own GitHub page,
+    // which quotes refusal messages verbatim in its description and in
+    // jc's review (the subject of this very fix), so the extracted text
+    // legitimately contains the word "refused" many times over on a
+    // SUCCESSFUL, unrefused read. Checking isError only is what actually
+    // distinguishes "the tool refused" from "the page's real content
+    // happens to mention the word."
+    it(`eval(document.title) succeeds on ${label}, not refused by the code-list density signal`, async () => {
+      const url = `file://${path.join(FIXTURES_DIR, file)}`;
+      await server.call({ action: 'navigate', payload: url });
+      const { text, isError } = await server.call({ action: 'eval', payload: 'document.title' });
+      assert.equal(isError, false, text);
+    });
+
+    it(`extract (whole page, no selector) succeeds on ${label}, not refused by the code-list density signal`, async () => {
+      const url = `file://${path.join(FIXTURES_DIR, file)}`;
+      await server.call({ action: 'navigate', payload: url });
+      const { text, isError } = await server.call({ action: 'extract', payload: 'text' });
+      assert.equal(isError, false, text);
+    });
+  }
 });
 
 // The env override is read once from process.env of the already-running

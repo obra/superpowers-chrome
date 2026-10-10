@@ -103,8 +103,8 @@ function secretMarkerRefusal(action) {
 
 // PRI-3360: the element-scoped counterpart to secretMarkerRefusal above.
 // extract/attr with a real element selector (not the whole page -- see
-// sensitive-url.js's isWholePageSelector/pageTextReadRefused for that
-// case) are allowed to run, but the resolved text is checked HERE, inside
+// extraction.js's resolveIsWholePage/sensitive-url.js's pageTextReadRefused
+// for that case) are allowed to run, but the resolved text is checked HERE, inside
 // the tool, before anything is returned to the caller. A match (either a
 // token shape or the code-list density heuristic) refuses the whole read
 // outright rather than redacting it -- redacting would mean the caller
