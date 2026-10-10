@@ -186,11 +186,32 @@ function attachDialogs({ state }) {
     }
   }
 
+  // Pause-aware dialog payload: while state.capturePaused is set, neither
+  // branch below may hand the agent a dialog's rendered message/default-
+  // prompt text -- a revealed secret can land in alert()/confirm()/
+  // prompt()/beforeunload() text exactly like it can land in the DOM, and
+  // pause_capture exists to keep both off the agent's plate while the
+  // caller is mid-reveal. Narrow `dialog` to {kind} only (dropping
+  // `payload`, which is where the message/defaultPrompt/realm/etc. live)
+  // and never call renderSyntheticArtifacts at all -- not "call it and
+  // discard the text", which would still format a string the caller could
+  // reference by accident, but skip the render entirely.
+  function dialogResultWhilePaused(open) {
+    return { dialog: { kind: open.kind }, artifacts: null, capturePaused: true };
+  }
+
   async function withDialogAwareness(actionName, wsUrl, args, fn) {
     const open = getOpen(wsUrl);
     const isDialogSelector = typeof args?.selector === 'string' && args.selector.startsWith('dialog::');
 
     if (open && PAGE_TARGET_ACTIONS.has(actionName) && !isDialogSelector) {
+      if (state.capturePaused) {
+        return {
+          refused: true,
+          error: 'Page is behind a dialog. Handle dialog::accept or dialog::dismiss first.',
+          ...dialogResultWhilePaused(open),
+        };
+      }
       return {
         refused: true,
         error: 'Page is behind a dialog. Handle dialog::accept or dialog::dismiss first.',
@@ -204,6 +225,9 @@ function attachDialogs({ state }) {
       const actionResult = await fn();
       const afterOpen = getOpen(wsUrl);
       if (!before && afterOpen) {
+        if (state.capturePaused) {
+          return { midFlight: true, actionResult, ...dialogResultWhilePaused(afterOpen) };
+        }
         return {
           midFlight: true,
           actionResult,
@@ -223,6 +247,13 @@ function attachDialogs({ state }) {
     const isDialogSelector = typeof args?.selector === 'string' && args.selector.startsWith('dialog::');
 
     if (open && PAGE_TARGET_ACTIONS.has(actionName) && !isDialogSelector) {
+      if (state.capturePaused) {
+        return {
+          refused: true,
+          error: 'Page is behind a dialog. Handle dialog::accept or dialog::dismiss first.',
+          ...dialogResultWhilePaused(open),
+        };
+      }
       return {
         refused: true,
         error: 'Page is behind a dialog. Handle dialog::accept or dialog::dismiss first.',
@@ -236,6 +267,9 @@ function attachDialogs({ state }) {
       const actionResult = await fn();
       const afterOpen = sid ? state.dialogs.get(sid) : null;
       if (!before && afterOpen) {
+        if (state.capturePaused) {
+          return { midFlight: true, actionResult, ...dialogResultWhilePaused(afterOpen) };
+        }
         return {
           midFlight: true,
           actionResult,

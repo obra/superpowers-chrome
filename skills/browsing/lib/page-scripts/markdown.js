@@ -36,6 +36,14 @@
 //      is a UI label, not the secret it operates on, even when it or an
 //      ancestor matches.
 //
+//   3. Independently of the pattern match above: an element, or any
+//      ancestor, carrying the data-sen-secret marker (credential-guard.js's
+//      MARKER_ATTR) is also redacted -- the same full-subtree treatment
+//      html-with-scrub.js's blankMatchedSubtree gives a marked element for
+//      the HTML artifact (see that module's comment). A page we control
+//      can mark a secret-bearing container that has no recognizable shape
+//      and no secret-looking id/name/class at all.
+//
 // Trims before comparing length/emptiness exactly like the rest of this
 // generator already does -- an earlier version of this redaction
 // collected untrimmed leaf text into html-with-scrub.js's secretValues
@@ -46,6 +54,7 @@ const {
   SECRET_LOOKING_ATTRS, LOOKS_SECRET_FN_SRC, OTPAUTH_URI_SOURCE,
   CONTAINER_BLANK_TEXT_CAP, SHORT_LEAF_BLANK_CAP,
 } = require('../secret-pattern');
+const { MARKER_ATTR } = require('../credential-guard');
 
 module.exports = `
   (() => {
@@ -59,6 +68,16 @@ module.exports = `
     // Round 4 (jc minor #3): see secret-pattern.js's module comment
     // (SHORT_LEAF_BLANK_CAP) and __senShouldRedact's rule 1b below.
     const __senShortLeafCap = ${JSON.stringify(SHORT_LEAF_BLANK_CAP)};
+    const __senMarkerAttr = ${JSON.stringify(MARKER_ATTR)};
+
+    // See module comment, rule 3: an element or any ancestor carrying the
+    // data-sen-secret marker is redacted regardless of pattern match.
+    function __senHasMarkerOrAncestor(el) {
+      for (let node = el; node; node = node.parentElement) {
+        if (node.hasAttribute && node.hasAttribute(__senMarkerAttr)) return true;
+      }
+      return false;
+    }
 
     // Round 4 (jc finding 1): these three used to be defined separately
     // here AND in html-with-scrub.js, and had silently drifted -- this
@@ -88,6 +107,7 @@ module.exports = `
     // recovery-codes li), even though the long prose around it,
     // elsewhere in the same over-cap container, is left alone.
     function __senShouldRedact(el) {
+      if (__senHasMarkerOrAncestor(el)) return true;
       if (__senShouldBlankWholesale(el, __senSecretAttrs, __senContainerCap)) return true;
       for (let node = el.parentElement; node; node = node.parentElement) {
         if (!__senElementMatches(node)) continue;
@@ -151,7 +171,16 @@ module.exports = `
         continue;
       }
 
-      if (tag === 'a') {
+      // The "link's own visible text is a
+      // UI label" rationale below is about the PATTERN-match case (a
+      // secret-looking id/class on a link whose text and href were never
+      // the secret, e.g. a copy-seed button rendered as an <a>). It does
+      // not hold for an explicit data-sen-secret opt-in mark, so a marked
+      // <a> skips this branch entirely and falls through to the general
+      // __senRedactedText path below, which honors the mark (via
+      // __senShouldRedact's __senHasMarkerOrAncestor check) and renders
+      // '[REDACTED]' instead of a clear [text](href) link.
+      if (tag === 'a' && !__senHasMarkerOrAncestor(el)) {
         // Never pattern-redacted -- a link's own visible text is a UI
         // label, not the secret it operates on, even when it or an
         // ancestor matches (see module comment).

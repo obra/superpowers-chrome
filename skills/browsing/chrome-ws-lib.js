@@ -296,6 +296,9 @@ function createSession({ host, port, _testFakes } = {}) {
     extractPageText,
     setAttributeWithCapture,
     getPageUrl,
+    pauseCapture,
+    resumeCapture,
+    isCapturePaused,
   } = attachCapture({
     state,
     getPageSession,
@@ -349,6 +352,17 @@ function createSession({ host, port, _testFakes } = {}) {
       const isDialogSelector = typeof secondArg === 'string' && secondArg.startsWith('dialog::');
 
       if (open && !isDialogSelector) {
+        // Pause-aware (same rationale as dialogs.js's withDialogAwareness/
+        // withDialogAwarenessForSession): this session-boundary gate wraps
+        // EVERY PAGE_TARGET_SESSION_METHODS entry, including clickWithCapture
+        // et al, and runs BEFORE those methods' own dialog-aware code ever
+        // sees the call -- so it is a SEPARATE place the same leak can
+        // happen, not a redundant one. While state.capturePaused is set,
+        // narrow `dialog` to {kind} and never render the message/
+        // defaultPrompt text at all.
+        if (state.capturePaused) {
+          throw new DialogRefusedError({ dialog: { kind: open.kind }, artifacts: null });
+        }
         throw new DialogRefusedError({ dialog: open, artifacts: renderSyntheticArtifacts(open) });
       }
 
@@ -446,6 +460,11 @@ function createSession({ host, port, _testFakes } = {}) {
     // Credential-shaped content guard (see lib/credential-guard.js)
     screenshotUnlessCredentialShaped,
     getPageUrl,
+
+    // Pause switch for automatic captures (see lib/capture-pause.js)
+    pauseCapture,
+    resumeCapture,
+    isCapturePaused,
 
     // Dynamic port allocation and per-profile meta.json
     getActivePort,

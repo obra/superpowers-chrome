@@ -249,6 +249,12 @@ Matched against the URL's **pathname and hash**, never its query string, and onl
 
 The live page is never touched by any of this: the fields the browser actually uses, and the page's own image/resource loads, are unaffected.
 
+### Pause switch for an unrecognized reveal
+
+Everything above only catches a secret with a recognized shape, an opt-in `data-sen-secret` mark, or a known-sensitive URL. A page that reveals a secret some other way — a "show password"/"reveal" click or a password-reset dialog that renders the plaintext into an ordinary element with no secret-looking id/name/class and no sensitive URL (real case: the Google Admin console's reset-password flow renders the generated password into a plain `div`) — slips past all three defenses, and the very next auto-capture writes it to disk.
+
+`pause_capture` suspends every automatic capture — DOM/markdown/screenshot/console-log/synthetic-dialog artifacts — for the rest of the session; `resume_capture` restores it. Call `pause_capture` immediately before the action you expect to reveal the secret: the action itself still runs (nothing about pausing stops it), only the capture that would normally follow it is skipped — no CDP call to read the page is even made. An explicit `screenshot` action also refuses outright while paused, with a message pointing at `resume_capture`, rather than silently taking and discarding the shot. Pause state lives on the session and persists across actions until `resume_capture` is called: forgetting to resume just means no more captures for the rest of the session, never a silent leak. **Caveat:** this is in-memory, process-local state, so it does NOT survive the MCP server process restarting — only `restart_chrome` re-adopting the same still-running Chrome within the same server process. If the server itself restarts while a secret from a paused reveal is still on-screen, the next auto-capture comes back unpaused; the pause notice disappearing from responses is the only signal. Capture the value itself with the credential broker, then call `resume_capture` as soon as the secret is off-screen.
+
 ### Usage
 
 ```json

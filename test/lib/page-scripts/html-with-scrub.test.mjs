@@ -207,17 +207,85 @@ describe('page-scripts/html-with-scrub', () => {
     assert.doesNotMatch(value.scrubbed, /aria-describedby/);
   });
 
-  it('strips value and data-* from any element carrying data-sen-secret, even a non-input', () => {
+  it('strips value/data-* AND blanks the whole subtree of any element carrying data-sen-secret, even a non-input', () => {
     const { value } = evalScript(
       '<html><body><ul data-sen-secret data-backup-codes="1234 5678"><li>1234 5678</li></ul></body></html>'
     );
     assert.match(value.raw, /data-sen-secret/);
     assert.doesNotMatch(value.scrubbed, /data-sen-secret/);
     assert.doesNotMatch(value.scrubbed, /data-backup-codes/);
-    // Only the attributes are scrubbed, not descendant text — callers rely
-    // on the credential-shape scan (which runs on `raw`) to catch a marked
-    // element's visible text; see capture.js's mustSuppress.
-    assert.match(value.scrubbed, /1234 5678/);
+    // The marked element's own subtree is blanked the same way a
+    // pattern-matched container's is (blankMatchedSubtree) -- a marker is
+    // at least as strong a signal as a secret-looking id/class. This is
+    // defense-in-depth BEHIND capture.js's whole-page credential-shape scan
+    // (mustSuppress), which still treats any data-sen-secret in the raw
+    // top-document HTML as a reason to suppress the ENTIRE capture (no
+    // files at all) -- that scan is unchanged by this PR and is what
+    // actually keeps a marked page's auto-capture off disk today. This
+    // test exercises html-with-scrub.js directly (jsdom, no capture.js in
+    // the loop), so it only proves the page-script's own guarantee, not
+    // what capture.js ends up writing.
+    assert.doesNotMatch(value.scrubbed, /1234 5678/);
+  });
+
+  it('blanks a marked LEAF element own text (no element children, just a text node)', () => {
+    const { value } = evalScript(
+      '<html><body><div id="generatedPassword" data-sen-secret>Tr0ub4dor</div></body></html>'
+    );
+    assert.match(value.raw, /Tr0ub4dor/);
+    assert.doesNotMatch(value.scrubbed, /Tr0ub4dor/);
+  });
+
+  it('blanks a marked container descendant text, including a child with no marker of its own', () => {
+    const { value } = evalScript(
+      '<html><body><div data-sen-secret>' +
+      '<p>Your new password is:</p>' +
+      '<code>Sup3rSecretPw</code>' +
+      '<button id="copyBtn">Copy</button>' +
+      '</div></body></html>'
+    );
+    assert.doesNotMatch(value.scrubbed, /Sup3rSecretPw/);
+    assert.doesNotMatch(value.scrubbed, /Your new password is:/);
+    // Unlike the pattern-matched container
+    // case, a marked container's skip-tag CONTROL descendants are NOT
+    // exempted -- the "link/button text is a UI label, not the secret"
+    // rationale is specifically about an ambiguous pattern match (a
+    // secret-looking id/class) that could be hitting a copy-seed button's
+    // own label rather than the seed. An explicit data-sen-secret opt-in
+    // mark carries no such ambiguity.
+    assert.doesNotMatch(value.scrubbed, />Copy<\/button>/);
+    assert.match(value.scrubbed, /<button id="copyBtn">\[REDACTED\]<\/button>/);
+  });
+
+  it('also strips href/title from a marked <a>, not just data-*/aria-*/value', () => {
+    const { value } = evalScript(
+      '<html><body><div data-sen-secret>' +
+      '<a href="https://example.com/reset?token=Sup3rSecretPw" title="Sup3rSecretPw">Reset link</a>' +
+      '</div></body></html>'
+    );
+    assert.doesNotMatch(value.scrubbed, /Sup3rSecretPw/);
+    assert.doesNotMatch(value.scrubbed, /Reset link/);
+    assert.doesNotMatch(value.scrubbed, /href=/);
+    assert.doesNotMatch(value.scrubbed, /title=/);
+  });
+
+  it('strips title (not just data-*/aria-*) from a marked LEAF element', () => {
+    const { value } = evalScript(
+      '<html><body><code data-sen-secret title="Sup3rSecretPw">Sup3rSecretPw</code></body></html>'
+    );
+    assert.doesNotMatch(value.scrubbed, /Sup3rSecretPw/);
+    assert.doesNotMatch(value.scrubbed, /title=/);
+  });
+
+  it('leaves an UNmarked sibling element completely untouched', () => {
+    const { value } = evalScript(
+      '<html><body>' +
+      '<div data-sen-secret>Sup3rSecretPw</div>' +
+      '<p id="control">Welcome back, Alice</p>' +
+      '</body></html>'
+    );
+    assert.doesNotMatch(value.scrubbed, /Sup3rSecretPw/);
+    assert.match(value.scrubbed, /Welcome back, Alice/);
   });
 
   it('leaves an ordinary text input untouched', () => {

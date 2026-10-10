@@ -337,3 +337,67 @@ describe('dialogs.withDialogAwarenessForSession', () => {
     assert.equal(result, 'tabs');
   });
 });
+
+// A paused click/fill/select/eval/set_attr that
+// hits a dialog -- either because one was ALREADY open (the refused branch)
+// or because the action itself opened one (the midFlight branch) -- must
+// never hand back the dialog's rendered message/defaultPrompt text. Both
+// branches used to call renderSyntheticArtifacts(open) unconditionally,
+// regardless of state.capturePaused, so the secret in an alert/confirm/
+// prompt/beforeunload message reached the agent's tool result even though
+// nothing touched disk. SECRET below stands in for a revealed password/seed
+// landing in dialog text exactly the way one can land in the DOM.
+const SECRET = 'Sup3rSecretPw-from-dialog';
+
+const DIALOG_PAYLOADS = {
+  alert: { message: `Your new password is ${SECRET}`, url: 'https://example.com', hasBrowserHandler: false },
+  confirm: { message: `Save ${SECRET} as your new password?`, url: 'https://example.com', hasBrowserHandler: false },
+  prompt: { message: 'Enter the generated password:', defaultPrompt: SECRET, url: 'https://example.com', hasBrowserHandler: false },
+  beforeunload: { message: `Leaving will discard ${SECRET}`, url: 'https://example.com', hasBrowserHandler: false },
+};
+
+describe('dialogs pause-aware behavior (capturePaused) — withDialogAwarenessForSession', () => {
+  for (const kind of Object.keys(DIALOG_PAYLOADS)) {
+    describe(`kind=${kind}`, () => {
+      it('refused branch (dialog already open): never includes the message/defaultPrompt, only {kind}', async () => {
+        const state = { dialogs: new Map(), capturePaused: true };
+        state.dialogs.set('S1', { kind, openedAt: 0, payload: DIALOG_PAYLOADS[kind], staged: {} });
+        const dialogs = attachDialogs({ state });
+        const ps = { sessionId: 'S1' };
+        const result = await dialogs.withDialogAwarenessForSession('click', ps, { selector: 'button' }, async () => 'ran');
+
+        assert.equal(result.refused, true);
+        assert.deepEqual(result.dialog, { kind }, 'dialog must be narrowed to {kind} only — no payload');
+        assert.equal(result.artifacts, null, 'artifacts must be null, not a rendered (and discarded) string');
+        assert.ok(!JSON.stringify(result).includes(SECRET), `secret leaked into paused refused result: ${JSON.stringify(result)}`);
+      });
+
+      it('midFlight branch (action opens the dialog): never includes the message/defaultPrompt, only {kind}', async () => {
+        const state = { dialogs: new Map(), capturePaused: true };
+        const dialogs = attachDialogs({ state });
+        const ps = { sessionId: 'S1' };
+        const result = await dialogs.withDialogAwarenessForSession('click', ps, { selector: 'button' }, async () => {
+          state.dialogs.set('S1', { kind, openedAt: Date.now(), payload: DIALOG_PAYLOADS[kind], staged: {} });
+          return 'action-result';
+        });
+
+        assert.equal(result.midFlight, true);
+        assert.equal(result.actionResult, 'action-result');
+        assert.deepEqual(result.dialog, { kind }, 'dialog must be narrowed to {kind} only — no payload');
+        assert.equal(result.artifacts, null, 'artifacts must be null, not a rendered (and discarded) string');
+        assert.ok(!JSON.stringify(result).includes(SECRET), `secret leaked into paused midFlight result: ${JSON.stringify(result)}`);
+      });
+
+      it('unpaused (sanity): the message IS present — confirms the pause check, not the dialog plumbing, hides it', async () => {
+        const state = { dialogs: new Map() }; // capturePaused left unset/false
+        state.dialogs.set('S1', { kind, openedAt: 0, payload: DIALOG_PAYLOADS[kind], staged: {} });
+        const dialogs = attachDialogs({ state });
+        const ps = { sessionId: 'S1' };
+        const result = await dialogs.withDialogAwarenessForSession('click', ps, { selector: 'button' }, async () => 'ran');
+
+        assert.equal(result.refused, true);
+        assert.ok(JSON.stringify(result).includes(SECRET), 'unpaused refusal should still render the message (unchanged behavior)');
+      });
+    });
+  }
+});

@@ -308,4 +308,62 @@ describe('page-scripts/markdown', () => {
       assert.match(md, /Store these recovery codes/, `guidance prose wrongly wiped: ${md}`);
     });
   });
+
+  describe('data-sen-secret marker redaction', () => {
+    it('redacts a marked leaf element own text', () => {
+      const md = evalScript('<html><body><p id="generatedPassword" data-sen-secret>Tr0ub4dor</p></body></html>');
+      assert.doesNotMatch(md, /Tr0ub4dor/);
+      assert.match(md, /\[REDACTED\]/);
+    });
+
+    it('redacts descendant text inside a marked container with no secret-looking id/class of its own', () => {
+      const md = evalScript(
+        '<html><body><div data-sen-secret>' +
+        '<p>Your new password is:</p>' +
+        '<code>Sup3rSecretPw</code>' +
+        '</div></body></html>'
+      );
+      assert.doesNotMatch(md, /Sup3rSecretPw/);
+      assert.doesNotMatch(md, /Your new password is:/);
+    });
+
+    it('does not redact an unmarked sibling', () => {
+      const md = evalScript(
+        '<html><body>' +
+        '<div data-sen-secret>Sup3rSecretPw</div>' +
+        '<p>Welcome back, Alice</p>' +
+        '</body></html>'
+      );
+      assert.doesNotMatch(md, /Sup3rSecretPw/);
+      assert.match(md, /Welcome back, Alice/);
+    });
+
+    // An <a> is rendered via its own early
+    // branch (`[text](href)`), BEFORE __senShouldRedact / __senRedactedText
+    // ever run on it — so a marked link's text and href used to reach the
+    // markdown output in clear regardless of the marker, unlike every
+    // other marked tag. The "link text is a UI label" rationale this
+    // branch otherwise relies on is about an ambiguous pattern match, not
+    // an explicit opt-in mark.
+    it('a marked <a> is redacted, not rendered as a clear [text](href) link', () => {
+      const md = evalScript(
+        '<html><body><a href="https://example.com/reset?token=Sup3rSecretPw" data-sen-secret>Reset your password</a></body></html>'
+      );
+      assert.doesNotMatch(md, /Sup3rSecretPw/);
+      assert.doesNotMatch(md, /Reset your password/);
+      assert.doesNotMatch(md, /example\.com/);
+    });
+
+    it('a marked container still redacts a nested <a> child (not just the container text)', () => {
+      const md = evalScript(
+        '<html><body><div data-sen-secret>' +
+        '<p>Click to reset:</p>' +
+        '<a href="https://example.com/reset?token=Sup3rSecretPw">Reset link</a>' +
+        '</div></body></html>'
+      );
+      assert.doesNotMatch(md, /Sup3rSecretPw/);
+      assert.doesNotMatch(md, /Reset link/);
+      assert.doesNotMatch(md, /Click to reset/);
+    });
+  });
 });
