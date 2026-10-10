@@ -207,6 +207,55 @@ describe('sensitive-url', () => {
     process.env[ENV_VAR] = '(unterminated[';
     assert.equal(urlLooksSensitive('https://example.test/dashboard'), false);
   });
+
+  // Host-qualified patterns -- see sensitive-url.js's module comment for
+  // why these are matched against hostname+pathname+hash rather than
+  // pathname alone (the path segment alone, on each of these, is too
+  // ordinary a word to accept matching on any site the way
+  // "backup-codes"/"totp" are).
+  describe('host-qualified patterns (hostname + pathname, not pathname alone)', () => {
+    it("matches Slack's App-Level Tokens page (api.slack.com/apps/<id>/general)", () => {
+      assert.equal(urlLooksSensitive('https://api.slack.com/apps/A01234ABCD/general'), true);
+    });
+
+    it('does not match an unrelated site with the same path shape ("apps"/"general" alone are too generic)', () => {
+      assert.equal(urlLooksSensitive('https://example.test/apps/123/general'), false);
+    });
+
+    it('does not match a DIFFERENT tab on the same Slack app (only /general is the token page)', () => {
+      assert.equal(urlLooksSensitive('https://api.slack.com/apps/A01234ABCD/oauth'), false);
+    });
+
+    for (const path of ['/settings/tokens', '/settings/tokens/new', '/settings/personal-access-tokens']) {
+      it(`matches GitHub's personal access token page (github.com${path})`, () => {
+        assert.equal(urlLooksSensitive(`https://github.com${path}`), true);
+      });
+    }
+
+    it('does not match an unrelated site with a "/settings/tokens" path ("tokens" alone is too generic)', () => {
+      assert.equal(urlLooksSensitive('https://example.test/settings/tokens'), false);
+    });
+
+    it("matches Google's App Passwords page (myaccount.google.com/apppasswords)", () => {
+      assert.equal(urlLooksSensitive('https://myaccount.google.com/apppasswords'), true);
+    });
+
+    it("matches Linear's personal API keys page (linear.app/settings/account/security)", () => {
+      assert.equal(urlLooksSensitive('https://linear.app/settings/account/security'), true);
+    });
+
+    it('does not match an unrelated site with the same generic settings path', () => {
+      assert.equal(urlLooksSensitive('https://example.test/settings/account/security'), false);
+    });
+
+    it('a malformed URL (no parseable hostname) never matches a host-qualified pattern', () => {
+      // DEFAULT_SENSITIVE_URL_PATTERNS (pathname-only) can still match a
+      // raw, unparseable string -- but DEFAULT_SENSITIVE_HOST_PATH_PATTERNS
+      // never does, since there's no reliable hostname to qualify
+      // against (see urlLooksSensitive's catch block).
+      assert.equal(urlLooksSensitive('github.com/settings/tokens'), false);
+    });
+  });
 });
 
 // PRI-3360: pageTextReadRefused -- the whole-page text-read gate for
@@ -224,8 +273,9 @@ describe('pageTextReadRefused', () => {
   // A minimal page-session fake: dispatches Runtime.evaluate by
   // expression content, the same discrimination extraction.test.mjs uses,
   // since pageTextReadRefused issues up to three DIFFERENT evaluate calls
-  // (URL, marker, density) that a single canned response can't usefully
-  // distinguish.
+  // (URL, marker, visible-text -- the last one checked against BOTH the
+  // credential-shape pattern and code-list density/keyword) that a single
+  // canned response can't usefully distinguish.
   function makePs({ url = 'https://example.test/dashboard', marker = false, text = 'Welcome to the dashboard.' } = {}) {
     const calls = [];
     return {
@@ -268,6 +318,29 @@ describe('pageTextReadRefused', () => {
     const refusal = await pageTextReadRefused(makePs({ text: codeDenseText }), 'attr');
     assert.match(refusal, /attr refused/);
     assert.match(refusal, /dense list of secret-shaped codes/);
+  });
+
+  // This function deliberately does NOT also check containsCredentialShaped
+  // on the page's own visible text, unconditionally, to catch a lone
+  // credential-shaped token with no other signal -- that false-positives
+  // on an UNLISTED page that legitimately prints example token strings
+  // (a token-types documentation page -- see test/lib/fixtures/
+  // code-list-negatives/ and test/credential-guard-mcp.test.mjs's
+  // "token-types docs page" coverage). A lone token with nothing else
+  // wrong on the page is EVAL's job specifically, checked AFTER running
+  // and only on a page whose URL is ALREADY on the sensitive-URL list --
+  // see credential-guard.js's valueLeaksSecret and capture.js's
+  // evaluateWithCapture. extractPageText/getSanitizedHtml's whole-page
+  // form (this function's other two callers) never gets this check at
+  // all, by design: they have no narrower, value-blind fallback the way
+  // eval's "check a length/boolean instead" advice does.
+  it('does NOT refuse a whole-page read on a lone credential-shaped token alone, off the URL list, with no marker and no code-list density', async () => {
+    // Assembled from parts at runtime, like FAKE_TOKEN elsewhere in this
+    // codebase, so no complete token-shaped literal sits in the source
+    // (GitHub push protection rejects those even when obviously fake).
+    const fakeToken = ['xoxb', '1111111111', '2222222222', 'FAKEfakeFAKEfakeFAKEfake'].join('-');
+    const tokenOnlyText = `Your new bot token: ${fakeToken}`;
+    assert.equal(await pageTextReadRefused(makePs({ text: tokenOnlyText }), 'extract'), null);
   });
 
   // PRI-3360 round 2 (jc review of #65): density ALONE, with no nearby

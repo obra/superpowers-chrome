@@ -206,6 +206,11 @@ function setup({
   dialog = null,
   dialogAfterAction = dialog,
   secretMarkerLive = false,
+  // What actions.evaluate returns for any expression OTHER than
+  // 'document.body.innerText' -- lets a test control what an eval()
+  // call's RESULT looks like, since evaluateWithCapture checks the
+  // result instead of refusing before running.
+  evalResult = 42,
 }) {
   const pageRef = { current: before };
   const dialogRef = { current: dialog };
@@ -253,7 +258,7 @@ function setup({
     },
     actions: {
       click: async () => { calls.action++; pageRef.current = afterPage; dialogRef.current = dialogAfterAction; return { clicked: true }; },
-      evaluate: async (_tab, expression) => { calls.action++; return expression === 'document.body.innerText' ? pageRef.current.renderedText : 42; },
+      evaluate: async (_tab, expression) => { calls.action++; return expression === 'document.body.innerText' ? pageRef.current.renderedText : evalResult; },
     },
     dialogs,
   });
@@ -384,6 +389,61 @@ describe('capturePageArtifacts credential guard', () => {
   });
 });
 
+// Workers have read auto-capture .md/.html files under
+// /work/.cache/superpowers/browser/ directly with file reads, bypassing
+// the tool entirely -- so capturePageArtifacts' write decision is the
+// ONLY guard for those files, with no second chance at read time the
+// way eval/extract/attr get from sensitive-url.js's
+// pageTextReadRefused. The code-list density signal for WHOLE-PAGE
+// READS requires a nearby keyword (codeListNearBackupKeyword,
+// sensitive-url.js) -- this suite proves that requirement has NO effect
+// here: mustSuppress (capture.js) calls containsCredentialShaped
+// directly and never calls codeListDetected or codeListNearBackupKeyword
+// at all, so a token-shaped string still suppresses the write with no
+// keyword, no code-list density, and nothing else on the page to cue it.
+describe('the code-list keyword rule does not loosen auto-capture', () => {
+  // Deliberately contains NONE of the backup/recovery/one-time/single-
+  // use/verification/2FA words in BACKUP_CODE_KEYWORD_PATTERNS, and no
+  // code-list density (one token, not six+) -- isolates
+  // containsCredentialShaped's own token-shape match from every other
+  // signal in this codebase.
+  const TOKEN_WITH_NO_KEYWORD_PAGE = {
+    html: `<html><body><p>Integration configured.</p><code>${FAKE_TOKEN}</code></body></html>`,
+    markdown: `Integration configured.\n\n${FAKE_TOKEN}`,
+    domSummary: 'Integration configured.\nInteractive: 0 buttons, 0 inputs, 0 links\nHeadings: ""\nLayout: body',
+    renderedText: '',
+  };
+
+  it('still writes no files for a token-shaped string with no backup/recovery keyword anywhere on the page', async () => {
+    const { capturePageArtifacts, state, calls } = setup({ before: TOKEN_WITH_NO_KEYWORD_PAGE });
+    const result = await capturePageArtifacts(0, 'navigate');
+
+    assert.equal(result.credentialSuppressed, true);
+    assert.deepEqual(sessionFiles(state), [], 'no capture artifacts may be written');
+    assert.equal(calls.screenshot, 0, 'no screenshot may be taken');
+    assert.equal(result.files, null);
+    assertNoLeak(result);
+  });
+
+  it('confirms the page itself has none of the backup/recovery keywords, so this is really testing the token-shape path, not the keyword-gated one', () => {
+    const { BACKUP_CODE_KEYWORD_PATTERNS } = require('../../skills/browsing/lib/code-list-detector.js');
+    const pageText = `${TOKEN_WITH_NO_KEYWORD_PAGE.html} ${TOKEN_WITH_NO_KEYWORD_PAGE.markdown}`;
+    for (const re of BACKUP_CODE_KEYWORD_PATTERNS) {
+      assert.doesNotMatch(pageText, re, `fixture page unexpectedly matches ${re} -- rewrite it so this test isolates the right code path`);
+    }
+  });
+
+  it('a raw fs.readFileSync of the session dir finds nothing at all (the exact bypass this isolates)', async () => {
+    const { capturePageArtifacts, state } = setup({ before: TOKEN_WITH_NO_KEYWORD_PAGE });
+    await capturePageArtifacts(0, 'navigate');
+
+    // No sessionDir is even created when everything is suppressed (see
+    // sessionFiles() above) -- so there is no directory a worker's direct
+    // file read could find the token in, let alone a file containing it.
+    assert.ok(!state.sessionDir || !fs.existsSync(state.sessionDir) || fs.readdirSync(state.sessionDir).length === 0);
+  });
+});
+
 // sensitive-url.js: a page suppressed purely because its URL matches a
 // known-sensitive pattern (2FA/MFA/recovery-codes/...), independent of
 // the credential-shape scan and html-with-scrub.js's default
@@ -431,6 +491,111 @@ describe('capturePageArtifacts URL-pattern suppression (sensitive-url.js)', () =
     assert.equal(clicked.credentialSuppressed, true);
     assert.equal(clicked.suppressedReason, 'sensitive-url');
     assert.equal(clicked.files, null);
+  });
+});
+
+// Slack's App-Level Tokens page (api.slack.com/apps/<id>/general) with
+// the token dialog open. Fake xapp-1-... token, assembled from parts at
+// runtime like FAKE_TOKEN above so no complete token-shaped literal
+// sits in the source. Belt and suspenders by construction: this page is
+// suppressed BOTH by the host-qualified URL pattern (sensitive-url.js's
+// DEFAULT_SENSITIVE_HOST_PATH_PATTERNS) and independently by the
+// pre-existing xapp- token-shape pattern (credential-guard.js's
+// TOKEN_PATTERNS) -- either alone is already sufficient, which this
+// suite's URL-only clean-content counterpart test below isolates.
+const FAKE_SLACK_APP_TOKEN = ['xapp', '1', 'A01234ABCD', 'FAKEfakeFAKEfakeFAKEfakeFAKEfake'].join('-');
+const SLACK_APP_TOKEN_PAGE = {
+  url: 'https://api.slack.com/apps/A01234ABCD/general',
+  html:
+    '<html><body><h1>Basic Information</h1>' +
+    '<section><h2>App-Level Tokens</h2>' +
+    '<div role="dialog" aria-label="Token generated">' +
+    `<p>Add scopes to create an app-level token</p><code>${FAKE_SLACK_APP_TOKEN}</code>` +
+    '<button>Done</button></div></section>' +
+    '</body></html>',
+  markdown: `# Basic Information\n\n## App-Level Tokens\n\n${FAKE_SLACK_APP_TOKEN}`,
+  domSummary: 'Basic Information\nInteractive: 1 buttons, 0 inputs, 0 links\nHeadings: "Basic Information", "App-Level Tokens"\nLayout: body',
+  renderedText: '',
+};
+
+// Same URL, no token anywhere -- isolates the URL-pattern suppression
+// from the token-shape scan, the same way SENSITIVE_URL_CLEAN_PAGE does
+// for Slack's 2FA setup route above.
+const SLACK_APP_TOKEN_URL_CLEAN_PAGE = {
+  ...CLEAN_PAGE,
+  url: 'https://api.slack.com/apps/A01234ABCD/general',
+};
+
+describe("Slack's App-Level Tokens page", () => {
+  it('writes no files and returns only metadata with the token dialog open', async () => {
+    const { capturePageArtifacts, state, calls } = setup({ before: SLACK_APP_TOKEN_PAGE });
+    const result = await capturePageArtifacts(0, 'navigate');
+
+    assert.equal(result.credentialSuppressed, true);
+    assert.deepEqual(sessionFiles(state), [], 'no capture artifacts may be written');
+    assert.equal(calls.screenshot, 0, 'no screenshot may be taken');
+    assert.equal(result.files, null);
+
+    const text = JSON.stringify(result);
+    assert.ok(!text.includes(FAKE_SLACK_APP_TOKEN), `token leaked into result: ${text}`);
+    assert.ok(!text.includes('FAKEfake'), `token fragment leaked into result: ${text}`);
+  });
+
+  it('suppresses purely from the URL too, even with no token on the page (isolates the new host-qualified pattern)', async () => {
+    const { capturePageArtifacts, state } = setup({ before: SLACK_APP_TOKEN_URL_CLEAN_PAGE });
+    const result = await capturePageArtifacts(0, 'navigate');
+
+    assert.equal(result.credentialSuppressed, true);
+    assert.equal(result.suppressedReason, 'sensitive-url');
+    assert.deepEqual(sessionFiles(state), []);
+  });
+
+  // eval does not refuse up front on a sensitive URL -- it RUNS, and the
+  // RESULT is checked.
+  it('eval that returns something harmless on this sensitive URL still succeeds', async () => {
+    const { evaluateWithCapture } = setup({ before: SLACK_APP_TOKEN_PAGE, evalResult: 42 });
+    const evaluated = await evaluateWithCapture(0, 'document.title');
+    assert.equal(evaluated.result, 42);
+  });
+
+  it('eval that returns a boolean on this sensitive URL still succeeds (a dispatchEvent-style result)', async () => {
+    const { evaluateWithCapture } = setup({ before: SLACK_APP_TOKEN_PAGE, evalResult: true });
+    const evaluated = await evaluateWithCapture(0, 'el.dispatchEvent(new MouseEvent(click))');
+    assert.equal(evaluated.result, true);
+  });
+
+  it('eval that returns the token ITSELF on this sensitive URL is refused outright', async () => {
+    const { evaluateWithCapture } = setup({ before: SLACK_APP_TOKEN_PAGE, evalResult: FAKE_SLACK_APP_TOKEN });
+    await assert.rejects(
+      () => evaluateWithCapture(0, 'document.getElementById(token).textContent'),
+      /eval refused.*credential- or code-shaped/i
+    );
+  });
+
+  it('eval that returns a TRUNCATED prefix of the token is refused too (el.value.slice(0,8))', async () => {
+    const sliced = FAKE_SLACK_APP_TOKEN.slice(0, 8);
+    const { evaluateWithCapture } = setup({ before: SLACK_APP_TOKEN_PAGE, evalResult: sliced });
+    await assert.rejects(
+      () => evaluateWithCapture(0, 'el.value.slice(0,8)'),
+      /eval refused.*credential- or code-shaped/i
+    );
+  });
+
+  it('eval that returns an object with a NESTED token string is refused too', async () => {
+    const { evaluateWithCapture } = setup({
+      before: SLACK_APP_TOKEN_PAGE,
+      evalResult: { ok: true, meta: { token: FAKE_SLACK_APP_TOKEN } },
+    });
+    await assert.rejects(
+      () => evaluateWithCapture(0, 'result object literal'),
+      /eval refused.*credential- or code-shaped/i
+    );
+  });
+
+  it('the same nested-object shape, on an ORDINARY URL, is unaffected (confirms this is keyed on the URL)', async () => {
+    const { evaluateWithCapture } = setup({ before: CLEAN_PAGE, evalResult: { ok: true, count: 3 } });
+    const evaluated = await evaluateWithCapture(0, 'result object literal');
+    assert.deepEqual(evaluated.result, { ok: true, count: 3 });
   });
 });
 

@@ -100,6 +100,29 @@
  * STRING against a `body`/`html` literal list -- see extraction.js for
  * why (`:root`, `*`, `html > body`, etc. all resolve to the same scope
  * but don't match that literal list).
+ *
+ * Slack's App-Level Tokens page, GitHub's personal access token pages,
+ * Google's App Passwords page, and Linear's personal API keys page JOIN
+ * this same sensitive-page set -- urlLooksSensitive below is the ONE function every
+ * caller (the read gate below AND capture.js's write-side suppression)
+ * ever consults, with no separate "capture-only" category. They live in
+ * DEFAULT_SENSITIVE_HOST_PATH_PATTERNS, a SECOND list matched against
+ * HOSTNAME + pathname + hash together, not pathname alone, purely
+ * because the PATTERN SHAPE needs the extra qualifier, not because the
+ * SIGNAL means anything different once matched. Every pattern in
+ * DEFAULT_SENSITIVE_URL_PATTERNS above is deliberately domain-agnostic --
+ * "backup-codes", "totp", "security-keys" are distinctive enough on
+ * their own that matching them on any site is an accepted, documented
+ * trade-off (a missed match is a leak; an extra match only suppresses a
+ * harmless capture). A path segment like "apps" or "tokens" is NOT
+ * distinctive enough to accept that trade domain-agnostically -- "apps"
+ * alone matches any app marketplace/directory, "tokens" alone matches
+ * any page that manages API tokens without necessarily ever displaying
+ * one in cleartext. These are real, specific pages that DO show a
+ * secret, but only paired with the host that serves them --
+ * urlLooksSensitive checks both lists and returns one combined
+ * true/false; nothing downstream of it can tell, or needs to tell, which
+ * list actually matched.
  */
 const { throwIfExceptionDetails } = require('./cdp-utils');
 const { credentialCaptureAllowed } = require('./credential-guard');
@@ -140,6 +163,53 @@ const DEFAULT_SENSITIVE_URL_PATTERNS = [
   /login[-_]?verification/i,
   // Word-boundary on both sides, same reasoning as security-keys above.
   /(?<![a-zA-Z0-9])security[-_]?info(?![a-zA-Z0-9])/i,
+];
+
+// Host-qualified patterns: see the module comment above for why these
+// are kept separate from the domain-agnostic list -- the path segment
+// alone, on any of these, is too ordinary a word to accept matching on
+// any site. Matched against `hostname + pathname + hash`, case-
+// insensitive like everything else in this file. Each entry documents
+// the real page it targets and how its existence was confirmed.
+const DEFAULT_SENSITIVE_HOST_PATH_PATTERNS = [
+  // Slack's App-Level Tokens are shown on an app's "Basic Information"
+  // page: api.slack.com/apps/<app id>/general (confirmed: api.slack.com
+  // is Slack's own app-management host, and "general" is the Basic
+  // Information tab's own route segment). "apps"/"general" alone are far
+  // too generic (any marketplace/dashboard has an "apps" path; "general"
+  // is a common settings-tab name) to match domain-agnostically.
+  /^api\.slack\.com\/apps\/[^/?#]+\/general(?:[/?#]|$)/i,
+  // GitHub personal access tokens: github.com/settings/tokens (classic)
+  // and github.com/settings/personal-access-tokens (fine-grained) both
+  // show a newly-created token's full value exactly once, directly on
+  // this page. Confirmed live: both paths 302 to /login with a
+  // return_to preserving the exact path (a real, routed page, not a
+  // 404) -- github.com, 2026-10-09. Bare "tokens" is too generic to
+  // match on any site (a changelog's "API tokens" blog post, a
+  // completely unrelated "/settings/tokens" page elsewhere that never
+  // shows a value).
+  /^github\.com\/settings\/(?:tokens|personal-access-tokens)(?:[/?#]|$)/i,
+  // Google's App Passwords page shows a newly-generated app password's
+  // full value exactly once. Confirmed live: myaccount.google.com/
+  // apppasswords 302-redirects to a Google sign-in page (a real,
+  // routed page) -- 2026-10-09.
+  /^myaccount\.google\.com\/apppasswords(?:[/?#]|$)/i,
+  // Linear's personal API keys are managed under Settings > Security &
+  // access, linear.app/settings/account/security, which shows a newly-
+  // created key's full value once. Source: this exact path is linked
+  // from Linear's own public developer docs (linear.app/developers/
+  // graphql, "Personal API Keys" section) -- lower confidence than the
+  // three above (not independently verified against a logged-in
+  // session), kept anyway per this module's stated trade-off (a missed
+  // match is a leak; an extra match only suppresses a harmless capture).
+  /^linear\.app\/settings\/account\/security(?:[/?#]|$)/i,
+  // 1Password's own service-account-token creation page almost
+  // certainly has an equivalent -- NOT added here because its exact
+  // path could not be confirmed (my.1password.com is a client-routed
+  // SPA; an unauthenticated 200 on a guessed path doesn't confirm the
+  // route exists). Its token VALUE is already covered independently by
+  // credential-guard.js's own `ops_`-prefix token-shape pattern, so this
+  // is a missing defense-in-depth layer, not a missing defense.
 ];
 
 // Comma-separated list of EXTRA regex source strings (case-insensitive),
@@ -184,17 +254,28 @@ const NEVER_SENSITIVE_SCHEMES = new Set(['data:', 'blob:', 'about:']);
 function urlLooksSensitive(url) {
   if (typeof url !== 'string' || !url) return false;
   let target = url;
+  let hostAndPath = null;
   try {
     const parsed = new URL(url);
     if (NEVER_SENSITIVE_SCHEMES.has(parsed.protocol)) return false;
     // pathname + hash, deliberately NOT parsed.search -- see module
     // comment for why the query string is excluded.
     target = parsed.pathname + (parsed.hash || '');
+    // hostname + pathname + hash, for DEFAULT_SENSITIVE_HOST_PATH_PATTERNS
+    // below -- same query-string exclusion, same reasoning.
+    hostAndPath = parsed.hostname + parsed.pathname + (parsed.hash || '');
   } catch (_e) {
-    // Not a parseable absolute URL -- match against the raw string.
+    // Not a parseable absolute URL -- match against the raw string. No
+    // hostAndPath in this case: without a parseable URL there is no
+    // reliable hostname to qualify a host-path pattern against, and
+    // matching the host-path patterns' host prefix against an arbitrary
+    // raw string risks a false positive the pathname-only patterns don't
+    // have (e.g. a raw string that happens to start with "github.com").
   }
   const patterns = DEFAULT_SENSITIVE_URL_PATTERNS.concat(extraPatterns());
-  return patterns.some((re) => re.test(target));
+  if (patterns.some((re) => re.test(target))) return true;
+  if (hostAndPath && DEFAULT_SENSITIVE_HOST_PATH_PATTERNS.some((re) => re.test(hostAndPath))) return true;
+  return false;
 }
 
 const URL_SUPPRESSED_NOTICE =
@@ -243,16 +324,35 @@ function wholePageReadRefusal(action, reason) {
  *      regardless of content, same as before.
  *   2. A live data-sen-secret marker -- refuses regardless of content,
  *      same as before.
- *   3. Code-list density ALONE (off the URL list, no marker) is no
- *      longer sufficient by itself (PRI-3360 round 2, jc review of #65:
- *      density alone flagged ordinary pages -- GitHub PR/repo/REST-docs
- *      pages, the HN front page -- and `eval` has no narrower form to
- *      fall back to when that happens). This branch now also requires a
- *      backup/recovery-style keyword within
- *      code-list-detector.js's KEYWORD_PROXIMITY_CHARS of the code
- *      cluster (codeListNearBackupKeyword) -- a concrete cue that the
- *      page is actually showing backup/recovery codes, not just text
- *      that happens to cluster densely.
+ *   3. Code-list density ALONE (off the URL list, no marker) is not
+ *      sufficient by itself (PRI-3360 round 2, jc review of #65: density
+ *      alone flagged ordinary pages -- GitHub PR/repo/REST-docs pages,
+ *      the HN front page -- and a selector-less extract has no narrower
+ *      form to fall back to when that happens). This branch also
+ *      requires a backup/recovery-style keyword within code-list-
+ *      detector.js's KEYWORD_PROXIMITY_CHARS of the code cluster
+ *      (codeListNearBackupKeyword) -- a concrete cue that the page is
+ *      actually showing backup/recovery codes, not just text that
+ *      happens to cluster densely.
+ *
+ * This function deliberately does NOT also check containsCredentialShaped
+ * on the page's own visible text, unconditionally, to catch a lone
+ * credential-shaped token with nothing else to flag the page -- that
+ * false-positives on a real, unlisted page that legitimately shows
+ * example token strings to explain their format (a token-types
+ * documentation page), the same class of problem density-alone has off
+ * the URL list. Catching a lone token is EVAL's job specifically, done
+ * AFTER running (see capture.js's evaluateWithCapture and credential-
+ * guard.js's stringLooksLikeSecret/valueLeaksSecret), gated on the page's
+ * URL already being on the sensitive-URL list -- not a blanket whole-page
+ * pre-check that would block this pre-check function's only two OTHER
+ * callers (extractPageText/getSanitizedHtml's whole-page form) from ever
+ * reading an unlisted page with an example token on it. Output-level
+ * redaction (response-format.ts's redactCredentialShaped) still masks
+ * any token shape that reaches the final response text regardless, on
+ * every page, listed or not -- that layer stays independent of this
+ * function's own decision not to refuse.
+ *
  * Returns null when none apply (the caller's whole-page read may
  * proceed). Deliberately a nullable-string return, not a throw, so
  * callers can decide whether to throw immediately or fold the message
@@ -323,6 +423,7 @@ async function pageTextReadRefused(ps, action) {
 
 module.exports = {
   DEFAULT_SENSITIVE_URL_PATTERNS,
+  DEFAULT_SENSITIVE_HOST_PATH_PATTERNS,
   ENV_VAR,
   urlLooksSensitive,
   URL_SUPPRESSED_NOTICE,

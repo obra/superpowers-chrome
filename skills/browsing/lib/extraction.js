@@ -2,7 +2,7 @@ const { getElementSelector } = require('./element-selector');
 const { throwIfExceptionDetails } = require('./cdp-utils');
 const { MARKER_ATTR, credentialCaptureAllowed, secretMarkerRefusal, refuseIfTextLeaksSecret } = require('./credential-guard');
 const { ANCESTOR_MARKED_FN_SRC, INERT_CLONE_FN_SRC } = require('./secret-marker');
-const { pageTextReadRefused } = require('./sensitive-url');
+const { pageTextReadRefused, urlLooksSensitive } = require('./sensitive-url');
 
 /**
  * Single-element extraction primitives — text content, HTML, attributes.
@@ -96,6 +96,22 @@ function attachExtraction({ getPageSession }) {
     return !!result.result.value;
   }
 
+  // refuseIfTextLeaksSecret's bare-prefix and mixed-alnum-run rules only
+  // apply when the page's own URL is already on the sensitive-URL list --
+  // same reasoning as eval's post-run check in capture.js: both rules are
+  // loose enough that applying them off that list misfires on ordinary
+  // text. One extra CDP round trip per element-scoped read (only when the
+  // override isn't set); accepted for the same reason extractText/
+  // getSanitizedHtml/getAttribute already accept resolveIsWholePage's
+  // round trip above.
+  async function elementResultCheck(ps, value, action, selector) {
+    const urlResult = await ps.send('Runtime.evaluate', { expression: 'location.href', returnByValue: true });
+    throwIfExceptionDetails(urlResult);
+    return refuseIfTextLeaksSecret(value, action, selector, {
+      densityAloneSufficient: urlLooksSensitive(urlResult.result.value),
+    });
+  }
+
   // Shared shape for "the resolved element itself, or any ancestor of it,
   // carries the marker" (self is covered because __senAncestorMarked
   // checks `start` before walking up) — stripping descendants can't help
@@ -142,7 +158,7 @@ function attachExtraction({ getPageSession }) {
     throwIfExceptionDetails(result);
     const value = throwIfSecretMarked(result.result.value, 'extract', selector);
     if (!wholePage && !credentialCaptureAllowed()) {
-      return refuseIfTextLeaksSecret(value, 'extract', selector);
+      return elementResultCheck(ps, value, 'extract', selector);
     }
     return value;
   }
@@ -187,8 +203,8 @@ function attachExtraction({ getPageSession }) {
     });
     throwIfExceptionDetails(result);
     const value = throwIfSecretMarked(result.result.value, 'extract', wholePage ? '(whole page)' : selector);
-    if (!wholePage) {
-      return refuseIfTextLeaksSecret(value, 'extract', selector);
+    if (!wholePage && !credentialCaptureAllowed()) {
+      return elementResultCheck(ps, value, 'extract', selector);
     }
     return value;
   }
@@ -224,7 +240,7 @@ function attachExtraction({ getPageSession }) {
     throwIfExceptionDetails(result);
     const value = throwIfSecretMarked(result.result.value, 'attr', selector);
     if (!wholePage && !credentialCaptureAllowed()) {
-      return refuseIfTextLeaksSecret(value, 'attr', selector);
+      return elementResultCheck(ps, value, 'attr', selector);
     }
     return value;
   }

@@ -7,7 +7,13 @@ const markdownScript = require('./page-scripts/markdown');
 const domSummaryScript = require('./page-scripts/dom-summary');
 const renderedTextScript = require('./page-scripts/rendered-text');
 const htmlWithScrubScript = require('./page-scripts/html-with-scrub');
-const { containsCredentialShaped, credentialCaptureAllowed } = require('./credential-guard');
+const {
+  containsCredentialShaped,
+  credentialCaptureAllowed,
+  secretMarkerRefusal,
+  evalResultRefusal,
+  valueLeaksSecret,
+} = require('./credential-guard');
 const { pageHasSecretMarker } = require('./secret-marker');
 const { urlLooksSensitive, pageTextReadRefused: pageTextReadRefusedForPs } = require('./sensitive-url');
 const { capturePausedScreenshotRefusal } = require('./capture-pause');
@@ -887,47 +893,57 @@ function attachCapture({ state, getPageSession, getHtml, screenshot, actions, di
     return run();
   }
 
-  // eval runs arbitrary caller JS against the live page and hands back
-  // whatever it returns, verbatim — there is no result shape to inspect
-  // and redact after the fact the way a plain-text extraction can be
-  // scanned. So this checks BEFORE running the expression at all and
-  // refuses outright when the page is flagged sensitive, rather than
-  // trying to run the expression and filter its result: a value-blind
-  // expression (`.textContent.length`) is fine for a token-shaped secret
-  // (whose shape lets the final redaction pass confirm nothing leaked)
-  // but not for a data-sen-secret page, a known-sensitive URL, or a
-  // code-dense page, none of which has a shape to verify an arbitrary
-  // eval result against. Refusing is also what keeps this from ever
-  // mutating the live DOM to get a safe answer: the expression simply
-  // never runs.
+  // eval does NOT refuse outright before running on a sensitive URL, a
+  // marker, or dense code-shaped text, the way a selector-less extract
+  // does -- a blanket refusal there would also block a `.length`/
+  // boolean/numeric query that never reveals the secret's VALUE at all,
+  // on pages where nothing else is wrong. Instead eval ALWAYS RUNS
+  // (except when a live data-sen-secret marker is present -- see below
+  // for why that ONE signal still has to be a pre-check), and its RETURN
+  // VALUE is inspected before anything is handed back. Numbers, booleans,
+  // null and undefined always pass through -- none of those types can
+  // carry a token-shaped string. Every string in the result (recursively,
+  // for an object or array eval returns) is checked by credential-
+  // guard.js's valueLeaksSecret -- but ONLY when the page's OWN URL is
+  // already on the sensitive-URL list (urlLooksSensitive): off that
+  // list, eval runs freely (response-format.ts's own, separate,
+  // unconditional redactCredentialShaped pass still masks any token
+  // shape that reaches the final response text, on every page, listed
+  // or not). This is deliberately NOT applied everywhere: a density-
+  // based check misfires on ordinary pages (GitHub/HN), and a bare
+  // credential-shape check misfires on a real page that legitimately
+  // prints example token strings to explain their format (e.g. a
+  // provider's own token-TYPES documentation) -- scoping the stricter
+  // check to pages ALREADY flagged sensitive by their URL keeps it from
+  // reaching ordinary pages that were never the concern in the first
+  // place.
   //
-  // Deliberately a point check, not a boundary: this is the ONLY check
-  // eval gets — no re-check after the expression runs, and nothing
-  // sticky remembered across calls.
-  // Gating eval any harder can't stop a deliberately adversarial
-  // expression: eval runs in the same JS realm as the secret, so an
-  // expression that reveals the marker mid-run (click a button, await a
-  // timer, THEN read it) always finds a gap a post-hoc check can't close
-  // (throw the value instead of returning it, console.log it, alert() it,
-  // or erase the marker with removeAttribute as its last synchronous
-  // step). This refusal exists only to catch the ACCIDENTAL case: you
-  // already marked a secret, navigated to a known-sensitive URL, or
-  // landed on a code-dense page, and then ran eval there. Don't eval on
-  // such a page if you need eval to be trustworthy — it never is, on any
-  // page, flagged or not. PRI-3360: this check used to be the marker-only
-  // test now folded into pageTextReadRefused (URL pattern OR marker OR
-  // code-list density; see sensitive-url.js) — a real incident leaked a
-  // session token off a sensitive URL via exactly this path (an outerHTML
-  // eval), with no marker present at all.
+  // The marker check stays a PRE-run gate, unlike the URL/content check
+  // above: by the time eval produces a plain value, the marker (a live-
+  // DOM-only signal; see lib/secret-marker.js) is already gone from
+  // whatever string/object eval returns, so there is nothing left for a
+  // post-hoc check to find. Gating the marker any harder than this single
+  // point check still can't stop a deliberately adversarial expression --
+  // eval runs in the same JS realm as the secret, so an expression that
+  // reveals it mid-run (click a button, await a timer, THEN read it)
+  // always finds a gap a pre- or post-hoc check can't close. This refusal
+  // exists only to catch the ACCIDENTAL case: you already marked a
+  // secret and then ran eval there anyway.
   async function evaluateWithCapture(tabIndexOrWsUrl, expression) {
     const ps = await getPageSession(tabIndexOrWsUrl);
     const pinnedTab = { id: ps.targetId };
     const run = async () => {
-      const refusal = await pageTextReadRefusedForPs(ps, 'eval');
-      if (refusal) {
-        throw new Error(refusal);
+      if (!credentialCaptureAllowed() && (await pageHasSecretMarker(ps))) {
+        throw new Error(secretMarkerRefusal('eval'));
       }
       const result = await actions.evaluate(tabIndexOrWsUrl, expression);
+      if (!credentialCaptureAllowed()) {
+        const urlResult = await ps.send('Runtime.evaluate', { expression: 'location.href', returnByValue: true });
+        throwIfExceptionDetails(urlResult);
+        if (urlLooksSensitive(urlResult.result.value) && valueLeaksSecret(result, { densityAloneSufficient: true })) {
+          throw new Error(evalResultRefusal(expression));
+        }
+      }
       const artifacts = await capturePageArtifacts(pinnedTab, 'eval');
       return {
         action: 'eval',
