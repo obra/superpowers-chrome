@@ -206,6 +206,11 @@ function setup({
   dialog = null,
   dialogAfterAction = dialog,
   secretMarkerLive = false,
+  // PRI-3360 round 4: what actions.evaluate returns for any expression
+  // OTHER than 'document.body.innerText' -- lets a test control what an
+  // eval() call's RESULT looks like, now that evaluateWithCapture checks
+  // the result instead of refusing before running.
+  evalResult = 42,
 }) {
   const pageRef = { current: before };
   const dialogRef = { current: dialog };
@@ -253,7 +258,7 @@ function setup({
     },
     actions: {
       click: async () => { calls.action++; pageRef.current = afterPage; dialogRef.current = dialogAfterAction; return { clicked: true }; },
-      evaluate: async (_tab, expression) => { calls.action++; return expression === 'document.body.innerText' ? pageRef.current.renderedText : 42; },
+      evaluate: async (_tab, expression) => { calls.action++; return expression === 'document.body.innerText' ? pageRef.current.renderedText : evalResult; },
     },
     dialogs,
   });
@@ -547,15 +552,52 @@ describe("PRI-3360 round 3 (Reeve): Slack's App-Level Tokens page", () => {
     assert.deepEqual(sessionFiles(state), []);
   });
 
-  it('eval refuses outright on this URL -- the whole-page read gate, not just a capture-side suppression flag', async () => {
-    // Unlike TOKEN_PAGE (an ORDINARY URL) above, where eval still runs
-    // and only the capture metadata is suppressed, this page's URL is
-    // itself flagged sensitive -- sensitive-url.js's pageTextReadRefused
-    // (via evaluateWithCapture's pageTextReadRefusedForPs call) refuses
-    // BEFORE the expression ever runs, same as it would for Slack's 2FA
-    // setup page.
-    const { evaluateWithCapture } = setup({ before: SLACK_APP_TOKEN_PAGE });
-    await assert.rejects(() => evaluateWithCapture(0, 'document.title'), /eval refused.*sensitive/i);
+  // PRI-3360 round 4 (jc + Reeve's final design): eval no longer refuses
+  // up front on a sensitive URL -- it RUNS, and the RESULT is checked.
+  it('eval that returns something harmless on this sensitive URL still succeeds', async () => {
+    const { evaluateWithCapture } = setup({ before: SLACK_APP_TOKEN_PAGE, evalResult: 42 });
+    const evaluated = await evaluateWithCapture(0, 'document.title');
+    assert.equal(evaluated.result, 42);
+  });
+
+  it('eval that returns a boolean on this sensitive URL still succeeds (a dispatchEvent-style result)', async () => {
+    const { evaluateWithCapture } = setup({ before: SLACK_APP_TOKEN_PAGE, evalResult: true });
+    const evaluated = await evaluateWithCapture(0, 'el.dispatchEvent(new MouseEvent(click))');
+    assert.equal(evaluated.result, true);
+  });
+
+  it('eval that returns the token ITSELF on this sensitive URL is refused outright', async () => {
+    const { evaluateWithCapture } = setup({ before: SLACK_APP_TOKEN_PAGE, evalResult: FAKE_SLACK_APP_TOKEN });
+    await assert.rejects(
+      () => evaluateWithCapture(0, 'document.getElementById(token).textContent'),
+      /eval refused.*credential- or code-shaped/i
+    );
+  });
+
+  it('eval that returns a TRUNCATED prefix of the token is refused too (Reeve case: el.value.slice(0,8))', async () => {
+    const sliced = FAKE_SLACK_APP_TOKEN.slice(0, 8);
+    const { evaluateWithCapture } = setup({ before: SLACK_APP_TOKEN_PAGE, evalResult: sliced });
+    await assert.rejects(
+      () => evaluateWithCapture(0, 'el.value.slice(0,8)'),
+      /eval refused.*credential- or code-shaped/i
+    );
+  });
+
+  it('eval that returns an object with a NESTED token string is refused too', async () => {
+    const { evaluateWithCapture } = setup({
+      before: SLACK_APP_TOKEN_PAGE,
+      evalResult: { ok: true, meta: { token: FAKE_SLACK_APP_TOKEN } },
+    });
+    await assert.rejects(
+      () => evaluateWithCapture(0, 'result object literal'),
+      /eval refused.*credential- or code-shaped/i
+    );
+  });
+
+  it('the same nested-object shape, on an ORDINARY URL, is unaffected (confirms this is keyed on the URL)', async () => {
+    const { evaluateWithCapture } = setup({ before: CLEAN_PAGE, evalResult: { ok: true, count: 3 } });
+    const evaluated = await evaluateWithCapture(0, 'result object literal');
+    assert.deepEqual(evaluated.result, { ok: true, count: 3 });
   });
 });
 

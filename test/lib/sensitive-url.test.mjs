@@ -320,26 +320,29 @@ describe('pageTextReadRefused', () => {
     assert.match(refusal, /dense list of secret-shaped codes/);
   });
 
-  // PRI-3360 round 3 (Reeve): a LONE credential-shaped token -- no
-  // sensitive URL, no marker, and nowhere near 6+ code-shaped tokens for
-  // the density signal to fire -- must still refuse a whole-page read.
-  // Before this round, it did not: eval/a selector-less extract would
-  // have returned it in clear, even though the SAME token on the SAME
-  // page already refused an element-scoped extract/attr of it
-  // (credential-guard.js's refuseIfTextLeaksSecret).
-  it('refuses on a lone credential-shaped token alone, off the URL list, with no marker and no code-list density', async () => {
+  // PRI-3360 round 3 (Reeve) briefly added a fourth signal here --
+  // containsCredentialShaped on the page's own visible text, unconditional
+  // -- specifically to catch a lone credential-shaped token with no other
+  // signal. Round 4 (jc) removed it again: it false-positived on an
+  // UNLISTED page that legitimately prints example token strings (Slack's
+  // own token-types documentation -- see
+  // test/lib/fixtures/code-list-negatives/ and
+  // test/credential-guard-mcp.test.mjs's "Slack token-types docs page"
+  // coverage). A lone token with nothing else wrong on the page is now
+  // eval's job specifically, checked AFTER running and only on a page
+  // whose URL is ALREADY on the sensitive-URL list -- see
+  // credential-guard.js's valueLeaksSecret and capture.js's
+  // evaluateWithCapture. extractPageText/getSanitizedHtml's whole-page
+  // form (this function's other two callers) never gets this check at
+  // all, by design: they have no narrower, value-blind fallback the way
+  // eval's "check a length/boolean instead" advice does.
+  it('does NOT refuse a whole-page read on a lone credential-shaped token alone, off the URL list, with no marker and no code-list density', async () => {
     // Assembled from parts at runtime, like FAKE_TOKEN elsewhere in this
     // codebase, so no complete token-shaped literal sits in the source
     // (GitHub push protection rejects those even when obviously fake).
     const fakeToken = ['xoxb', '1111111111', '2222222222', 'FAKEfakeFAKEfakeFAKEfake'].join('-');
     const tokenOnlyText = `Your new bot token: ${fakeToken}`;
-    const refusal = await pageTextReadRefused(makePs({ text: tokenOnlyText }), 'eval');
-    assert.match(refusal, /eval refused/);
-    assert.match(refusal, /credential-shaped/);
-  });
-
-  it('a single ordinary word does not false-positive the credential-shape check', async () => {
-    assert.equal(await pageTextReadRefused(makePs({ text: 'Welcome back, Jordan.' }), 'eval'), null);
+    assert.equal(await pageTextReadRefused(makePs({ text: tokenOnlyText }), 'extract'), null);
   });
 
   // PRI-3360 round 2 (jc review of #65): density ALONE, with no nearby

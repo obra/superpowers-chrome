@@ -15,8 +15,10 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const require = createRequire(import.meta.url);
 const BUNDLE_PATH = path.join(__dirname, '..', 'mcp', 'dist', 'index.js');
 
 // Fake tokens are assembled from prefix + body at runtime so no complete
@@ -430,44 +432,51 @@ describe('credential guard through the MCP server (real Chrome)', { skip: !CHROM
     assert.equal(server.capturedFiles().length, filesBefore);
   });
 
-  // PRI-3360 round 3 (Reeve): whole-page extract('text')/eval on a page
-  // showing a credential-shaped token now refuse OUTRIGHT (sensitive-
-  // url.js's pageTextReadRefused, containsCredentialShaped signal) --
-  // they used to run and come back REDACTED instead (response-format.ts's
-  // own, older, separate redactCredentialShaped pass over the formatted
-  // response text). Refusing outright is strictly more protective: a
-  // redacted-but-returned result can still leak information a refusal
-  // can't (the token's LENGTH, as the "blind" eval below used to prove
-  // still worked) -- and it's the exact same treatment every other
-  // pageTextReadRefused signal (URL/marker/density+keyword) already gets.
-  // Narrower, ELEMENT-SCOPED reads of something else on the SAME page
-  // still work fine; only the whole-page forms are affected.
-  it('extract/eval refuse outright on a page showing a credential-shaped token (whole-page forms)', async () => {
+  // PRI-3360 round 3 (Reeve) briefly made whole-page extract('text')/eval
+  // refuse OUTRIGHT on a page showing a credential-shaped token, via
+  // sensitive-url.js's pageTextReadRefused. Round 4 (jc + Reeve's final
+  // design) removed that again: TOKEN_PAGE's URL is a data: URL (NEVER
+  // matched by urlLooksSensitive), so this page is "unlisted" the same
+  // way Slack's own token-types docs page is (see
+  // test/credential-guard-mcp.test.mjs's "Slack's token-types docs page"
+  // suite) -- eval/extract run normally here again, same as before
+  // PRI-3360 existed at all, with response-format.ts's own, separate,
+  // unconditional redactCredentialShaped pass still masking the token in
+  // whatever text reaches the agent. The "blind" length-only query
+  // correctly still works too: it returns a NUMBER, never subject to any
+  // string-shape check.
+  it('extract/eval RUN on a page showing a credential-shaped token (unlisted URL), with the result text redacted', async () => {
+    // NOT assertNoLeak here -- that helper also checks the page HEADING
+    // text is absent, which was correct for the old fully-suppressed
+    // behavior but is no longer the right check: this page's ordinary
+    // prose (including its heading) legitimately reaches the agent now
+    // that eval/extract run; only the TOKEN itself has to be absent.
+    function assertTokenRedacted(text) {
+      assert.ok(!text.includes(FAKE_TOKEN), `token leaked into tool result:\n${text}`);
+      assert.ok(!text.includes('FAKEfake'), `token fragment leaked into tool result:\n${text}`);
+    }
+
     const extracted = await server.call({ action: 'extract', payload: 'text' });
-    assert.equal(extracted.isError, true, extracted.text);
-    assert.match(extracted.text, /extract refused/);
-    assert.match(extracted.text, /credential-shaped/);
-    assertNoLeak(extracted.text);
+    assert.equal(extracted.isError, false, extracted.text);
+    assert.ok(extracted.text.includes(REDACTION), extracted.text);
+    assertTokenRedacted(extracted.text);
 
     const html = await server.call({ action: 'extract', payload: 'html' });
-    assert.equal(html.isError, true, html.text);
-    assert.match(html.text, /extract refused/);
-    assertNoLeak(html.text);
+    assert.equal(html.isError, false, html.text);
+    assertTokenRedacted(html.text);
 
     const leaked = await server.call({ action: 'eval', payload: "document.getElementById('tok').textContent" });
-    assert.equal(leaked.isError, true, leaked.text);
-    assert.match(leaked.text, /eval refused/);
-    assertNoLeak(leaked.text);
+    assert.equal(leaked.isError, false, leaked.text);
+    assert.ok(leaked.text.includes(`Result: ${REDACTION}`), leaked.text);
+    assertTokenRedacted(leaked.text);
 
-    // The "blind" length-only query used to still run (and reveal the
-    // token's length even while redacting its value) -- it's refused
-    // outright now too, same as any other eval on this page.
+    // A number is never subject to any string-shape check (rules 1/2/3/4
+    // all operate on strings only) -- this still reveals the token's
+    // LENGTH even though its VALUE is redacted everywhere else.
     const blind = await server.call({ action: 'eval', payload: "document.getElementById('tok').textContent.length" });
-    assert.equal(blind.isError, true, blind.text);
-    assert.match(blind.text, /eval refused/);
+    assert.equal(blind.isError, false, blind.text);
+    assert.ok(blind.text.includes(`Result: ${FAKE_TOKEN.length}`), blind.text);
 
-    // A narrower, element-scoped read of something ELSE on the same page
-    // still works -- only the whole-page forms refuse.
     const button = await server.call({ action: 'extract', selector: '#b', payload: 'text' });
     assert.equal(button.isError, false, button.text);
     assert.equal(button.text, 'Done');
@@ -1366,6 +1375,12 @@ describe('URL-pattern suppression (sensitive-url.js, real Chrome)', { skip: !CHR
 // obviously fake and have no real-world validity.
 const FAKE_SESSION_TOKEN = 'sess_8f3k9d2mq7h1x0p4rr3ezz913bqa';
 const FAKE_BACKUP_CODES = ['7f3k-9d2m', 'a83f-29dk', 'qq1z-88mn', 'x0p4-rr3e', '8k2j-m9vd', 'zz91-3bqa'];
+// PRI-3360 round 4 (jc's rule): the SAME seed as BASE32_SEED above, split
+// into 4-char groups with spaces -- jc's own "deliberately split to dodge
+// a naive scan" test case. hasLongAlnumRunWithDigit strips ALL whitespace
+// before scanning specifically to glue groups like this back together.
+const BASE32_SEED_SPACED = 'JBSW Y3DP EHPK 3PXP JBSW Y3DP EHPK 3PXP';
+const FAKE_APP_TOKEN = ['xapp', '1', 'A01234ABCD', 'FAKEfakeFAKEfakeFAKEfakeFAKEfake'].join('-');
 
 describe('PRI-3360: whole-page text reads refused on a sensitive page (real Chrome)', {
   skip: !CHROME_AVAILABLE && 'Chrome not installed',
@@ -1389,6 +1404,21 @@ describe('PRI-3360: whole-page text reads refused on a sensitive page (real Chro
       `<ul id="codes">${FAKE_BACKUP_CODES.map((c) => `<li>${c}</li>`).join('\n')}</ul>` +
       '<button id="b">Done</button>'
     );
+    // PRI-3360 round 4 (jc + Reeve's final design): a TOTP setup page,
+    // same /2fa_app sensitive route as SESSION_URL above, with a bare
+    // base32 seed (rule 4), a harmless data-qa identifier that must NOT
+    // false-positive (rule 4 requires a digit; this has none), and an
+    // app-level-token-shaped field (rules 1/2) for Reeve's truncation case.
+    fs.mkdirSync(path.join(dir, 'account', 'settings', '2fa_app', 'totp'), { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, 'account', 'settings', '2fa_app', 'totp', 'index.html'),
+      '<title>Set up two-factor authentication</title><h1>Scan this QR code</h1>' +
+      `<span id="seed">${BASE32_SEED}</span>` +
+      `<span id="spacedSeed">${BASE32_SEED_SPACED}</span>` +
+      '<button id="qa" data-qa="app_level_token_string">Continue</button>' +
+      `<input id="el" type="text" value="${FAKE_APP_TOKEN}">` +
+      '<button id="b">Done</button>'
+    );
   });
   after(async () => {
     await server?.stop();
@@ -1397,8 +1427,16 @@ describe('PRI-3360: whole-page text reads refused on a sensitive page (real Chro
 
   const SESSION_URL = () => `file://${path.join(dir, 'account', 'settings', '2fa_app', 'index.html')}`;
   const BACKUP_CODES_URL = () => `file://${path.join(dir, 'account', 'recovery-codes', 'index.html')}`;
+  const TOTP_URL = () => `file://${path.join(dir, 'account', 'settings', '2fa_app', 'totp', 'index.html')}`;
 
-  it('an outerHTML eval on a sensitive URL is refused, even though the page holds a session-token-like string', async () => {
+  // PRI-3360 round 4 (jc + Reeve's final design): eval no longer refuses
+  // up front merely because the URL is sensitive -- it RUNS, then the
+  // RESULT is checked. This outerHTML read still refuses here, but now
+  // because the RESULT (the session-token-like string, glued letters and
+  // digits with no separator, 6+ chars) trips rule 4
+  // (hasLongAlnumRunWithDigit) on the sensitive URL, not because of a
+  // blanket pre-run block.
+  it('an outerHTML eval on a sensitive URL is refused, because the result itself looks token-shaped', async () => {
     await server.call({ action: 'navigate', payload: SESSION_URL() });
     const { text, isError } = await server.call({
       action: 'eval',
@@ -1451,6 +1489,83 @@ describe('PRI-3360: whole-page text reads refused on a sensitive page (real Chro
       assert.equal(isError, true, `${selector}: ${text}`);
       assert.match(text, /extract refused/);
     }
+  });
+
+  // PRI-3360 round 4 (jc + Reeve's final design): eval's post-run result
+  // check, on a real sensitive URL, real Chrome. See credential-guard.js's
+  // stringLooksLikeSecret/valueLeaksSecret for the four rules.
+  it('eval returning a bare base32 TOTP seed on a sensitive URL is refused (rule 4)', async () => {
+    await server.call({ action: 'navigate', payload: TOTP_URL() });
+    const { text, isError } = await server.call({ action: 'eval', payload: "document.getElementById('seed').textContent" });
+    assert.equal(isError, true, text);
+    assert.match(text, /eval refused/);
+    assert.doesNotMatch(text, new RegExp(BASE32_SEED), `seed leaked into refusal text:\n${text}`);
+  });
+
+  it('eval returning the SAME seed deliberately split into spaced groups is refused too (rule 4, jc test case)', async () => {
+    await server.call({ action: 'navigate', payload: TOTP_URL() });
+    const { text, isError } = await server.call({ action: 'eval', payload: "document.getElementById('spacedSeed').textContent" });
+    assert.equal(isError, true, text);
+    assert.match(text, /eval refused/);
+  });
+
+  it('eval returning a number, a boolean, or undefined on this sensitive URL is allowed', async () => {
+    await server.call({ action: 'navigate', payload: TOTP_URL() });
+
+    const num = await server.call({ action: 'eval', payload: '3' });
+    assert.equal(num.isError, false, num.text);
+    assert.match(num.text, /Result: 3\b/);
+
+    const bool = await server.call({ action: 'eval', payload: 'true' });
+    assert.equal(bool.isError, false, bool.text);
+    assert.match(bool.text, /Result: true\b/);
+
+    const undef = await server.call({ action: 'eval', payload: 'undefined' });
+    assert.equal(undef.isError, false, undef.text);
+  });
+
+  it('eval that dispatches a MouseEvent click on this sensitive URL is allowed', async () => {
+    await server.call({ action: 'navigate', payload: TOTP_URL() });
+    const { text, isError } = await server.call({
+      action: 'eval',
+      payload: "document.getElementById('b').dispatchEvent(new MouseEvent('click'))",
+    });
+    assert.equal(isError, false, text);
+  });
+
+  it('eval returning a data-qa identifier string (app_level_token_string) on this sensitive URL is allowed', async () => {
+    await server.call({ action: 'navigate', payload: TOTP_URL() });
+    const { text, isError } = await server.call({
+      action: 'eval',
+      payload: "document.getElementById('qa').getAttribute('data-qa')",
+    });
+    assert.equal(isError, false, text);
+    assert.match(text, /app_level_token_string/);
+  });
+
+  // Reeve's own case: truncating a real app-level token down to its first
+  // 8 characters still names itself via its prefix (rule 2), even though
+  // the truncated slice no longer matches the full-shape pattern (rule 1).
+  it("eval returning el.value.slice(0,8) of a fake xapp token is refused (Reeve's case)", async () => {
+    await server.call({ action: 'navigate', payload: TOTP_URL() });
+    const { text, isError } = await server.call({
+      action: 'eval',
+      payload: "document.getElementById('el').value.slice(0,8)",
+    });
+    assert.equal(isError, true, text);
+    assert.match(text, /eval refused/);
+    assert.doesNotMatch(text, new RegExp(FAKE_APP_TOKEN), `token leaked into refusal text:\n${text}`);
+  });
+
+  it('eval returning an object with a NESTED token string is refused too', async () => {
+    await server.call({ action: 'navigate', payload: TOTP_URL() });
+    const { text, isError } = await server.call({
+      action: 'eval',
+      payload: "({ ok: true, meta: { token: document.getElementById('el').value } })",
+    });
+    assert.equal(isError, true, text);
+    assert.match(text, /eval refused/);
+    assert.doesNotMatch(text, new RegExp(FAKE_APP_TOKEN), `token leaked into refusal text:\n${text}`);
   });
 });
 
@@ -1576,28 +1691,41 @@ describe('PRI-3360: the credential-capture override cannot be set from the agent
     assert.match(text, /undefined/);
   });
 
-  it('an eval attempting to set the override is itself refused outright on a sensitive URL, before the expression ever runs, and the page stays refused afterward', async () => {
+  // PRI-3360 round 4 (jc + Reeve's final design): eval no longer refuses
+  // up front merely because the URL is sensitive, so this attempt now
+  // RUNS -- which is itself the point: it runs, evaluates
+  // `globalThis.process` (undefined in the browser realm) to the ELSE
+  // branch, and returns the harmless string 'no process' with no Node
+  // `process.env` ever touched. The override attempt was always going to
+  // fail for this reason (no Node globals reachable from page JS at
+  // all), independent of whether eval itself ran or was blocked -- this
+  // version demonstrates that directly instead of relying on a refusal
+  // that would have masked the real reason.
+  it('an eval attempting to set the override runs harmlessly (no Node `process` global exists in the browser realm), and the override stays off afterward', async () => {
     const dir2 = fs.mkdtempSync(path.join(os.tmpdir(), 'pri-3360-override-'));
+    const fakeToken = ['xoxb', '1111111111', '2222222222', 'FAKEfakeFAKEfakeFAKEfake'].join('-');
     fs.mkdirSync(path.join(dir2, 'account', 'settings', '2fa_app'), { recursive: true });
     fs.writeFileSync(
       path.join(dir2, 'account', 'settings', '2fa_app', 'index.html'),
-      '<title>Session page</title><h1>Signed in</h1><button id="b">Done</button>'
+      '<title>Session page</title><h1>Signed in</h1>' +
+      `<span id="tok">${fakeToken}</span>` +
+      '<button id="b">Done</button>'
     );
     try {
       const url = `file://${path.join(dir2, 'account', 'settings', '2fa_app', 'index.html')}`;
       await server.call({ action: 'navigate', payload: url });
       const attempt = await server.call({
         action: 'eval',
-        // This would throw ReferenceError even if it ran (no `process` in
-        // the browser realm) -- but it never runs at all: eval on a
-        // sensitive URL is refused before any expression executes.
         payload: "globalThis.process ? (process.env.SUPERPOWERS_CHROME_ALLOW_CREDENTIAL_CAPTURE = '1') : 'no process'",
       });
-      assert.equal(attempt.isError, true, attempt.text);
-      assert.match(attempt.text, /eval refused/);
+      assert.equal(attempt.isError, false, attempt.text);
+      assert.match(attempt.text, /no process/);
 
-      // Still refused on the next call -- no lasting bypass occurred.
-      const again = await server.call({ action: 'eval', payload: 'document.title' });
+      // Proves the override is still OFF, not just that the attempt
+      // above looked harmless: a token-shaped eval result on this SAME
+      // sensitive URL is still refused. If the override had somehow been
+      // set, this would succeed instead.
+      const again = await server.call({ action: 'eval', payload: "document.getElementById('tok').textContent" });
       assert.equal(again.isError, true, again.text);
       assert.match(again.text, /eval refused/);
     } finally {
@@ -1641,20 +1769,31 @@ describe('PRI-3360 round 3 (Reeve): Slacks App-Level Tokens page (real Chrome)',
     }
   });
 
-  it('eval(outerHTML) is refused, not returned in clear', async () => {
+  // PRI-3360 round 4 (jc + Reeve's final design): a file:// URL has no
+  // real hostname, so this fixture does NOT exercise the host-qualified
+  // sensitive-URL pattern the way a real api.slack.com navigation would
+  // (that side is covered directly in test/lib/capture-credential-guard.
+  // test.mjs, which controls location.href as a plain string) -- eval and
+  // a whole-page extract now RUN on this page (their up-front refusal was
+  // removed for exactly this "token with no other signal" case; see
+  // sensitive-url.js's pageTextReadRefused doc). The token still never
+  // reaches the agent, though: response-format.ts's redactUnlessAllowed
+  // is a universal, unconditional last line of defense applied to EVERY
+  // response, independent of anything capture.js decided.
+  it('eval(outerHTML) now RUNS on this page, but the token is redacted in the result text', async () => {
     await server.call({ action: 'navigate', payload: `file://${path.join(dir, 'general.html')}` });
     const { text, isError } = await server.call({ action: 'eval', payload: 'document.documentElement.outerHTML' });
-    assert.equal(isError, true, text);
-    assert.match(text, /eval refused/);
-    assert.doesNotMatch(text, new RegExp(FAKE_SLACK_APP_TOKEN), `token leaked into refusal text:\n${text}`);
+    assert.equal(isError, false, text);
+    assert.doesNotMatch(text, new RegExp(FAKE_SLACK_APP_TOKEN), `token leaked into result text:\n${text}`);
+    assert.match(text, /REDACTED credential-shaped/, `expected the redaction marker in:\n${text}`);
   });
 
-  it('a whole-page extract is refused too', async () => {
+  it('a whole-page extract also RUNS, with the same output-level redaction', async () => {
     await server.call({ action: 'navigate', payload: `file://${path.join(dir, 'general.html')}` });
     const { text, isError } = await server.call({ action: 'extract', payload: 'text' });
-    assert.equal(isError, true, text);
-    assert.match(text, /extract refused/);
-    assert.doesNotMatch(text, new RegExp(FAKE_SLACK_APP_TOKEN), `token leaked into refusal text:\n${text}`);
+    assert.equal(isError, false, text);
+    assert.doesNotMatch(text, new RegExp(FAKE_SLACK_APP_TOKEN), `token leaked into result text:\n${text}`);
+    assert.match(text, /REDACTED credential-shaped/, `expected the redaction marker in:\n${text}`);
   });
 
   it('an element-scoped read of the token specifically is refused too (content-shape check, not just the whole-page gate)', async () => {
@@ -1670,5 +1809,108 @@ describe('PRI-3360 round 3 (Reeve): Slacks App-Level Tokens page (real Chrome)',
     const { text, isError } = await server.call({ action: 'extract', selector: '#done', payload: 'text' });
     assert.equal(isError, false, text);
     assert.equal(text, 'Done');
+  });
+});
+
+// PRI-3360 round 4 (jc, round 4 review): Slack's own token-TYPES
+// documentation page -- a real, unlisted page that legitimately prints
+// EXAMPLE token strings to explain their format. This is the exact page
+// class that motivated removing containsCredentialShaped as a whole-page
+// refusal signal in round 3 (see sensitive-url.js's pageTextReadRefused
+// doc comment): a page like this must stay fully readable (eval/extract
+// are not refused at all), while the output-level redaction
+// (response-format.ts's redactUnlessAllowed) still masks the example
+// tokens in whatever text actually reaches the agent. Fetched and trimmed
+// to just the <article> content -- see test/fixtures/sensitive-pages/
+// README.md for provenance. The real example tokens shown there are
+// replaced with {{EXAMPLE_TOKEN_N}} placeholders in the committed file;
+// this test substitutes them with its OWN fake, assembled-at-runtime
+// token strings of the same shape before serving the page.
+describe("PRI-3360 round 4: Slack's token-types docs page stays readable (jc, real Chrome)", {
+  skip: !CHROME_AVAILABLE && 'Chrome not installed',
+}, () => {
+  let server;
+  let dir;
+  const FAKE_EXAMPLE_TOKENS = [
+    ['xoxp', '111', '222', '333', 'd6bc768406e5c2e6958cfc399b438004'].join('-'),
+    ['xoxp', '111', '222', '333', 'd6bc768412'].join('-'),
+    ['xoxp', '111', '222', '333', 'd6bc76'].join('-'),
+  ];
+
+  before(async () => {
+    server = await startServer();
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'slack-token-docs-'));
+    let html = fs.readFileSync(
+      path.join(__dirname, 'fixtures', 'sensitive-pages', 'slack-token-types-docs.html'),
+      'utf8'
+    );
+    for (let i = 0; i < FAKE_EXAMPLE_TOKENS.length; i++) {
+      html = html.split(`{{EXAMPLE_TOKEN_${i}}}`).join(FAKE_EXAMPLE_TOKENS[i]);
+    }
+    fs.writeFileSync(path.join(dir, 'tokens.html'), html);
+  });
+  after(async () => {
+    await server?.stop();
+    if (dir) fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  const DOCS_URL = () => `file://${path.join(dir, 'tokens.html')}`;
+
+  it('the page URL is not on the sensitive-URL list (this is the "unlisted" case)', async () => {
+    // Sanity check on the fixture itself, not the gate -- confirms this
+    // test is actually exercising the unlisted path it claims to.
+    const { urlLooksSensitive } = require('../skills/browsing/lib/sensitive-url.js');
+    assert.equal(urlLooksSensitive('https://docs.slack.dev/authentication/tokens/'), false);
+  });
+
+  it('eval(document.title) succeeds -- not refused by anything on this page', async () => {
+    await server.call({ action: 'navigate', payload: DOCS_URL() });
+    const { text, isError } = await server.call({ action: 'eval', payload: 'document.title' });
+    assert.equal(isError, false, text);
+    assert.doesNotMatch(text, /refused/i, text);
+  });
+
+  // FINDING (not asked for, discovered via this exact fixture): Slack's
+  // own page deliberately shows ONE of its three examples TRUNCATED, to
+  // illustrate checking a token's length (the long form vs. a shortened
+  // form of the same example shown just above it -- see
+  // FAKE_EXAMPLE_TOKENS[2] above). That shortened
+  // example is 18 characters after its prefix -- 2 short of
+  // TOKEN_PATTERNS' {20,} minimum -- so redactCredentialShaped (the
+  // output-level redaction every use_browser response goes through) does
+  // NOT mask it, even though credential-guard.js's NEWER
+  // hasKnownTokenPrefix (added this round specifically to catch a
+  // truncated token) WOULD. hasKnownTokenPrefix is only wired into the
+  // eval-result/element-scoped CHECKS this round added, not into
+  // redactCredentialShaped's own regex -- extending that regex (or
+  // routing redaction through hasKnownTokenPrefix too) was not part of
+  // this round's design and is not changed here; this test documents the
+  // gap instead of asserting something not true. The two LONGER examples
+  // (the real secret value, and the same value re-shown slightly
+  // differently) both meet the {20,} floor and ARE masked.
+  it('a whole-page extract succeeds, with the two full-length example tokens redacted in the output', async () => {
+    await server.call({ action: 'navigate', payload: DOCS_URL() });
+    const { text, isError } = await server.call({ action: 'extract', payload: 'text' });
+    assert.equal(isError, false, text);
+    // index 0 and 1 are >=20 chars after the prefix; index 2 is the
+    // deliberately-shortened 18-char example -- see the finding above.
+    assert.doesNotMatch(text, new RegExp(FAKE_EXAMPLE_TOKENS[0]), `token leaked into result text:\n${text}`);
+    assert.doesNotMatch(text, new RegExp(FAKE_EXAMPLE_TOKENS[1]), `token leaked into result text:\n${text}`);
+    assert.match(text, new RegExp(FAKE_EXAMPLE_TOKENS[2]), 'expected the FINDING above: the 18-char shortened example is NOT masked by the existing output redaction');
+    assert.match(text, /REDACTED credential-shaped/, `expected the redaction marker in:\n${text}`);
+    // Confirms this is REDACTION, not a wholesale refusal: ordinary page
+    // content around the tokens is still present.
+    assert.match(text, /App-level tokens|token/i);
+  });
+
+  it('the tokens never reach an auto-capture file either', async () => {
+    const filesBefore = server.capturedFiles().length;
+    await server.call({ action: 'navigate', payload: DOCS_URL() });
+    for (const file of server.capturedFiles().slice(filesBefore)) {
+      const written = fs.readFileSync(file, 'utf8');
+      for (const token of FAKE_EXAMPLE_TOKENS) {
+        assert.ok(!written.includes(token), `token leaked into ${file}`);
+      }
+    }
   });
 });

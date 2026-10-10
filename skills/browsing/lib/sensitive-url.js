@@ -101,22 +101,32 @@
  * why (`:root`, `*`, `html > body`, etc. all resolve to the same scope
  * but don't match that literal list).
  *
- * PRI-3360 round 3 (Reeve): DEFAULT_SENSITIVE_HOST_PATH_PATTERNS below is
- * a SECOND list, matched against HOSTNAME + pathname + hash together,
- * not pathname alone. Every pattern above is deliberately domain-
- * agnostic -- "backup-codes", "totp", "security-keys" are distinctive
- * enough on their own that matching them on any site is an accepted,
- * documented trade-off (a missed match is a leak; an extra match only
- * suppresses a harmless capture). A path segment like "apps" or
- * "tokens" is NOT distinctive enough to accept that trade domain-
- * agnostically -- "apps" alone matches any app marketplace/directory,
- * "tokens" alone matches any page that manages API tokens without
- * necessarily ever displaying one in cleartext. These are real,
- * specific pages that DO show a secret, but only paired with the host
- * that serves them.
+ * PRI-3360 round 3 (Reeve), confirmed in round 4: Slack's App-Level
+ * Tokens page, GitHub's personal access token pages, Google's App
+ * Passwords page, and Linear's personal API keys page JOIN this same
+ * sensitive-page set -- urlLooksSensitive below is the ONE function every
+ * caller (the read gate below AND capture.js's write-side suppression)
+ * ever consults, with no separate "capture-only" category. They live in
+ * DEFAULT_SENSITIVE_HOST_PATH_PATTERNS, a SECOND list matched against
+ * HOSTNAME + pathname + hash together, not pathname alone, purely
+ * because the PATTERN SHAPE needs the extra qualifier, not because the
+ * SIGNAL means anything different once matched. Every pattern in
+ * DEFAULT_SENSITIVE_URL_PATTERNS above is deliberately domain-agnostic --
+ * "backup-codes", "totp", "security-keys" are distinctive enough on
+ * their own that matching them on any site is an accepted, documented
+ * trade-off (a missed match is a leak; an extra match only suppresses a
+ * harmless capture). A path segment like "apps" or "tokens" is NOT
+ * distinctive enough to accept that trade domain-agnostically -- "apps"
+ * alone matches any app marketplace/directory, "tokens" alone matches
+ * any page that manages API tokens without necessarily ever displaying
+ * one in cleartext. These are real, specific pages that DO show a
+ * secret, but only paired with the host that serves them --
+ * urlLooksSensitive checks both lists and returns one combined
+ * true/false; nothing downstream of it can tell, or needs to tell, which
+ * list actually matched.
  */
 const { throwIfExceptionDetails } = require('./cdp-utils');
-const { credentialCaptureAllowed, containsCredentialShaped } = require('./credential-guard');
+const { credentialCaptureAllowed } = require('./credential-guard');
 const { pageHasSecretMarker } = require('./secret-marker');
 const { codeListNearBackupKeyword, visibleTextFnSrc } = require('./code-list-detector');
 
@@ -309,39 +319,44 @@ function wholePageReadRefusal(action, reason) {
  * used only in the refusal message.
  *
  * Returns a refusal message (string) when the page is flagged sensitive by
- * ANY of four independent signals, checked in order and short-circuited
+ * ANY of three independent signals, checked in order and short-circuited
  * on the first match:
  *   1. A known-sensitive URL pattern (urlLooksSensitive) -- refuses
  *      regardless of content, same as before.
  *   2. A live data-sen-secret marker -- refuses regardless of content,
  *      same as before.
- *   3. The page's own visible text is credential-shaped
- *      (containsCredentialShaped -- the same xoxb-/ghp_/xapp--style
- *      token-format check credential-guard.js's refuseIfTextLeaksSecret
- *      already applies to an ELEMENT-scoped read). PRI-3360 round 3
- *      (Reeve): added because a lone credential-shaped token with no
- *      sensitive URL, no marker, and no code-list density (one token,
- *      not a list of 6+) was NOT refused by this gate before -- eval or
- *      a selector-less extract would have returned it in clear, even
- *      though the SAME token on the SAME page already refuses an
- *      element-scoped extract/attr of it. No keyword gate here, unlike
- *      (4) below: a token-format match (a specific, multi-char literal
- *      prefix) is precise enough on its own that PRI-3360 round 2's
- *      false-positive problem (ordinary page text looking code-dense)
- *      does not apply to it -- confirmed against the same four real-page
- *      fixtures round 2 added as negatives
- *      (test/lib/fixtures/code-list-negatives/), none of which contain
- *      anything token-shaped.
- *   4. Code-list density ALONE (off the URL list, no marker, nothing
- *      token-shaped) is no longer sufficient by itself (PRI-3360 round 2,
- *      jc review of #65: density alone flagged ordinary pages -- GitHub
- *      PR/repo/REST-docs pages, the HN front page -- and eval has no
- *      narrower form to fall back to when that happens). This branch now
- *      also requires a backup/recovery-style keyword within
- *      code-list-detector.js's KEYWORD_PROXIMITY_CHARS of the code
- *      cluster (codeListNearBackupKeyword) -- a concrete cue that the
- *      page is actually showing backup/recovery codes, not just text
- *      that happens to cluster densely.
+ *   3. Code-list density ALONE (off the URL list, no marker) is not
+ *      sufficient by itself (PRI-3360 round 2, jc review of #65: density
+ *      alone flagged ordinary pages -- GitHub PR/repo/REST-docs pages,
+ *      the HN front page -- and a selector-less extract has no narrower
+ *      form to fall back to when that happens). This branch also
+ *      requires a backup/recovery-style keyword within code-list-
+ *      detector.js's KEYWORD_PROXIMITY_CHARS of the code cluster
+ *      (codeListNearBackupKeyword) -- a concrete cue that the page is
+ *      actually showing backup/recovery codes, not just text that
+ *      happens to cluster densely.
+ *
+ * PRI-3360 round 3 (Reeve) briefly added a fourth signal here --
+ * containsCredentialShaped on the page's own visible text, unconditional
+ * -- to catch a lone credential-shaped token with nothing else to flag
+ * the page. Round 4 (jc, round 4 review) removed it again: it
+ * false-positived on Slack's own token-TYPES documentation page (an
+ * UNLISTED page that legitimately shows example token strings to explain
+ * their format), the same class of problem round 2 found with code-list
+ * density. Catching a lone token is now EVAL's job specifically, done
+ * AFTER running (see capture.js's evaluateWithCapture and credential-
+ * guard.js's stringLooksLikeSecret/valueLeaksSecret), gated on the page's
+ * URL already being on the sensitive-URL list -- not a blanket whole-page
+ * pre-check that would block this pre-check function's only two OTHER
+ * callers (extractPageText/getSanitizedHtml's whole-page form) from ever
+ * reading an unlisted page with an example token on it, the exact page
+ * class this round's own test fixture (the Slack token-types docs page)
+ * is built to prove stays readable. Output-level redaction
+ * (response-format.ts's redactCredentialShaped) still masks any token
+ * shape that reaches the final response text regardless, on every page,
+ * listed or not -- that layer was never removed and still does its job
+ * for a page this function doesn't refuse.
+ *
  * Returns null when none apply (the caller's whole-page read may
  * proceed). Deliberately a nullable-string return, not a throw, so
  * callers can decide whether to throw immediately or fold the message
@@ -400,11 +415,7 @@ async function pageTextReadRefused(ps, action) {
     returnByValue: true,
   });
   throwIfExceptionDetails(textResult);
-  const visibleText = textResult.result.value;
-  if (containsCredentialShaped(visibleText)) {
-    return wholePageReadRefusal(action, 'the page text looks credential-shaped (a token-shaped string)');
-  }
-  if (codeListNearBackupKeyword(visibleText)) {
+  if (codeListNearBackupKeyword(textResult.result.value)) {
     return wholePageReadRefusal(
       action,
       'the page text looks like a dense list of secret-shaped codes near a backup/recovery cue'

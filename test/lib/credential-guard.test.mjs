@@ -8,6 +8,10 @@ import { afterEach, describe, it } from 'node:test';
 const require = createRequire(import.meta.url);
 const {
   containsCredentialShaped,
+  hasKnownTokenPrefix,
+  hasLongAlnumRunWithDigit,
+  stringLooksLikeSecret,
+  valueLeaksSecret,
   redactCredentialShaped,
   credentialCaptureAllowed,
   REDACTION,
@@ -152,5 +156,162 @@ describe('credentialCaptureAllowed', () => {
     assert.equal(credentialCaptureAllowed(), false);
     process.env.SUPERPOWERS_CHROME_ALLOW_CREDENTIAL_CAPTURE = 'yes';
     assert.equal(credentialCaptureAllowed(), false);
+  });
+});
+
+// PRI-3360 round 4 (jc + Reeve's final design): hasKnownTokenPrefix is
+// rule 2 of the unified string check -- a bare PREFIX, no minimum
+// trailing length, so a value TRUNCATED down to just its prefix still
+// names itself even though it no longer matches containsCredentialShaped's
+// full-shape regex (rule 1).
+describe('hasKnownTokenPrefix', () => {
+  it('matches a bare prefix with nothing after it', () => {
+    assert.equal(hasKnownTokenPrefix('xoxb-'), true);
+    assert.equal(hasKnownTokenPrefix('ghp_'), true);
+    assert.equal(hasKnownTokenPrefix('lin_api_'), true);
+  });
+
+  it("matches Reeve's case: a token sliced down to its first 8 characters", () => {
+    const fakeToken = fake('xoxb', '-1111111111-2222222222-FAKEfakeFAKEfakeFAKEfake');
+    assert.equal(hasKnownTokenPrefix(fakeToken.slice(0, 8)), true);
+  });
+
+  it('matches at a word start mid-string, not just at index 0', () => {
+    assert.equal(hasKnownTokenPrefix('Your token: xoxb-abc'), true);
+  });
+
+  it('does not match a prefix glued onto a preceding word character', () => {
+    assert.equal(hasKnownTokenPrefix('faxoxb-abc'), false);
+  });
+
+  it('does not match ordinary text with no prefix at all', () => {
+    assert.equal(hasKnownTokenPrefix('app_level_token_string'), false);
+    assert.equal(hasKnownTokenPrefix('Skip to content'), false);
+  });
+
+  it('treats non-strings and empty strings as no match', () => {
+    assert.equal(hasKnownTokenPrefix(''), false);
+    assert.equal(hasKnownTokenPrefix(null), false);
+    assert.equal(hasKnownTokenPrefix(undefined), false);
+    assert.equal(hasKnownTokenPrefix(42), false);
+  });
+});
+
+// Rule 4: jc's rule for a bare TOTP/HOTP seed with no prefix at all.
+describe('hasLongAlnumRunWithDigit', () => {
+  it('matches a bare base32 TOTP seed', () => {
+    assert.equal(hasLongAlnumRunWithDigit('JBSWY3DPEHPK3PXP'), true);
+  });
+
+  it('matches the SAME seed deliberately split into spaced groups', () => {
+    assert.equal(hasLongAlnumRunWithDigit('JBSW Y3DP EHPK 3PXP'), true);
+  });
+
+  it('does not match a run with no digit in it at all', () => {
+    assert.equal(hasLongAlnumRunWithDigit('abcdefghijklmnop'), false);
+  });
+
+  it('does not match a short run even with a digit', () => {
+    assert.equal(hasLongAlnumRunWithDigit('a1b2'), false);
+  });
+
+  it('treats non-strings and empty strings as no match', () => {
+    assert.equal(hasLongAlnumRunWithDigit(''), false);
+    assert.equal(hasLongAlnumRunWithDigit(null), false);
+    assert.equal(hasLongAlnumRunWithDigit(undefined), false);
+  });
+});
+
+// stringLooksLikeSecret: the unified check (rules 1/2/4 unconditional,
+// rule 3 gated by densityAloneSufficient).
+describe('stringLooksLikeSecret', () => {
+  it('allows an ordinary identifier-shaped string with no digit (jc test case)', () => {
+    assert.equal(stringLooksLikeSecret('app_level_token_string'), false);
+  });
+
+  it('allows ordinary prose', () => {
+    assert.equal(stringLooksLikeSecret('Welcome back, Jordan.'), false);
+  });
+
+  it('refuses a full-shape token (rule 1)', () => {
+    assert.equal(stringLooksLikeSecret(fake('ghp', `_${'F'.repeat(36)}`)), true);
+  });
+
+  it('refuses a truncated token prefix (rule 2)', () => {
+    assert.equal(stringLooksLikeSecret('xoxb-111'), true);
+  });
+
+  it('refuses a bare TOTP seed, spaced or not (rule 4)', () => {
+    assert.equal(stringLooksLikeSecret('JBSWY3DPEHPK3PXP'), true);
+    assert.equal(stringLooksLikeSecret('JBSW Y3DP EHPK 3PXP'), true);
+  });
+
+  it('rule 3 (density): requires a nearby keyword when densityAloneSufficient is false (the default)', () => {
+    const codeDenseNoKeyword = '7f3k-9d2m,a83f-29dk,qq1z-88mn,x0p4-rr3e,8k2j-m9vd,zz91-3bqa'; // commas, not spaces, so whitespace-collapsing (rule 4) does not also trip here -- isolates rule 3 specifically.
+    assert.equal(stringLooksLikeSecret(codeDenseNoKeyword), false);
+    assert.equal(stringLooksLikeSecret(codeDenseNoKeyword, { densityAloneSufficient: false }), false);
+  });
+
+  it('rule 3 (density): density ALONE is enough when densityAloneSufficient is true', () => {
+    const codeDenseNoKeyword = '7f3k-9d2m,a83f-29dk,qq1z-88mn,x0p4-rr3e,8k2j-m9vd,zz91-3bqa'; // commas, not spaces, so whitespace-collapsing (rule 4) does not also trip here -- isolates rule 3 specifically.
+    assert.equal(stringLooksLikeSecret(codeDenseNoKeyword, { densityAloneSufficient: true }), true);
+  });
+
+  // PRI-3360 round 4: found while isolating rule 3 above, not asked for
+  // in the design but worth recording -- a whitespace-SEPARATED code list
+  // (spaces between pairs, like a backup-codes page would plausibly
+  // render one) trips rule 4 on its own too, because collapsing the
+  // spaces glues the tail of one pair onto the head of the next
+  // ("...9d2m a83f..." -> "...9d2ma83f...", an 8-char run with digits).
+  // Harmless here (a real backup-codes page SHOULD refuse either way),
+  // but it means rules 3 and 4 are not as independent as their separate
+  // numbering suggests for this common a layout.
+  it('a whitespace-separated (not comma-separated) code list also trips rule 4 on its own, independent of rule 3', () => {
+    const spaceSeparated = '7f3k-9d2m a83f-29dk qq1z-88mn x0p4-rr3e 8k2j-m9vd zz91-3bqa';
+    assert.equal(hasLongAlnumRunWithDigit(spaceSeparated), true);
+    assert.equal(stringLooksLikeSecret(spaceSeparated, { densityAloneSufficient: false }), true);
+  });
+});
+
+// valueLeaksSecret: the recursive tree-walker eval's result goes
+// through. Non-string/array/object values always pass -- exactly the
+// types PRI-3360 round 4 keeps allowed through unconditionally.
+describe('valueLeaksSecret', () => {
+  it('allows numbers, booleans, null and undefined', () => {
+    assert.equal(valueLeaksSecret(3), false);
+    assert.equal(valueLeaksSecret(true), false);
+    assert.equal(valueLeaksSecret(false), false);
+    assert.equal(valueLeaksSecret(null), false);
+    assert.equal(valueLeaksSecret(undefined), false);
+  });
+
+  it('allows an ordinary string', () => {
+    assert.equal(valueLeaksSecret('app_level_token_string'), false);
+  });
+
+  it('refuses a bare token string', () => {
+    const fakeToken = fake('xoxb', '-1111111111-2222222222-FAKEfakeFAKEfakeFAKEfake');
+    assert.equal(valueLeaksSecret(fakeToken), true);
+  });
+
+  it('refuses an object with a NESTED token string', () => {
+    const fakeToken = fake('xoxb', '-1111111111-2222222222-FAKEfakeFAKEfakeFAKEfake');
+    assert.equal(valueLeaksSecret({ ok: true, meta: { token: fakeToken } }), true);
+  });
+
+  it('refuses an array containing a token string', () => {
+    const fakeToken = fake('xoxb', '-1111111111-2222222222-FAKEfakeFAKEfakeFAKEfake');
+    assert.equal(valueLeaksSecret(['fine', fakeToken]), true);
+  });
+
+  it('allows an object/array with no secret anywhere in it', () => {
+    assert.equal(valueLeaksSecret({ ok: true, count: 3, label: 'Done' }), false);
+    assert.equal(valueLeaksSecret(['fine', 'also fine', 3, true]), false);
+  });
+
+  it('passes densityAloneSufficient through to nested strings', () => {
+    const codeDenseNoKeyword = '7f3k-9d2m,a83f-29dk,qq1z-88mn,x0p4-rr3e,8k2j-m9vd,zz91-3bqa'; // commas, not spaces, so whitespace-collapsing (rule 4) does not also trip here -- isolates rule 3 specifically.
+    assert.equal(valueLeaksSecret({ text: codeDenseNoKeyword }, { densityAloneSufficient: false }), false);
+    assert.equal(valueLeaksSecret({ text: codeDenseNoKeyword }, { densityAloneSufficient: true }), true);
   });
 });
