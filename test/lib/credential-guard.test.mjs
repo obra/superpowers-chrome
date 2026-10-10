@@ -10,6 +10,7 @@ const {
   containsCredentialShaped,
   hasKnownTokenPrefix,
   hasLongMixedAlnumRun,
+  hasSplitBase32Seed,
   stringLooksLikeSecret,
   valueLeaksSecret,
   redactCredentialShaped,
@@ -236,56 +237,159 @@ describe('hasLongMixedAlnumRun', () => {
     assert.equal(hasLongMixedAlnumRun(null), false);
     assert.equal(hasLongMixedAlnumRun(undefined), false);
   });
+
+  // Round 6 (jc, blocking): the PREVIOUS version stripped ALL whitespace
+  // before scanning, which glues any number onto an adjacent word --
+  // real ordinary text jc reproduced directly against this function.
+  // This version does not strip whitespace at all (see the function's
+  // own doc comment for why), so none of these trip it anymore.
+  for (const text of ['Version 2 of the API', 'Open 24 hours', 'Released in 2026 by Prime Radiant', 'Merged #66 into main']) {
+    it(`does not match ordinary prose with a number in it: ${JSON.stringify(text)}`, () => {
+      assert.equal(hasLongMixedAlnumRun(text), false);
+    });
+  }
+
+  // "commit 3382d73" is NOT fixed by the whitespace change, and should
+  // not be: the hash itself ("3382d73") mixes letters and digits with NO
+  // join across whitespace needed at all -- it was always one contiguous
+  // token. Same for "sha256" (s/h/a + 2/5/6).
+  it('still matches a run that is ALREADY contiguous in the original text, no join needed ("commit 3382d73")', () => {
+    assert.equal(hasLongMixedAlnumRun('commit 3382d73'), true);
+  });
+
+  it('still matches "sha256" on its own, no join needed', () => {
+    assert.equal(hasLongMixedAlnumRun('sha256 checksum'), true);
+  });
 });
 
-// stringLooksLikeSecret: the unified check (rules 1/2/4 unconditional,
-// rule 3 gated by densityAloneSufficient).
+// hasSplitBase32Seed: the ONE whitespace/hyphen-crossing join rule 4
+// still performs, narrowed to the specific shape a chunked TOTP seed
+// has (restricted base32 alphabet, uniform 4-char groups) rather than
+// any digit sitting next to any word.
+describe('hasSplitBase32Seed', () => {
+  it('matches 4 groups of 4, space-separated (16 chars, jc test case)', () => {
+    assert.equal(hasSplitBase32Seed('JBSW Y3DP EHPK 3PXP'), true);
+  });
+
+  it('matches hyphen-separated groups too', () => {
+    assert.equal(hasSplitBase32Seed('JBSW-Y3DP-EHPK-3PXP'), true);
+  });
+
+  it('does not match only 3 groups (12 chars, below the 16-char floor)', () => {
+    assert.equal(hasSplitBase32Seed('JBSW Y3DP EHPK'), false);
+  });
+
+  it('does not match groups outside the base32 alphabet (no 0/1/8/9, lowercase)', () => {
+    assert.equal(hasSplitBase32Seed('abcd efgh ijkl mnop'), false);
+    assert.equal(hasSplitBase32Seed('AB01 CD89 EFGH IJKL'), false);
+  });
+
+  it('does not match ordinary space-separated short words', () => {
+    assert.equal(hasSplitBase32Seed('Open 24 hours right now'), false);
+  });
+});
+
+// stringLooksLikeSecret: the unified check. Rule 1 (full-shape token) is
+// unconditional, any URL. Round 6 (jc, blocking): rules 2 (bare prefix)
+// and 4 (mixed alnum run) now apply ONLY when densityAloneSufficient is
+// true (the page's URL is already on the sensitive-URL list) -- off that
+// list, both misfired on ordinary text (a library name containing 'sk-',
+// a version number next to a word). Rule 3 (density) keeps its own
+// existing on/off-list split (density alone vs. density+keyword).
 describe('stringLooksLikeSecret', () => {
   it('allows an ordinary identifier-shaped string with no digit (jc test case)', () => {
     assert.equal(stringLooksLikeSecret('app_level_token_string'), false);
+    assert.equal(stringLooksLikeSecret('app_level_token_string', { densityAloneSufficient: true }), false);
   });
 
-  it('allows ordinary prose', () => {
+  it('allows ordinary prose, on or off the sensitive-URL list', () => {
     assert.equal(stringLooksLikeSecret('Welcome back, Jordan.'), false);
+    assert.equal(stringLooksLikeSecret('Welcome back, Jordan.', { densityAloneSufficient: true }), false);
   });
 
-  it('refuses a full-shape token (rule 1)', () => {
-    assert.equal(stringLooksLikeSecret(fake('ghp', `_${'F'.repeat(36)}`)), true);
+  it('refuses a full-shape token (rule 1) -- unconditional, any URL', () => {
+    const token = fake('ghp', `_${'F'.repeat(36)}`);
+    assert.equal(stringLooksLikeSecret(token), true);
+    assert.equal(stringLooksLikeSecret(token, { densityAloneSufficient: true }), true);
   });
 
-  it('refuses a truncated token prefix (rule 2)', () => {
-    assert.equal(stringLooksLikeSecret('xoxb-111'), true);
+  it('rule 2 (bare token prefix): only applies on the sensitive-URL list', () => {
+    assert.equal(stringLooksLikeSecret('xoxb-111'), false);
+    assert.equal(stringLooksLikeSecret('xoxb-111', { densityAloneSufficient: true }), true);
   });
 
-  it('refuses a bare TOTP seed, spaced or not (rule 4)', () => {
-    assert.equal(stringLooksLikeSecret('JBSWY3DPEHPK3PXP'), true);
-    assert.equal(stringLooksLikeSecret('JBSW Y3DP EHPK 3PXP'), true);
+  // jc's real false positive: a library name containing a known prefix
+  // mid-word-boundary ('sk-' as in scikit-learn) must not refuse an
+  // ordinary page off the sensitive-URL list.
+  it("rule 2 does not false-positive on an ordinary library name off the list ('scikit sk-learn docs')", () => {
+    assert.equal(stringLooksLikeSecret('scikit sk-learn docs'), false);
   });
 
-  it('rule 3 (density): requires a nearby keyword when densityAloneSufficient is false (the default)', () => {
-    const codeDenseNoKeyword = '7f3k-9d2m,a83f-29dk,qq1z-88mn,x0p4-rr3e,8k2j-m9vd,zz91-3bqa'; // commas, not spaces, so whitespace-collapsing (rule 4) does not also trip here -- isolates rule 3 specifically.
-    assert.equal(stringLooksLikeSecret(codeDenseNoKeyword), false);
-    assert.equal(stringLooksLikeSecret(codeDenseNoKeyword, { densityAloneSufficient: false }), false);
+  it('rule 4 (mixed alnum run): only applies on the sensitive-URL list', () => {
+    assert.equal(stringLooksLikeSecret('JBSWY3DPEHPK3PXP'), false);
+    assert.equal(stringLooksLikeSecret('JBSWY3DPEHPK3PXP', { densityAloneSufficient: true }), true);
   });
 
-  it('rule 3 (density): density ALONE is enough when densityAloneSufficient is true', () => {
-    const codeDenseNoKeyword = '7f3k-9d2m,a83f-29dk,qq1z-88mn,x0p4-rr3e,8k2j-m9vd,zz91-3bqa'; // commas, not spaces, so whitespace-collapsing (rule 4) does not also trip here -- isolates rule 3 specifically.
+  it('rule 4: refuses a bare TOTP seed, spaced or not, on the sensitive-URL list', () => {
+    assert.equal(stringLooksLikeSecret('JBSWY3DPEHPK3PXP', { densityAloneSufficient: true }), true);
+    assert.equal(stringLooksLikeSecret('JBSW Y3DP EHPK 3PXP', { densityAloneSufficient: true }), true);
+  });
+
+  // jc's three must-allow strings, round 6: ordinary prose/identifiers
+  // that a pre-round-6 whitespace-stripping version of rule 4 refused.
+  // Must be allowed OFF the sensitive-URL list (rule 4 doesn't even run
+  // there); checked again ON the list below, where results diverge.
+  for (const text of ['Version 2 of the API', 'Open 24 hours', 'commit 3382d73']) {
+    it(`allows ${JSON.stringify(text)} off the sensitive-URL list`, () => {
+      assert.equal(stringLooksLikeSecret(text), false);
+    });
+  }
+
+  // On a sensitive URL, rule 4 DOES run -- and "commit 3382d73" still
+  // refuses there: the hash "3382d73" mixes letters and digits ON ITS
+  // OWN, with no whitespace-join needed, so narrowing the join behavior
+  // (not re-joining across arbitrary whitespace) does not change this
+  // one. Decision (stated in the PR reply too): this is accepted --
+  // a commit hash is itself shaped exactly like a truncated token tail,
+  // and this only matters on a page ALREADY flagged sensitive by its URL,
+  // where erring toward refusal is the whole point of the gate. The
+  // other two strings have no internal digit+letter run and still pass.
+  it('on a sensitive URL: "Version 2 of the API" and "Open 24 hours" are still allowed, but "commit 3382d73" refuses (decision: accepted)', () => {
+    assert.equal(stringLooksLikeSecret('Version 2 of the API', { densityAloneSufficient: true }), false);
+    assert.equal(stringLooksLikeSecret('Open 24 hours', { densityAloneSufficient: true }), false);
+    assert.equal(stringLooksLikeSecret('commit 3382d73', { densityAloneSufficient: true }), true);
+  });
+
+  // Round 6 (jc, blocking -- fixing a regression found while fixing the
+  // ORIGINAL blocker): rule 3 (density) is bare density, UNCONDITIONALLY
+  // -- no keyword requirement, on OR off the sensitive-URL list. This is
+  // #65's own original element-scoped behavior (this function's only
+  // off-list caller is an element-scoped read with a real selector,
+  // never the whole page -- see the function's own doc comment). An
+  // EARLIER version of round 6 made rule 3 keyword-gated off-list (same
+  // split as rules 2/4), which broke a pre-existing, still-correct test
+  // below (a dense code list read via a SPECIFIC element selector, with
+  // no keyword inside that selector's own text, stopped refusing) --
+  // caught by running the full suite before pushing, not shipped.
+  it('rule 3 (density): density ALONE is sufficient, with no keyword needed, on OR off the sensitive-URL list', () => {
+    const codeDenseNoKeyword = '7f3k-9d2m,a83f-29dk,qq1z-88mn,x0p4-rr3e,8k2j-m9vd,zz91-3bqa';
+    assert.equal(stringLooksLikeSecret(codeDenseNoKeyword), true);
+    assert.equal(stringLooksLikeSecret(codeDenseNoKeyword, { densityAloneSufficient: false }), true);
     assert.equal(stringLooksLikeSecret(codeDenseNoKeyword, { densityAloneSufficient: true }), true);
   });
 
-  // PRI-3360 round 4: found while isolating rule 3 above, not asked for
-  // in the design but worth recording -- a whitespace-SEPARATED code list
-  // (spaces between pairs, like a backup-codes page would plausibly
-  // render one) trips rule 4 on its own too, because collapsing the
-  // spaces glues the tail of one pair onto the head of the next
-  // ("...9d2m a83f..." -> "...9d2ma83f...", an 8-char run with digits).
-  // Harmless here (a real backup-codes page SHOULD refuse either way),
-  // but it means rules 3 and 4 are not as independent as their separate
-  // numbering suggests for this common a layout.
-  it('a whitespace-separated (not comma-separated) code list also trips rule 4 on its own, independent of rule 3', () => {
+  // Round 6: with rule 4 no longer stripping whitespace, a hyphen-joined
+  // code list (each pair's halves are only 4 characters, below rule 4's
+  // 6-character floor either side of the hyphen) no longer trips rule 4
+  // at all, on or off the list -- the round-5 "finding" about rules 3/4
+  // overlapping on this exact shape no longer applies. Rule 3 (density)
+  // still catches it, either way, as its own, separate, unconditional
+  // signal.
+  it('a whitespace-separated code list no longer trips rule 4 on its own (round 6 fixed this side effect)', () => {
     const spaceSeparated = '7f3k-9d2m a83f-29dk qq1z-88mn x0p4-rr3e 8k2j-m9vd zz91-3bqa';
-    assert.equal(hasLongMixedAlnumRun(spaceSeparated), true);
-    assert.equal(stringLooksLikeSecret(spaceSeparated, { densityAloneSufficient: false }), true);
+    assert.equal(hasLongMixedAlnumRun(spaceSeparated), false);
+    assert.equal(stringLooksLikeSecret(spaceSeparated), true); // via rule 3, not rule 4
+    assert.equal(stringLooksLikeSecret(spaceSeparated, { densityAloneSufficient: true }), true); // via rule 3, not rule 4
   });
 });
 
@@ -325,9 +429,47 @@ describe('valueLeaksSecret', () => {
     assert.equal(valueLeaksSecret(['fine', 'also fine', 3, true]), false);
   });
 
-  it('passes densityAloneSufficient through to nested strings', () => {
-    const codeDenseNoKeyword = '7f3k-9d2m,a83f-29dk,qq1z-88mn,x0p4-rr3e,8k2j-m9vd,zz91-3bqa'; // commas, not spaces, so whitespace-collapsing (rule 4) does not also trip here -- isolates rule 3 specifically.
-    assert.equal(valueLeaksSecret({ text: codeDenseNoKeyword }, { densityAloneSufficient: false }), false);
-    assert.equal(valueLeaksSecret({ text: codeDenseNoKeyword }, { densityAloneSufficient: true }), true);
+  // Round 6: rule 3 (density) is now unconditional (see
+  // stringLooksLikeSecret's own doc comment), so this has to use rule 4
+  // (mixed alnum run) instead to demonstrate densityAloneSufficient
+  // actually propagating through the recursive walk -- rule 4 is the
+  // one still gated by it.
+  it('passes densityAloneSufficient through to nested strings (rule 4, the gated one)', () => {
+    assert.equal(valueLeaksSecret({ text: 'JBSWY3DPEHPK3PXP' }, { densityAloneSufficient: false }), false);
+    assert.equal(valueLeaksSecret({ text: 'JBSWY3DPEHPK3PXP' }, { densityAloneSufficient: true }), true);
+  });
+
+  // Round 6 (jc, blocking): past MAX_VALUE_DEPTH, this used to return
+  // false ("no secret found") -- a fail-OPEN bug. A token nested deep
+  // enough walked straight past the check. Now it refuses (returns true)
+  // past the limit instead.
+  it('REFUSES (fails closed) past the depth limit, rather than passing a deeply-nested token', () => {
+    const fakeToken = fake('xoxb', '-1234567890-1234567890123-abcdefghijklmnopqrstuvwx');
+    let nested = fakeToken;
+    for (let i = 0; i < 12; i++) nested = [nested];
+    assert.equal(valueLeaksSecret(nested, { densityAloneSufficient: true }), true);
+  });
+
+  it('does NOT refuse an ordinary value nested within the depth limit', () => {
+    let nested = 'fine';
+    for (let i = 0; i < 5; i++) nested = [nested];
+    assert.equal(valueLeaksSecret(nested, { densityAloneSufficient: true }), false);
+  });
+
+  // Round 6 (jc, blocking): Object.values alone never sees a token placed
+  // in a KEY rather than a value -- ({ [el.value]: 1 }) is exactly the
+  // shape an eval expression computing a dynamic key would produce.
+  it('refuses a token placed in an OBJECT KEY, not just a value', () => {
+    const fakeToken = fake('xoxb', '-1234567890-1234567890123-abcdefghijklmnopqrstuvwx');
+    assert.equal(valueLeaksSecret({ [fakeToken]: 1 }, { densityAloneSufficient: true }), true);
+  });
+
+  it('refuses a token in a NESTED object key too', () => {
+    const fakeToken = fake('xoxb', '-1234567890-1234567890123-abcdefghijklmnopqrstuvwx');
+    assert.equal(valueLeaksSecret({ outer: { [fakeToken]: 1 } }, { densityAloneSufficient: true }), true);
+  });
+
+  it('allows ordinary object keys with no secret in them', () => {
+    assert.equal(valueLeaksSecret({ ok: 1, count: 2, label: 3 }, { densityAloneSufficient: true }), false);
   });
 });

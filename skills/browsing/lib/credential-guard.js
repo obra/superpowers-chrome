@@ -28,7 +28,7 @@
  * someone debugging their own browser. The default is the safe behavior.
  */
 
-const { codeListDetected, codeListNearBackupKeyword } = require('./code-list-detector');
+const { codeListDetected } = require('./code-list-detector');
 
 // Token-shaped patterns. Each source is used both for detection and for
 // redaction, so a detector and a redactor can never disagree. There is
@@ -99,7 +99,15 @@ function escapeRegExp(s) {
 // length is loose enough on its own that requiring a word start keeps it
 // from matching an ordinary word that merely CONTAINS one of these short
 // sequences mid-word.
-const TOKEN_PREFIX_PATTERN = new RegExp(`\\b(?:${TOKEN_PREFIXES.map(escapeRegExp).join('|')})`, 'i');
+//
+// Round 6 (jc): NO case-insensitive flag, unlike before -- every prefix
+// here except `A3-` is already lowercase-canonical in real-world use
+// (Slack/GitHub/Tailscale/OpenAI/Linear tokens are never issued
+// uppercase), so dropping `i` costs nothing for those, and fixes a real
+// false match: `A3-` (1Password's Secret Key prefix, which IS always
+// uppercase) was matching ordinary lowercase text like "a3-paper" under
+// the old case-insensitive version.
+const TOKEN_PREFIX_PATTERN = new RegExp(`\\b(?:${TOKEN_PREFIXES.map(escapeRegExp).join('|')})`);
 
 function hasKnownTokenPrefix(text) {
   if (typeof text !== 'string' || text === '') return false;
@@ -109,30 +117,61 @@ function hasKnownTokenPrefix(text) {
 // jc's rule for a bare TOTP/HOTP seed with no prefix at all (base32, e.g.
 // `JBSWY3DPEHPK3PXP`) and no otpauth:// URI to match TOKEN_PATTERNS'
 // existing entry for one -- the seed is just letters and digits, nothing
-// else recognizes it. Whitespace is stripped FIRST (not just collapsed to
-// a single space) specifically to catch a seed someone has broken into
-// even-width groups for display/typing ("JBSW Y3DP EHPK 3PXP") -- gluing
-// the groups back together is exactly what defeats that split. Deliberately
-// a SEPARATE, looser rule from the two above: a 6+ alnum run that MIXES
-// letters and digits, no specific prefix required.
+// else recognizes it. Deliberately a SEPARATE, looser rule from the two
+// above: a 6+ alnum run that MIXES letters and digits, no specific
+// prefix required.
 //
 // Round 5 (jc + Reeve, after a real false positive): a run of ALL digits
 // or ALL letters is exempt, even at 6+ characters -- an id like Slack's
 // own `app_level_tokens_row_12277846587778` (a data-qa value on the
 // App-Level Tokens page, all-digit suffix) is an ordinary DOM identifier,
-// not a secret, and the original any-digit version of this rule refused
-// it outright. A base32 TOTP seed still trips this version every time:
+// not a secret. A base32 TOTP seed still trips this version every time:
 // base32 is deliberately letters-and-digits by construction, so a real
-// seed always mixes the two. The rule is loose enough on its own (no
-// prefix check at all) that it is only applied where the extra
-// false-positive risk is accepted; see stringLooksLikeSecret below and
-// its callers.
+// seed always mixes the two.
+//
+// Round 6 (jc, blocking -- a real false positive this time, reproduced
+// against ordinary prose): the PREVIOUS version stripped ALL whitespace
+// before scanning, which glues any number onto an adjacent word --
+// "Released in 2026 by Prime Radiant" becomes "...in2026byPrime...", a
+// mixed run that was never actually ONE token on the page. This version
+// does NOT strip whitespace at all; it scans the ORIGINAL text for a
+// run that is ALREADY contiguous (no join across a space needed) --
+// "commit 3382d73" still refuses (the hash "3382d73" mixes on its own,
+// no join needed), but "Released in 2026 by Prime Radiant" no longer
+// does (none of its space-separated words mixes on its own). The ONE
+// whitespace-or-hyphen-crossing join this version still performs is
+// narrow and shape-specific: hasSplitBase32Seed below, for a seed
+// someone has broken into DISPLAY groups ("JBSW Y3DP EHPK 3PXP") --
+// that join is gated on the restricted base32 alphabet and a realistic
+// seed length, not on whitespace position alone.
 const MIN_ALNUM_RUN = 6;
+
+// Matches a TOTP/HOTP seed split into uniform 4-character DISPLAY groups
+// using the base32 alphabet (A-Z and 2-7 -- base32 excludes 0/1/8/9 to
+// avoid confusion with O/I/B), each group separated by a single space or
+// hyphen: "JBSW Y3DP EHPK 3PXP" or "JBSW-Y3DP-EHPK-3PXP". Requires 3+
+// groups structurally (the regex itself), AND (checked separately below)
+// a realistic seed length of 16+ once the separators are stripped out --
+// since every group is exactly 4 characters, that floor in practice
+// requires 4+ groups. Deliberately narrower than the old plain
+// whitespace-strip-and-scan: this only reconnects text that already has
+// the SPECIFIC shape a chunked base32 seed has, not any number sitting
+// next to any word.
+const SPLIT_BASE32_GROUP = '[A-Z2-7]{4}';
+const SPLIT_BASE32_PATTERN = new RegExp(`\\b(?:${SPLIT_BASE32_GROUP}[ -]){2,}${SPLIT_BASE32_GROUP}\\b`);
+const MIN_SPLIT_SEED_LENGTH = 16;
+
+function hasSplitBase32Seed(text) {
+  if (typeof text !== 'string' || text === '') return false;
+  const match = SPLIT_BASE32_PATTERN.exec(text);
+  if (!match) return false;
+  return match[0].replace(/[ -]/g, '').length >= MIN_SPLIT_SEED_LENGTH;
+}
 
 function hasLongMixedAlnumRun(text) {
   if (typeof text !== 'string' || text === '') return false;
-  const collapsed = text.replace(/\s+/g, '');
-  const runs = collapsed.match(/[A-Za-z0-9]{6,}/g);
+  if (hasSplitBase32Seed(text)) return true;
+  const runs = text.match(/[A-Za-z0-9]{6,}/g);
   if (!runs) return false;
   return runs.some((run) => run.length >= MIN_ALNUM_RUN && /[A-Za-z]/.test(run) && /[0-9]/.test(run));
 }
@@ -237,32 +276,63 @@ function evalResultRefusal(expression) {
 
 /**
  * stringLooksLikeSecret(text, { densityAloneSufficient }): the unified
- * per-string check, PRI-3360 round 4 (jc + Reeve's final design). True
- * when ANY of:
+ * per-string check, PRI-3360 round 4 (jc + Reeve's final design). This
+ * function has exactly ONE caller path off the sensitive-URL list:
+ * extraction.js's elementResultCheck, for an ELEMENT-SCOPED extract/attr
+ * read with a real, caller-chosen selector -- eval's own call site
+ * (capture.js's evaluateWithCapture) only ever calls this AFTER already
+ * confirming `urlLooksSensitive`, so it never reaches the off-list branch
+ * at all. True when ANY of:
  *   1. containsCredentialShaped(text) -- an existing, full-shape token
- *      pattern.
+ *      pattern. Applies UNCONDITIONALLY, any URL -- this was already
+ *      #65's own element-scoped behavior before PRI-3360 round 4 existed.
  *   2. hasKnownTokenPrefix(text) -- a bare, known token PREFIX, even
  *      truncated down to just that (round 4's own addition -- see
  *      TOKEN_PREFIXES above for why this needs to be separate from (1)).
- *   3. The code-list density signal: codeListDetected (density ALONE) when
- *      `densityAloneSufficient` is true, else codeListNearBackupKeyword
- *      (density + a nearby backup/recovery cue). Callers set
- *      `densityAloneSufficient: true` only when they already know the
- *      page's URL is on the sensitive-URL list -- density alone is a
- *      weaker signal off that list (PRI-3360 round 2, jc review of #65:
- *      it false-positived on ordinary pages there), but a page ALREADY
- *      flagged sensitive by its URL doesn't need the extra keyword cue.
+ *      Round 6 (jc, blocking): ONLY on the sensitive-URL list -- see
+ *      below.
+ *   3. codeListDetected(text) -- the code-list density signal, bare
+ *      density with no keyword requirement, UNCONDITIONALLY (any URL).
+ *      This is #65's own original element-scoped behavior, unchanged by
+ *      any later round: an agent reading a SPECIFIC, caller-chosen
+ *      selector that happens to be code-dense is a much stronger signal
+ *      than density found by scanning an entire page's incidental text
+ *      (the WHOLE-PAGE gate in sensitive-url.js is the one that needs a
+ *      nearby keyword off the URL list -- see that module's own
+ *      pageTextReadRefused, a separate, independent call that does not
+ *      go through this function at all). No round of review has ever
+ *      found an element-scoped false positive for bare density.
  *   4. hasLongMixedAlnumRun(text) -- a bare TOTP/HOTP seed with no prefix
  *      and no otpauth:// URI (jc's rule, narrowed in round 5 -- see that
- *      function's own doc comment).
+ *      function's own doc comment). Round 6 (jc, blocking): ONLY on the
+ *      sensitive-URL list -- see below.
+ *
+ * Round 6 (jc, blocking): rules 2 and 4 now apply ONLY when
+ * `densityAloneSufficient` is true -- the SAME flag that already means
+ * "the page's URL is on the sensitive-URL list" everywhere else in this
+ * codebase. Both rules are loose enough (no minimum trailing length for
+ * rule 2; any mixed 6+ run for rule 4) that they misfired on ordinary
+ * text ANYWHERE -- "scikit sk-learn docs" (rule 2, a real library name)
+ * and "Version 2 of the API"/"Open 24 hours" (rule 4, under the
+ * PRE-round-6 whitespace-stripping version; round 6 also narrowed rule 4
+ * itself -- see hasLongMixedAlnumRun). Gating them to pages already
+ * flagged sensitive by their URL keeps that blast radius to exactly the
+ * pages this whole gate exists for. Rule 3 (density) deliberately keeps
+ * its OWN, separate on/off-list behavior (density alone either way for
+ * THIS function, since it is element-scoped-only -- see rule 3's own
+ * note above) rather than being folded into the same on/off split as
+ * rules 2 and 4.
+ *
  * A non-string value (or empty string) never matches -- nothing to scan.
  */
 function stringLooksLikeSecret(text, { densityAloneSufficient = false } = {}) {
   if (typeof text !== 'string' || text === '') return false;
   if (containsCredentialShaped(text)) return true;
-  if (hasKnownTokenPrefix(text)) return true;
-  if (densityAloneSufficient ? codeListDetected(text) : codeListNearBackupKeyword(text)) return true;
-  if (hasLongMixedAlnumRun(text)) return true;
+  if (codeListDetected(text)) return true;
+  if (densityAloneSufficient) {
+    if (hasKnownTokenPrefix(text)) return true;
+    if (hasLongMixedAlnumRun(text)) return true;
+  }
   return false;
 }
 
@@ -270,22 +340,36 @@ function stringLooksLikeSecret(text, { densityAloneSufficient = false } = {}) {
 // `[el1.value, el2.value]`), not just a bare string -- a worker handing
 // eval `JSON.stringify`-shaped work is common. Walks strings/arrays/plain
 // objects recursively, applying stringLooksLikeSecret to every string
-// found; short-circuits true on the first match. Non-string/array/object
-// values (numbers, booleans, null, undefined) always pass -- these are
-// exactly the types PRI-3360 round 4's design keeps allowed through
+// found (round 6, jc: OBJECT KEYS too, not just values -- `({ [el.value]:
+// 1 })` puts a token in a key, which `Object.values` alone never sees);
+// short-circuits true on the first match. Non-string/array/object values
+// (numbers, booleans, null, undefined) always pass -- these are exactly
+// the types PRI-3360 round 4's design keeps allowed through
 // unconditionally, since none of them can carry a token-shaped string.
-// `maxDepth` guards against a pathologically deep/cyclic structure costing
-// unbounded recursion; CDP's own `returnByValue` serialization already
-// imposes a depth/size limit of its own, so this is a cheap extra floor,
-// not the primary defense.
+//
+// `MAX_VALUE_DEPTH` guards against a pathologically deep/cyclic structure
+// costing unbounded recursion. Round 6 (jc, blocking): past that limit
+// this now REFUSES (returns true) rather than passing -- the previous
+// version returned false past the limit, which is a fail-OPEN bug: a
+// token nested deep enough (`[[[[[[[[[[[["xoxb-..."]]]]]]]]]]]]`, 12
+// levels) walked straight past the check and came back clean. Refusing
+// past the depth limit means "this structure is too deep to vouch for,"
+// which is the correct default for a security check, not "no secret
+// found." CDP's own `returnByValue` serialization imposes a depth/size
+// limit of its own too, but that is not a reason to fail open here --
+// this check has to be correct on its own terms.
 const MAX_VALUE_DEPTH = 10;
 
 function valueLeaksSecret(value, opts = {}, depth = 0) {
-  if (depth > MAX_VALUE_DEPTH) return false;
+  if (depth > MAX_VALUE_DEPTH) return true;
   if (typeof value === 'string') return stringLooksLikeSecret(value, opts);
   if (Array.isArray(value)) return value.some((v) => valueLeaksSecret(v, opts, depth + 1));
   if (value && typeof value === 'object') {
-    return Object.values(value).some((v) => valueLeaksSecret(v, opts, depth + 1));
+    for (const key of Object.keys(value)) {
+      if (stringLooksLikeSecret(key, opts)) return true;
+      if (valueLeaksSecret(value[key], opts, depth + 1)) return true;
+    }
+    return false;
   }
   return false;
 }
@@ -313,6 +397,7 @@ module.exports = {
   containsCredentialShaped,
   hasKnownTokenPrefix,
   hasLongMixedAlnumRun,
+  hasSplitBase32Seed,
   stringLooksLikeSecret,
   valueLeaksSecret,
   redactCredentialShaped,

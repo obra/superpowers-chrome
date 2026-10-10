@@ -1849,10 +1849,17 @@ describe("PRI-3360 round 4: Slack's token-types docs page stays readable (jc, re
 }, () => {
   let server;
   let dir;
+  // Round 6 (Jesse): the tails below used to be Slack's own REAL example
+  // hex values (reconstructed via .join(), which avoided a literal match
+  // in source but still produced a real-looking value at runtime once
+  // assembled). Replaced with obviously-fake 'f'-repeat filler of the
+  // EXACT SAME LENGTH as each real tail, so the length-boundary test
+  // below (one of these is deliberately 2 short of TOKEN_PATTERNS' {20,}
+  // minimum) still exercises the same boundary.
   const FAKE_EXAMPLE_TOKENS = [
-    ['xoxp', '111', '222', '333', 'd6bc768406e5c2e6958cfc399b438004'].join('-'),
-    ['xoxp', '111', '222', '333', 'd6bc768412'].join('-'),
-    ['xoxp', '111', '222', '333', 'd6bc76'].join('-'),
+    ['xoxp', '111', '222', '333', 'f'.repeat(33)].join('-'), // same length as Slack's real 33-char hex tail
+    ['xoxp', '111', '222', '333', 'f'.repeat(10)].join('-'), // same length as Slack's real 10-char hex tail
+    ['xoxp', '111', '222', '333', 'f'.repeat(6)].join('-'), // same length as Slack's real, deliberately-shortened 6-char tail
   ];
 
   before(async () => {
@@ -1865,6 +1872,12 @@ describe("PRI-3360 round 4: Slack's token-types docs page stays readable (jc, re
     for (let i = 0; i < FAKE_EXAMPLE_TOKENS.length; i++) {
       html = html.split(`{{EXAMPLE_TOKEN_${i}}}`).join(FAKE_EXAMPLE_TOKENS[i]);
     }
+    // Jesse: the page's own PROSE also names the first example's tail
+    // bare ("the secret is <tail>"), separately from the xoxp-prefixed
+    // code-block examples above -- placeholder'd the same way, filled in
+    // with the SAME fake tail as FAKE_EXAMPLE_TOKENS[0] so the two stay
+    // consistent with each other on the rendered page.
+    html = html.split('{{EXAMPLE_TOKEN_0_TAIL}}').join('f'.repeat(33));
     fs.writeFileSync(path.join(dir, 'tokens.html'), html);
   });
   after(async () => {
@@ -1930,5 +1943,77 @@ describe("PRI-3360 round 4: Slack's token-types docs page stays readable (jc, re
         assert.ok(!written.includes(token), `token leaked into ${file}`);
       }
     }
+  });
+});
+
+// PRI-3360 round 6 (jc, blocking): jc's own probe reproduced directly
+// against credential-guard.js found that element extract/attr refused
+// ordinary text on EVERY page (rules 2/4 applied unconditionally). Fixed
+// by gating rules 2 and 4 to the sensitive-URL list, the same gate eval
+// already uses. These real-Chrome fixtures exercise the element-scoped
+// path end to end, both off the list and on a sensitive route, for jc's
+// own three reproduction strings.
+const JC_MUST_ALLOW_STRINGS = ['Version 2 of the API', 'Open 24 hours', 'commit 3382d73'];
+
+describe("PRI-3360 round 6 (jc): element extract/attr for jc's three must-allow strings", {
+  skip: !CHROME_AVAILABLE && 'Chrome not installed',
+}, () => {
+  let server;
+  let dir;
+  const UNLISTED_PAGE = dataUrl(
+    '<title>Internal notes</title><h1>Release notes</h1>' +
+    JC_MUST_ALLOW_STRINGS.map((t, i) => `<p id="s${i}">${t}</p>`).join('')
+  );
+
+  before(async () => {
+    server = await startServer();
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pri-3360-round6-'));
+    fs.mkdirSync(path.join(dir, 'account', 'settings', '2fa_app'), { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, 'account', 'settings', '2fa_app', 'index.html'),
+      '<title>Session page</title><h1>Signed in</h1>' +
+      JC_MUST_ALLOW_STRINGS.map((t, i) => `<p id="s${i}">${t}</p>`).join('')
+    );
+  });
+  after(async () => {
+    await server?.stop();
+    if (dir) fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  const SENSITIVE_URL = () => `file://${path.join(dir, 'account', 'settings', '2fa_app', 'index.html')}`;
+
+  it('all three strings are allowed via element extract on an UNLISTED page', async () => {
+    await server.call({ action: 'navigate', payload: UNLISTED_PAGE });
+    for (let i = 0; i < JC_MUST_ALLOW_STRINGS.length; i++) {
+      const { text, isError } = await server.call({ action: 'extract', selector: `#s${i}`, payload: 'text' });
+      assert.equal(isError, false, `${JSON.stringify(JC_MUST_ALLOW_STRINGS[i])}: ${text}`);
+      assert.equal(text, JC_MUST_ALLOW_STRINGS[i]);
+    }
+  });
+
+  // Decision (also stated in the PR reply): "Version 2 of the API" and
+  // "Open 24 hours" are allowed on a sensitive URL too -- neither has an
+  // internal digit+letter run. "commit 3382d73" is REFUSED on a
+  // sensitive URL: the hash "3382d73" mixes letters and digits on its
+  // own, with no whitespace-join needed, so narrowing how rule 4 joins
+  // across whitespace does not change this one. Accepted: a page already
+  // flagged sensitive by its URL is exactly where erring toward refusal
+  // is the point of this gate, and a commit-hash-shaped string is itself
+  // indistinguishable from a truncated token tail.
+  it('on a sensitive URL: the first two strings are still allowed, but "commit 3382d73" is refused', async () => {
+    await server.call({ action: 'navigate', payload: SENSITIVE_URL() });
+
+    const allowed0 = await server.call({ action: 'extract', selector: '#s0', payload: 'text' });
+    assert.equal(allowed0.isError, false, allowed0.text);
+    assert.equal(allowed0.text, 'Version 2 of the API');
+
+    const allowed1 = await server.call({ action: 'extract', selector: '#s1', payload: 'text' });
+    assert.equal(allowed1.isError, false, allowed1.text);
+    assert.equal(allowed1.text, 'Open 24 hours');
+
+    const refused2 = await server.call({ action: 'extract', selector: '#s2', payload: 'text' });
+    assert.equal(refused2.isError, true, refused2.text);
+    assert.match(refused2.text, /extract refused/);
+    assert.match(refused2.text, /credential- or code-shaped/);
   });
 });
