@@ -21607,6 +21607,10 @@ async function executeBrowserAction(params) {
         } else if (format === "html") {
           return await chromeLib.getSanitizedHtml(tabIndex);
         } else if (format === "markdown") {
+          const wholePageRefusal = await chromeLib.pageTextReadRefused(tabIndex, "extract");
+          if (wholePageRefusal) {
+            throw new Error(wholePageRefusal);
+          }
           const credentialCaptureAllowed = credentialGuard2.credentialCaptureAllowed();
           const markerSelector = JSON.stringify(`[${credentialGuard2.MARKER_ATTR}]`);
           const root = credentialCaptureAllowed ? "document.body" : `(() => {

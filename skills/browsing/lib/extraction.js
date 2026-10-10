@@ -1,7 +1,8 @@
 const { getElementSelector } = require('./element-selector');
 const { throwIfExceptionDetails } = require('./cdp-utils');
-const { MARKER_ATTR, credentialCaptureAllowed, secretMarkerRefusal } = require('./credential-guard');
+const { MARKER_ATTR, credentialCaptureAllowed, secretMarkerRefusal, refuseIfTextLeaksSecret } = require('./credential-guard');
 const { ANCESTOR_MARKED_FN_SRC, INERT_CLONE_FN_SRC } = require('./secret-marker');
+const { pageTextReadRefused } = require('./sensitive-url');
 
 /**
  * Single-element extraction primitives — text content, HTML, attributes.
@@ -40,10 +41,61 @@ const { ANCESTOR_MARKED_FN_SRC, INERT_CLONE_FN_SRC } = require('./secret-marker'
  *     document that never has a browsing context, so it is never "fully
  *     active" and never runs that algorithm.
  *
+ * PRI-3360 (WHOLE-PAGE vs ELEMENT-SCOPED reads): resolveIsWholePage below
+ * decides which treatment a selector gets by resolving it IN THE PAGE and
+ * checking the resulting ELEMENT, not by matching the selector STRING.
+ * No selector at all is trivially whole-page (no CDP round trip needed).
+ * A selector that resolves to `document.documentElement`, `document.body`,
+ * or anything that CONTAINS `document.body` is WHOLE-PAGE: gated
+ * unconditionally on sensitive-url.js's pageTextReadRefused (known-
+ * sensitive URL OR a live data-sen-secret marker OR the code-list density
+ * heuristic near a backup/recovery cue) BEFORE anything runs, same as
+ * capture.js's evaluateWithCapture/extractPageText. Any OTHER resolved
+ * element is ELEMENT-scoped: the read runs (still subject to the existing
+ * marker/ancestor check below), and its RESULT is checked by
+ * credential-guard.js's refuseIfTextLeaksSecret (token shape OR code-list
+ * density) before being returned — a match refuses the whole read rather
+ * than redacting it. Both checks are skipped when credentialCaptureAllowed()
+ * is set, the same operator-only escape hatch every other guard in this
+ * codebase already honors.
+ *
+ * Round 2 (jc review of #65, finding 2): the original check matched the
+ * selector STRING against a `body`/`html` literal list, which `:root`,
+ * `*` (whose first DOM-order match is `<html>`), `html > body`,
+ * `body:not(.x)`, and any other spelling that resolves to the same scope
+ * all skipped — each of those got only the (much narrower) element-scoped
+ * content check, exactly backwards for a selector that targets the whole
+ * document. Resolving in-page, through the SAME getElementSelector
+ * expression the actual read uses, means "is this whole-page" and "what
+ * element will be read" can never disagree, and covers every selector
+ * spelling by construction instead of by an ever-growing string list.
+ *
  * `attachExtraction({ getPageSession })` returns the bound methods — no
  * session state needed.
  */
 function attachExtraction({ getPageSession }) {
+  // Resolves `selector` through getElementSelector (the SAME expression
+  // the actual read below will use) and decides whole-page-ness from the
+  // resolved element: documentElement, body, or an ancestor of body all
+  // count. No selector at all is trivially whole-page with no CDP call.
+  // A selector matching no element returns false (not found is handled by
+  // the normal "element not found" path later, not treated as whole-page).
+  async function resolveIsWholePage(ps, selector) {
+    if (!selector) return true;
+    const js = `(() => {
+      const el = (${getElementSelector(selector)});
+      if (!el) return false;
+      return el === document.documentElement || el === document.body ||
+        (typeof el.contains === 'function' && el.contains(document.body));
+    })()`;
+    const result = await ps.send('Runtime.evaluate', {
+      expression: js,
+      returnByValue: true
+    });
+    throwIfExceptionDetails(result);
+    return !!result.result.value;
+  }
+
   // Shared shape for "the resolved element itself, or any ancestor of it,
   // carries the marker" (self is covered because __senAncestorMarked
   // checks `start` before walking up) — stripping descendants can't help
@@ -75,6 +127,11 @@ function attachExtraction({ getPageSession }) {
 
   async function extractText(tabIndexOrWsUrl, selector) {
     const ps = await getPageSession(tabIndexOrWsUrl);
+    const wholePage = await resolveIsWholePage(ps, selector);
+    if (wholePage) {
+      const refusal = await pageTextReadRefused(ps, 'extract');
+      if (refusal) throw new Error(refusal);
+    }
     const js = credentialCaptureAllowed()
       ? `${getElementSelector(selector)}?.textContent`
       : cloneAndStrip(getElementSelector(selector), 'clone.textContent');
@@ -83,7 +140,11 @@ function attachExtraction({ getPageSession }) {
       returnByValue: true
     });
     throwIfExceptionDetails(result);
-    return throwIfSecretMarked(result.result.value, 'extract', selector);
+    const value = throwIfSecretMarked(result.result.value, 'extract', selector);
+    if (!wholePage && !credentialCaptureAllowed()) {
+      return refuseIfTextLeaksSecret(value, 'extract', selector);
+    }
+    return value;
   }
 
   // Whole-page-detection form, used internally by capture.js's credential
@@ -104,23 +165,41 @@ function attachExtraction({ getPageSession }) {
   // Caller-facing form for the 'extract' action's format='html'. Strips
   // [data-sen-secret] descendants from an inert clone before serializing;
   // refuses if the resolved element (or, with no selector, documentElement
-  // itself) — or any ancestor of it — carries the marker.
+  // itself) — or any ancestor of it — carries the marker. PRI-3360: a
+  // selector that RESOLVES to the whole document (see resolveIsWholePage
+  // above) is treated the same as no selector at all — both read
+  // document.documentElement, and both are gated by pageTextReadRefused
+  // rather than the element-scoped content check below.
   async function getSanitizedHtml(tabIndexOrWsUrl, selector = null) {
     const ps = await getPageSession(tabIndexOrWsUrl);
-    if (credentialCaptureAllowed()) return getHtml(tabIndexOrWsUrl, selector);
-    const js = selector
-      ? cloneAndStrip(getElementSelector(selector), 'clone.innerHTML')
-      : cloneAndStrip('document.documentElement', 'clone.outerHTML');
+    const wholePage = await resolveIsWholePage(ps, selector);
+    if (wholePage) {
+      const refusal = await pageTextReadRefused(ps, 'extract');
+      if (refusal) throw new Error(refusal);
+    }
+    if (credentialCaptureAllowed()) return getHtml(tabIndexOrWsUrl, wholePage ? null : selector);
+    const js = wholePage
+      ? cloneAndStrip('document.documentElement', 'clone.outerHTML')
+      : cloneAndStrip(getElementSelector(selector), 'clone.innerHTML');
     const result = await ps.send('Runtime.evaluate', {
       expression: js,
       returnByValue: true
     });
     throwIfExceptionDetails(result);
-    return throwIfSecretMarked(result.result.value, 'extract', selector ?? '(whole page)');
+    const value = throwIfSecretMarked(result.result.value, 'extract', wholePage ? '(whole page)' : selector);
+    if (!wholePage) {
+      return refuseIfTextLeaksSecret(value, 'extract', selector);
+    }
+    return value;
   }
 
   async function getAttribute(tabIndexOrWsUrl, selector, attrName) {
     const ps = await getPageSession(tabIndexOrWsUrl);
+    const wholePage = await resolveIsWholePage(ps, selector);
+    if (wholePage) {
+      const refusal = await pageTextReadRefused(ps, 'attr');
+      if (refusal) throw new Error(refusal);
+    }
     // No clone-and-strip here: an attribute is a single scalar on the
     // resolved element itself, not text gathered from a subtree, so
     // "strip marked descendants" has nothing to remove. If the resolved
@@ -143,7 +222,11 @@ function attachExtraction({ getPageSession }) {
       returnByValue: true
     });
     throwIfExceptionDetails(result);
-    return throwIfSecretMarked(result.result.value, 'attr', selector);
+    const value = throwIfSecretMarked(result.result.value, 'attr', selector);
+    if (!wholePage && !credentialCaptureAllowed()) {
+      return refuseIfTextLeaksSecret(value, 'attr', selector);
+    }
+    return value;
   }
 
   return { extractText, getHtml, getSanitizedHtml, getAttribute };

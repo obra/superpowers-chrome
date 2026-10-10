@@ -373,9 +373,26 @@ async function executeBrowserAction(params: UseBrowserInput): Promise<string> {
         } else if (format === 'html') {
           return await chromeLib.getSanitizedHtml(tabIndex);
         } else if (format === 'markdown') {
+          // PRI-3360: this branch is the one whole-page text-reading path
+          // that never routed through capture.js/extraction.js at all --
+          // it builds and runs its own inline evaluate() call directly,
+          // below. Unlike the 'text'/'html' branches above (gated inside
+          // chromeLib.extractPageText/getSanitizedHtml), this had NO
+          // sensitive-URL or code-list-density check before this fix --
+          // only the marker-stripping clone further down, which still
+          // ran the read and returned a (stripped) result rather than
+          // refusing outright. Gate first, same as the other two formats.
+          const wholePageRefusal = await chromeLib.pageTextReadRefused(tabIndex, 'extract');
+          if (wholePageRefusal) {
+            throw new Error(wholePageRefusal);
+          }
           // Generate markdown-like output. textContent (unlike innerText)
           // doesn't need layout, so unlike the 'text' branch above, this
           // can run against a detached, stripped clone rather than refusing.
+          // The marker-stripping clone below is now defense-in-depth for a
+          // marker that appears between the gate check above and this read
+          // (e.g. an async script finishing); the gate above is the
+          // primary refusal for the common case.
           //
           // Two helpers guard the clone (extraction.js's cloneAndStrip uses
           // them the same way): an ancestor check, because a marker on

@@ -208,3 +208,88 @@ describe('sensitive-url', () => {
     assert.equal(urlLooksSensitive('https://example.test/dashboard'), false);
   });
 });
+
+// PRI-3360: pageTextReadRefused -- the whole-page text-read gate for
+// eval/extract/attr. (isWholePageSelector was retired in round 2 of jc's
+// review -- whole-page-ness is now decided by resolving the selector IN
+// THE PAGE and checking the resulting element, not by matching the
+// selector STRING; see extraction.js's resolveIsWholePage and its own
+// tests in test/lib/extraction.test.mjs for :root/*/html/body/html > body
+// coverage.)
+describe('pageTextReadRefused', () => {
+  const { pageTextReadRefused } = require('../../skills/browsing/lib/sensitive-url.js');
+  const CRED_ENV = 'SUPERPOWERS_CHROME_ALLOW_CREDENTIAL_CAPTURE';
+  afterEach(() => { delete process.env[CRED_ENV]; });
+
+  // A minimal page-session fake: dispatches Runtime.evaluate by
+  // expression content, the same discrimination extraction.test.mjs uses,
+  // since pageTextReadRefused issues up to three DIFFERENT evaluate calls
+  // (URL, marker, density) that a single canned response can't usefully
+  // distinguish.
+  function makePs({ url = 'https://example.test/dashboard', marker = false, text = 'Welcome to the dashboard.' } = {}) {
+    const calls = [];
+    return {
+      calls,
+      send: async (method, params) => {
+        calls.push({ method, params });
+        if (method !== 'Runtime.evaluate') return { result: { value: undefined } };
+        const expr = params.expression;
+        if (expr === 'location.href') return { result: { value: url } };
+        if (expr.includes('hasMarker')) return { result: { value: marker } };
+        if (expr.includes('__senVisibleText')) return { result: { value: text } };
+        return { result: { value: undefined } };
+      },
+    };
+  }
+
+  it('allows a plain page (no URL match, no marker, no code density)', async () => {
+    assert.equal(await pageTextReadRefused(makePs(), 'eval'), null);
+  });
+
+  it('refuses on a known-sensitive URL, with a message steering to an element-scoped read', async () => {
+    const refusal = await pageTextReadRefused(
+      makePs({ url: 'https://acme.slack.com/account/settings/2fa_app' }),
+      'eval'
+    );
+    assert.match(refusal, /eval refused/);
+    assert.match(refusal, /sensitive/i);
+    assert.match(refusal, /ELEMENT-SCOPED/);
+    assert.match(refusal, /button|status message|error-banner/i);
+  });
+
+  it('refuses when a live data-sen-secret marker is present, even off the URL list', async () => {
+    const refusal = await pageTextReadRefused(makePs({ marker: true }), 'extract');
+    assert.match(refusal, /extract refused/);
+    assert.match(refusal, /data-sen-secret/);
+  });
+
+  it('refuses via the code-list density signal, on a page off the URL list with no marker, when a backup/recovery keyword is near the code cluster', async () => {
+    const codeDenseText = 'Save these backup codes: 7f3k-9d2m a83f-29dk qq1z-88mn x0p4-rr3e 8k2j-m9vd zz91-3bqa';
+    const refusal = await pageTextReadRefused(makePs({ text: codeDenseText }), 'attr');
+    assert.match(refusal, /attr refused/);
+    assert.match(refusal, /dense list of secret-shaped codes/);
+  });
+
+  // PRI-3360 round 2 (jc review of #65): density ALONE, with no nearby
+  // backup/recovery cue, must NOT refuse a whole-page read on its own --
+  // this is exactly the false-positive jc found on ordinary pages (GitHub
+  // PR/repo/REST-docs, HN) whose visible text happens to cluster densely
+  // for reasons that have nothing to do with a secret.
+  it('does NOT refuse on code density alone with no nearby backup/recovery keyword', async () => {
+    const codeDenseTextNoKeyword = '7f3k-9d2m a83f-29dk qq1z-88mn x0p4-rr3e 8k2j-m9vd zz91-3bqa';
+    assert.equal(await pageTextReadRefused(makePs({ text: codeDenseTextNoKeyword }), 'attr'), null);
+  });
+
+  it('is not overridable from anything the agent controls: only credentialCaptureAllowed() (an env var read once at process startup) can suppress it', async () => {
+    const ps = makePs({ url: 'https://acme.slack.com/account/settings/2fa_app' });
+    assert.notEqual(await pageTextReadRefused(ps, 'eval'), null);
+    process.env[CRED_ENV] = '1';
+    assert.equal(await pageTextReadRefused(ps, 'eval'), null);
+    // The refusal message itself documents that this is operator-only,
+    // not something settable mid-session.
+    delete process.env[CRED_ENV];
+    const refusal = await pageTextReadRefused(ps, 'eval');
+    assert.match(refusal, /cannot be lifted by the agent at runtime/);
+    assert.match(refusal, /no tool call, page script, or eval expression/);
+  });
+});

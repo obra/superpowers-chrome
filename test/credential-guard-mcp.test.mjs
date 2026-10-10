@@ -643,24 +643,33 @@ describe('data-sen-secret marker with no token-shaped content (real Chrome)', { 
     assert.ok(text.includes(CONTROL_VALUE), text);
   });
 
-  it('extract html strips the marked element and keeps the control element, whole-page and selector forms', async () => {
+  it('extract html (selector form) strips the marked element and keeps the control element', async () => {
     const wrap = await server.call({ action: 'extract', selector: '#wrap', payload: 'html' });
     assert.equal(wrap.isError, false, wrap.text);
     assert.ok(!wrap.text.includes(BASE32_SEED), wrap.text);
     assert.ok(!wrap.text.includes('data-sen-secret'), wrap.text);
     assert.ok(wrap.text.includes(CONTROL_VALUE), wrap.text);
-
-    const whole = await server.call({ action: 'extract', payload: 'html' });
-    assert.equal(whole.isError, false, whole.text);
-    assert.ok(!whole.text.includes(BASE32_SEED), whole.text);
-    assert.ok(whole.text.includes(CONTROL_VALUE), whole.text);
   });
 
-  it('extract markdown strips the marked element and keeps the control element', async () => {
+  // PRI-3360: a WHOLE-PAGE extract (no selector) now refuses outright the
+  // moment ANY marker is present anywhere on the page, rather than
+  // stripping the marked subtree and returning the rest -- see
+  // sensitive-url.js's pageTextReadRefused. The element-SCOPED form above
+  // (a real selector, `#wrap`) is unaffected: it still strips and returns.
+  it('extract html (whole page, no selector) refuses outright when a marker is present anywhere on the page', async () => {
+    const whole = await server.call({ action: 'extract', payload: 'html' });
+    assert.equal(whole.isError, true, whole.text);
+    assert.match(whole.text, /extract refused/);
+    assert.match(whole.text, /data-sen-secret/);
+    assert.ok(!whole.text.includes(BASE32_SEED), whole.text);
+  });
+
+  it('extract markdown (whole page) refuses outright when a marker is present anywhere on the page', async () => {
     const { text, isError } = await server.call({ action: 'extract', payload: 'markdown' });
-    assert.equal(isError, false, text);
+    assert.equal(isError, true, text);
+    assert.match(text, /extract refused/);
+    assert.match(text, /data-sen-secret/);
     assert.ok(!text.includes(BASE32_SEED), text);
-    assert.ok(text.includes(CONTROL_VALUE), text);
   });
 
   // Stripping marked DESCENDANTS of <body>
@@ -678,12 +687,16 @@ describe('data-sen-secret marker with no token-shaped content (real Chrome)', { 
     });
   }
 
-  it('whole-page extract html strips a marked <body> and returns no seed', async () => {
+  // PRI-3360: same behavior change as the html/markdown tests above --
+  // whole-page html now refuses outright on ANY marker, including one on
+  // <body> itself, rather than stripping it and returning the rest.
+  it('whole-page extract html refuses outright when <body> itself carries the marker', async () => {
     await server.call({ action: 'navigate', payload: MARKER_BODY_PAGE });
     const { text, isError } = await server.call({ action: 'extract', payload: 'html' });
-    assert.equal(isError, false, text);
+    assert.equal(isError, true, text);
+    assert.match(text, /extract refused/);
+    assert.match(text, /data-sen-secret/);
     assert.ok(!text.includes(BASE32_SEED), text);
-    assert.ok(!text.includes('<body'), text);
   });
 
   // On a marked page, the suppression notice and the screenshot refusal
@@ -1316,5 +1329,253 @@ describe('URL-pattern suppression (sensitive-url.js, real Chrome)', { skip: !CHR
     assert.match(text, /known-sensitive pattern/i, `wrong refusal reason: ${text}`);
     assert.doesNotMatch(text, /credential-shaped content/i, `wrong refusal reason: ${text}`);
     assert.equal(fs.existsSync(shot), false);
+  });
+});
+
+// PRI-3360: gate the explicit, caller-requested readers (eval/extract/attr)
+// on a sensitive page the same way auto-capture/screenshot already are.
+// Real incident this fixes: a worker's eval/extract read backup codes off
+// a 2FA settings page into its own transcript, before the value was ever
+// captured through the credential broker. Fixture codes below are
+// obviously fake and have no real-world validity.
+const FAKE_SESSION_TOKEN = 'sess_8f3k9d2mq7h1x0p4rr3ezz913bqa';
+const FAKE_BACKUP_CODES = ['7f3k-9d2m', 'a83f-29dk', 'qq1z-88mn', 'x0p4-rr3e', '8k2j-m9vd', 'zz91-3bqa'];
+
+describe('PRI-3360: whole-page text reads refused on a sensitive page (real Chrome)', {
+  skip: !CHROME_AVAILABLE && 'Chrome not installed',
+}, () => {
+  let server;
+  let dir;
+  before(async () => {
+    server = await startServer();
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pri-3360-'));
+    fs.mkdirSync(path.join(dir, 'account', 'settings', '2fa_app'), { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, 'account', 'settings', '2fa_app', 'index.html'),
+      '<title>Session page</title><h1>Signed in</h1>' +
+      `<div id="tok">${FAKE_SESSION_TOKEN}</div>` +
+      '<button id="b">Done</button>'
+    );
+    fs.mkdirSync(path.join(dir, 'account', 'recovery-codes'), { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, 'account', 'recovery-codes', 'index.html'),
+      '<title>Backup codes</title><h1>Save these backup codes</h1>' +
+      `<ul id="codes">${FAKE_BACKUP_CODES.map((c) => `<li>${c}</li>`).join('\n')}</ul>` +
+      '<button id="b">Done</button>'
+    );
+  });
+  after(async () => {
+    await server?.stop();
+    if (dir) fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  const SESSION_URL = () => `file://${path.join(dir, 'account', 'settings', '2fa_app', 'index.html')}`;
+  const BACKUP_CODES_URL = () => `file://${path.join(dir, 'account', 'recovery-codes', 'index.html')}`;
+
+  it('an outerHTML eval on a sensitive URL is refused, even though the page holds a session-token-like string', async () => {
+    await server.call({ action: 'navigate', payload: SESSION_URL() });
+    const { text, isError } = await server.call({
+      action: 'eval',
+      payload: 'document.documentElement.outerHTML',
+    });
+    assert.equal(isError, true, text);
+    assert.match(text, /eval refused/);
+    assert.match(text, /sensitive/i);
+    assert.doesNotMatch(text, new RegExp(FAKE_SESSION_TOKEN), `token leaked into refusal text:\n${text}`);
+  });
+
+  it('extract (whole page, no selector) of a backup-codes page is refused, with no codes in the result', async () => {
+    await server.call({ action: 'navigate', payload: BACKUP_CODES_URL() });
+    const { text, isError } = await server.call({ action: 'extract', payload: 'text' });
+    assert.equal(isError, true, text);
+    assert.match(text, /extract refused/);
+    for (const code of FAKE_BACKUP_CODES) {
+      assert.doesNotMatch(text, new RegExp(code), `code leaked into refusal text:\n${text}`);
+    }
+  });
+
+  it('the markdown whole-page extract on a sensitive URL is refused (the index.ts markdown branch -- no selector/HTML/text detour around it)', async () => {
+    await server.call({ action: 'navigate', payload: BACKUP_CODES_URL() });
+    const { text, isError } = await server.call({ action: 'extract', payload: 'markdown' });
+    assert.equal(isError, true, text);
+    assert.match(text, /extract refused/);
+    for (const code of FAKE_BACKUP_CODES) {
+      assert.doesNotMatch(text, new RegExp(code), `code leaked into refusal text:\n${text}`);
+    }
+  });
+
+  it('an element read of a plain button label on the same sensitive URL still succeeds', async () => {
+    await server.call({ action: 'navigate', payload: SESSION_URL() });
+    const { text, isError } = await server.call({ action: 'extract', selector: '#b', payload: 'text' });
+    assert.equal(isError, false, text);
+    assert.equal(text, 'Done');
+  });
+
+  it('attr on a plain element on the same sensitive URL still succeeds', async () => {
+    await server.call({ action: 'navigate', payload: SESSION_URL() });
+    const { text, isError } = await server.call({ action: 'attr', selector: '#b', payload: 'id' });
+    assert.equal(isError, false, text);
+    assert.equal(text, 'b');
+  });
+
+  it('getSanitizedHtml (extract format=html) on body/html selectors is refused the same as no selector, on a sensitive URL', async () => {
+    await server.call({ action: 'navigate', payload: SESSION_URL() });
+    for (const selector of ['body', 'html']) {
+      const { text, isError } = await server.call({ action: 'extract', selector, payload: 'html' });
+      assert.equal(isError, true, `${selector}: ${text}`);
+      assert.match(text, /extract refused/);
+    }
+  });
+});
+
+// Code-list density signal: a page off the sensitive-URL pattern list,
+// with no data-sen-secret marker, whose own visible text is a dense list
+// of code-shaped tokens. data: URLs are NEVER matched by urlLooksSensitive
+// (see sensitive-url.js), so this isolates the density signal from the
+// URL-pattern signal entirely. PRI-3360 round 2 (jc review of #65): a
+// WHOLE-PAGE refusal based on density alone also needs a nearby backup/
+// recovery keyword now -- the heading below supplies one ("Save these
+// backup codes") so this fixture still exercises the whole-page path, not
+// just the (unconditional) element-scoped density check.
+const CODE_DENSE_OFF_LIST_PAGE = dataUrl(
+  '<title>Internal tool</title><h1>Save these backup codes</h1>' +
+  `<ul id="codes">${FAKE_BACKUP_CODES.map((c) => `<li>${c}</li>`).join('\n')}</ul>` +
+  '<button id="b">Done</button>'
+);
+
+describe('PRI-3360: code-list density signal, off the URL pattern list (real Chrome)', {
+  skip: !CHROME_AVAILABLE && 'Chrome not installed',
+}, () => {
+  let server;
+  before(async () => { server = await startServer(); });
+  after(async () => { await server?.stop(); });
+
+  it('extract (whole page) is refused via the density signal alone -- no sensitive URL, no marker', async () => {
+    await server.call({ action: 'navigate', payload: CODE_DENSE_OFF_LIST_PAGE });
+    const { text, isError } = await server.call({ action: 'extract', payload: 'text' });
+    assert.equal(isError, true, text);
+    assert.match(text, /extract refused/);
+    assert.match(text, /dense list of secret-shaped codes/);
+    for (const code of FAKE_BACKUP_CODES) {
+      assert.doesNotMatch(text, new RegExp(code), `code leaked into refusal text:\n${text}`);
+    }
+  });
+
+  it('an element read of the SAME dense codes, by selector, is refused by the element-scoped content check (not the whole-page gate)', async () => {
+    await server.call({ action: 'navigate', payload: CODE_DENSE_OFF_LIST_PAGE });
+    const { text, isError } = await server.call({ action: 'extract', selector: '#codes', payload: 'text' });
+    assert.equal(isError, true, text);
+    assert.match(text, /extract refused/);
+    assert.match(text, /credential- or code-shaped/);
+    for (const code of FAKE_BACKUP_CODES) {
+      assert.doesNotMatch(text, new RegExp(code), `code leaked into refusal text:\n${text}`);
+    }
+  });
+
+  it('an element read of an UNRELATED plain button on the same page still succeeds', async () => {
+    await server.call({ action: 'navigate', payload: CODE_DENSE_OFF_LIST_PAGE });
+    const { text, isError } = await server.call({ action: 'extract', selector: '#b', payload: 'text' });
+    assert.equal(isError, false, text);
+    assert.equal(text, 'Done');
+  });
+});
+
+// PRI-3360 round 2 (jc review of #65, finding 1): real pages jc found
+// tripping the density heuristic via document.body.textContent -- eval
+// and every whole-page extract would have been refused outright on all
+// four of these, with no narrower form for eval to fall back to. Saved,
+// trimmed HTML (see test/lib/fixtures/code-list-negatives/README.md for
+// provenance); navigated via file:// so these drive the exact same
+// whole-page gate (sensitive-url.js's pageTextReadRefused) the dataUrl()
+// fixtures elsewhere in this file do, over a real Chrome page -- not just
+// the pure-function coverage in test/lib/code-list-detector.test.mjs.
+describe('PRI-3360 round 2: real pages that must NOT be refused (jc review of #65, real Chrome)', {
+  skip: !CHROME_AVAILABLE && 'Chrome not installed',
+}, () => {
+  let server;
+  before(async () => { server = await startServer(); });
+  after(async () => { await server?.stop(); });
+
+  const FIXTURES_DIR = path.join(__dirname, 'lib', 'fixtures', 'code-list-negatives');
+  const FIXTURES = [
+    ['github-pr.html', 'a GitHub PR page'],
+    ['github-repo.html', 'a GitHub repo page'],
+    ['github-rest-docs.html', 'a GitHub REST API docs page (Next.js SSR __NEXT_DATA__ JSON)'],
+    ['hn-front-page.html', 'the HN front page'],
+  ];
+
+  for (const [file, label] of FIXTURES) {
+    // isError alone is the correct signal here -- NOT a /refused/i check
+    // on the extracted text. github-pr.html IS this PR's own GitHub page,
+    // which quotes refusal messages verbatim in its description and in
+    // jc's review (the subject of this very fix), so the extracted text
+    // legitimately contains the word "refused" many times over on a
+    // SUCCESSFUL, unrefused read. Checking isError only is what actually
+    // distinguishes "the tool refused" from "the page's real content
+    // happens to mention the word."
+    it(`eval(document.title) succeeds on ${label}, not refused by the code-list density signal`, async () => {
+      const url = `file://${path.join(FIXTURES_DIR, file)}`;
+      await server.call({ action: 'navigate', payload: url });
+      const { text, isError } = await server.call({ action: 'eval', payload: 'document.title' });
+      assert.equal(isError, false, text);
+    });
+
+    it(`extract (whole page, no selector) succeeds on ${label}, not refused by the code-list density signal`, async () => {
+      const url = `file://${path.join(FIXTURES_DIR, file)}`;
+      await server.call({ action: 'navigate', payload: url });
+      const { text, isError } = await server.call({ action: 'extract', payload: 'text' });
+      assert.equal(isError, false, text);
+    });
+  }
+});
+
+// The env override is read once from process.env of the already-running
+// MCP server process (credential-guard.js's credentialCaptureAllowed) --
+// nothing reachable from an MCP tool call can set it. eval's `expression`
+// runs in the BROWSER PAGE's own JS realm over CDP, which is a different
+// process (Chrome, not this Node server) and has no Node `process` global
+// at all, so there is no reachable path from eval to that env var either
+// way. These tests exercise both halves directly against a real Chrome.
+describe('PRI-3360: the credential-capture override cannot be set from the agent side (real Chrome)', {
+  skip: !CHROME_AVAILABLE && 'Chrome not installed',
+}, () => {
+  let server;
+  before(async () => { server = await startServer(); });
+  after(async () => { await server?.stop(); });
+
+  it("eval's expression runs in the browser page's JS realm, which has no Node `process` global to touch", async () => {
+    await server.call({ action: 'navigate', payload: CLEAN_PAGE });
+    const { text, isError } = await server.call({ action: 'eval', payload: 'typeof process' });
+    assert.equal(isError, false, text);
+    assert.match(text, /undefined/);
+  });
+
+  it('an eval attempting to set the override is itself refused outright on a sensitive URL, before the expression ever runs, and the page stays refused afterward', async () => {
+    const dir2 = fs.mkdtempSync(path.join(os.tmpdir(), 'pri-3360-override-'));
+    fs.mkdirSync(path.join(dir2, 'account', 'settings', '2fa_app'), { recursive: true });
+    fs.writeFileSync(
+      path.join(dir2, 'account', 'settings', '2fa_app', 'index.html'),
+      '<title>Session page</title><h1>Signed in</h1><button id="b">Done</button>'
+    );
+    try {
+      const url = `file://${path.join(dir2, 'account', 'settings', '2fa_app', 'index.html')}`;
+      await server.call({ action: 'navigate', payload: url });
+      const attempt = await server.call({
+        action: 'eval',
+        // This would throw ReferenceError even if it ran (no `process` in
+        // the browser realm) -- but it never runs at all: eval on a
+        // sensitive URL is refused before any expression executes.
+        payload: "globalThis.process ? (process.env.SUPERPOWERS_CHROME_ALLOW_CREDENTIAL_CAPTURE = '1') : 'no process'",
+      });
+      assert.equal(attempt.isError, true, attempt.text);
+      assert.match(attempt.text, /eval refused/);
+
+      // Still refused on the next call -- no lasting bypass occurred.
+      const again = await server.call({ action: 'eval', payload: 'document.title' });
+      assert.equal(again.isError, true, again.text);
+      assert.match(again.text, /eval refused/);
+    } finally {
+      fs.rmSync(dir2, { recursive: true, force: true });
+    }
   });
 });

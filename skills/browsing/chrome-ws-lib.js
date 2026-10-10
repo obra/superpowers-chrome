@@ -91,6 +91,7 @@ const PAGE_TARGET_SESSION_METHODS = new Set([
   'evaluateWithCapture',
   'setAttributeWithCapture',
   'screenshotUnlessCredentialShaped',
+  'pageTextReadRefused',
   // captureActionWithDiff is intentionally excluded: it is a meta-wrapper whose
   // second arg is an action-type string ('type', 'click', …), not a selector.
   // The inner actions it wraps (humanType, click, hover, etc.) are individually
@@ -299,6 +300,7 @@ function createSession({ host, port, _testFakes } = {}) {
     pauseCapture,
     resumeCapture,
     isCapturePaused,
+    pageTextReadRefused,
   } = attachCapture({
     state,
     getPageSession,
@@ -460,6 +462,10 @@ function createSession({ host, port, _testFakes } = {}) {
     // Credential-shaped content guard (see lib/credential-guard.js)
     screenshotUnlessCredentialShaped,
     getPageUrl,
+    // PRI-3360: whole-page text-read gate (sensitive-url.js's
+    // pageTextReadRefused), exposed at tabIndex granularity for
+    // mcp/src/index.ts's EXTRACT markdown branch.
+    pageTextReadRefused,
 
     // Pause switch for automatic captures (see lib/capture-pause.js)
     pauseCapture,
