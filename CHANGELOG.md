@@ -4,6 +4,17 @@ All notable changes to the superpowers-chrome MCP project.
 
 ## [Unreleased]
 
+### Security: the data-sen-secret marker was never redacted by the final backstop pass (#56)
+
+`redactCredentialShaped` (`skills/browsing/lib/credential-guard.js`) is the "last line of defense" every piece of `use_browser` tool-response text passes through (`mcp/src/response-format.ts`'s `redactUnlessAllowed`). Several upstream call sites -- a dialog refusal (`formatDialogRefusal`), the midFlight click/select/eval shape, and the after-dialog capture short-circuit (`formatCaptureResponse`'s null-capture branch) -- deliberately skip their OWN redaction and rely on this pass to catch anything credential-shaped before it reaches the agent (see PR #51's own description of that contract). `containsCredentialShaped` already matched both a known-token shape (`TOKEN_PATTERNS`) and the `data-sen-secret` page marker (`MARKER_PATTERN`), but `redactCredentialShaped` only ever replaced `TOKEN_PATTERNS` matches. A dialog (`alert`/`confirm`/`prompt`/`beforeunload`) whose message contained a marked element reached the agent with the marker and its value fully intact, through every one of those call sites.
+
+`redactCredentialShaped` now blanks the ENTIRE text (not just the matched substring) when `MARKER_PATTERN` matches: the marker's regex only captures a marked element's opening-tag fragment, not its content or closing tag (the marker lives in arbitrary page/JS-controlled text, not parsed HTML a close tag could reliably be found in), so a surgical substring replacement would still leave the element's value exposed. Blanking the whole text on a marker match matches this codebase's existing policy for the marker everywhere else: no partial-trust carve-out once a marker is present.
+
+#### Tests
+- `test/lib/credential-guard.test.mjs`: three new cases pin the fix -- a marker-only message, a marker alongside an unrelated token, and that the marker's own value never survives in the output.
+
+No version bump in this entry -- stacking under the existing Unreleased section alongside Round 6 below, consistent with how prior rounds on one not-yet-released PR have been recorded here.
+
 ### Round 6 (jc, blocking -- element-scoped reads refused ordinary text everywhere; a fail-open depth bug; object keys unchecked)
 
 jc's own probe, run directly against `credential-guard.js`'s functions, reproduced three blocking issues in the round-5 state (`3382d73`):

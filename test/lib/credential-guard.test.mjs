@@ -136,6 +136,41 @@ describe('redactCredentialShaped', () => {
     assert.equal(redactCredentialShaped(undefined), undefined);
     assert.equal(redactCredentialShaped(42), 42);
   });
+
+  // containsCredentialShaped matches both TOKEN_PATTERNS and the
+  // data-sen-secret page marker (MARKER_PATTERN), but until now this
+  // function only ever replaced TOKEN_PATTERNS matches -- the marker's
+  // own tag was never a replacement target, so text a caller believed
+  // was "redacted by the last line of defense" (mcp/src/response-
+  // format.ts's redactUnlessAllowed, the only caller of this function)
+  // still carried the marked element and its value verbatim
+  // (obra/superpowers-chrome#56). MARKER_PATTERN only matches the
+  // marked element's OPENING tag fragment (there is no capturing group
+  // for its content or a matching close tag -- the marker lives in
+  // arbitrary page/JS-controlled text, not parsed HTML), so replacing
+  // just that fragment would still leave the element's VALUE exposed
+  // (`<i data-sen-secret>918273</i>` -> `[REDACTED...]>918273</i>`).
+  // Consistent with this codebase's own stated policy for the marker
+  // elsewhere (secret-marker.js / credential-guard.js: "a marker means
+  // the page has no reliable value shape to scope a carve-out around"),
+  // a marker anywhere in the text blanks the WHOLE text, not just the
+  // matched substring.
+  it('blanks the entire text when it contains the data-sen-secret marker', () => {
+    const text = 'backup code <i data-sen-secret>918273</i> — save it somewhere safe';
+    const out = redactCredentialShaped(text);
+    assert.equal(out, REDACTION);
+    assert.ok(!out.includes('918273'), `marked value survived redaction: ${out}`);
+    assert.ok(!out.includes('data-sen-secret'), `marker itself survived redaction: ${out}`);
+  });
+
+  it('blanks marker-marked text even with no token-shaped substring present', () => {
+    assert.equal(redactCredentialShaped('<span data-sen-secret>JBSWY3DPEHPK3PXP</span>'), REDACTION);
+  });
+
+  it('blanks the whole text on a marker match even alongside an unrelated token elsewhere', () => {
+    const text = `see <i data-sen-secret>918273</i> and also ${FAKE.slackBot}`;
+    assert.equal(redactCredentialShaped(text), REDACTION);
+  });
 });
 
 describe('credentialCaptureAllowed', () => {

@@ -187,8 +187,23 @@ function containsCredentialShaped(text) {
   return tokenRegex('i').test(text) || MARKER_PATTERN.test(text);
 }
 
+// MARKER_PATTERN only matches the marked element's OPENING tag fragment --
+// there is no capturing group for its content or its matching close tag,
+// because the marker lives in arbitrary page/JS-controlled text (a dialog
+// message, an eval result, ...), not parsed HTML a close tag could
+// reliably be found in. Replacing just that fragment, the way the
+// substring loop below does for a bounded TOKEN_PATTERNS match, would
+// still leave the element's VALUE sitting in the output
+// (`<i data-sen-secret>918273</i>` -> `[REDACTED...]>918273</i>`) --
+// worse than useless, since it reads as already handled. Consistent with
+// this module's own policy for the marker everywhere else (see
+// secretMarkerRefusal above: a marker means the page has no reliable
+// value shape to scope a carve-out around), a marker anywhere in the text
+// blanks the WHOLE text rather than attempting a surgical cut
+// (obra/superpowers-chrome#56).
 function redactCredentialShaped(text) {
   if (typeof text !== 'string') return text;
+  if (MARKER_PATTERN.test(text)) return REDACTION;
   return text.replace(tokenRegex('gi'), REDACTION);
 }
 
