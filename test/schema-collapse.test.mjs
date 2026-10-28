@@ -305,8 +305,22 @@ describe('Fix E: kill_chrome and restart_chrome methods exist on session', () =>
 describe('Fix G: console message dedup', () => {
   const { attachConsoleLogging } = require('../skills/browsing/lib/console-logging.js');
 
+  // PRI-3265: getConsoleMessages now issues its own Runtime.evaluate calls
+  // (marker check, then URL check) before touching the buffer -- this
+  // handler answers both with "not marked / ordinary URL" so these
+  // pre-existing dedup tests (not about the marker/URL gate) are
+  // unaffected. See test/lib/console-logging.test.mjs for dedicated gate
+  // coverage.
+  const UNMARKED_ORDINARY_PAGE = {
+    'Runtime.evaluate': (params) => {
+      if (params.expression === 'location.href') return { result: { value: 'https://example.test/dashboard' } };
+      if (params.expression.includes('hasMarker')) return { result: { value: false } };
+      return { result: { value: undefined } };
+    },
+  };
+
   function setup(sessionId = 'S-dedup') {
-    const ps = makePageSessionFake({}, { sessionId });
+    const ps = makePageSessionFake(UNMARKED_ORDINARY_PAGE, { sessionId });
     const state = { consoleMessages: new Map() };
     const getPageSession = async () => ps;
     const api = attachConsoleLogging({ state, getPageSession });
@@ -328,7 +342,7 @@ describe('Fix G: console message dedup', () => {
     // Simplest approach: use the real handler path with a buffer we seed
     // with the captured timestamp from step 1 before the second injection.
     const { state } = setup('S-dedup-2');
-    const ps2 = makePageSessionFake({}, { sessionId: 'S-dedup-2' });
+    const ps2 = makePageSessionFake(UNMARKED_ORDINARY_PAGE, { sessionId: 'S-dedup-2' });
     const getPageSession2 = async () => ps2;
     const { enableConsoleLogging: enable2, getConsoleMessages: get2 } =
       attachConsoleLogging({ state, getPageSession: getPageSession2 });

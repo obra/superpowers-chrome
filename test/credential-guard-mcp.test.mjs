@@ -84,6 +84,26 @@ const MARKER_BODY_PAGE = dataUrl(
   `<title>Marked body page</title><body data-sen-secret><p>${BASE32_SEED}</p></body>`
 );
 
+// PRI-3265: the marker on documentElement itself -- the broker-facing case
+// this fixture exists for is a broker arming the page by marking <html>
+// before a worker ever sees it, rather than a worker marking one element
+// AFTER a reveal (every other MARKER_* fixture above). Unlike
+// MARKER_BODY_PAGE, no element in the document is individually
+// secret-looking: #control/#controlInput hold only CONTROL_VALUE, and the
+// marker's reach has to come entirely from the ancestor walk up to <html>
+// (element-scoped extract/attr) or the page-wide scan (whole-page
+// extract/eval/screenshot/auto-capture/get_console_messages) -- not from
+// anything about the elements themselves.
+const CONSOLE_LOG_ONCLICK = `console.log('${CONTROL_VALUE}')`;
+const MARKER_HTML_PAGE = dataUrl(
+  '<html data-sen-secret><head><title>Marked html page</title></head><body>' +
+  `<div id="wrap"><code id="secret">${BASE32_SEED}</code>` +
+  `<code id="control">${CONTROL_VALUE}</code>` +
+  `<input id="controlInput" value="${CONTROL_VALUE}"></div>` +
+  `<button id="b" onclick="${CONSOLE_LOG_ONCLICK}">Done</button>` +
+  '</body></html>'
+);
+
 // set_attr fixtures (split-digit TOTP nonce write).
 // PRIOR_NONCE stands in for whatever value a broker nonce field might
 // already carry (e.g. left over from an earlier, unrelated capture) —
@@ -759,6 +779,97 @@ describe('data-sen-secret marker with no token-shaped content (real Chrome)', { 
   });
 });
 
+// PRI-3265: a marker on documentElement itself -- the case a cooperating
+// broker would use to arm the read gate before a worker ever sees the
+// page, by marking the TOP of the document rather than one revealed
+// element. Proves the marker's existing document-wide reach (eval,
+// whole-page extract/attr, screenshot, auto-capture) and its
+// ancestor-walk reach (element-scoped extract/attr) both already cover
+// <html>, and extends the SAME live scan to the one action that had no
+// marker awareness at all before this PR: get_console_messages.
+describe('marker on <html> (document.documentElement) blocks every read path (real Chrome)', {
+  skip: !CHROME_AVAILABLE && 'Chrome not installed',
+}, () => {
+  let server;
+  before(async () => { server = await startServer(); });
+  after(async () => { await server?.stop(); });
+
+  it('navigating to the page itself returns the suppressed notice (auto-capture gated page-wide)', async () => {
+    // Not checking !text.includes(BASE32_SEED) here: this fixture is a
+    // data: URL, so the navigate response's own "Navigated to .../Current
+    // URL: ..." echo necessarily contains it -- that's a property of the
+    // data: URL fixture (the URL itself IS the page source), not a guard
+    // gap, and matches the existing MARKER_TEXT_PAGE navigate assertion
+    // above, which checks the same two things and nothing more.
+    const filesBefore = server.capturedFiles().length;
+    const { text, isError } = await server.call({ action: 'navigate', payload: MARKER_HTML_PAGE });
+    assert.equal(isError, false, text);
+    assert.ok(text.includes(NOTICE), text);
+    assert.match(text, /eval refuses while any element is marked data-sen-secret/, text);
+    assert.equal(server.capturedFiles().length, filesBefore, 'no capture artifacts may be written');
+  });
+
+  it('eval refuses outright, even for an expression that never names the marked element', async () => {
+    const { text, isError } = await server.call({ action: 'eval', payload: '1 + 1' });
+    assert.equal(isError, true, text);
+    assert.match(text, /eval refused.*data-sen-secret/i);
+  });
+
+  for (const format of ['text', 'html', 'markdown']) {
+    it(`whole-page extract ${format} refuses outright when <html> itself carries the marker`, async () => {
+      const { text, isError } = await server.call({ action: 'extract', payload: format });
+      assert.equal(isError, true, text);
+      assert.match(text, /extract refused/);
+      assert.ok(!text.includes(BASE32_SEED), text);
+    });
+  }
+
+  it('element-scoped extract on an UNMARKED element refuses via the ancestor walk up to <html>', async () => {
+    // #control carries no marker of its own and is not even a descendant
+    // of the marked #secret element -- the only way this can refuse is by
+    // walking UP through <body> to <html>, where the marker actually is.
+    const { text, isError } = await server.call({ action: 'extract', selector: '#control', payload: 'text' });
+    assert.equal(isError, true, text);
+    assert.match(text, /extract refused.*data-sen-secret/i);
+  });
+
+  it('attr on an UNMARKED element refuses via the ancestor walk up to <html>', async () => {
+    const { text, isError } = await server.call({ action: 'attr', selector: '#controlInput', payload: 'value' });
+    assert.equal(isError, true, text);
+    assert.match(text, /attr refused.*data-sen-secret/i);
+    assert.ok(!text.includes(CONTROL_VALUE), text);
+  });
+
+  it('screenshot refuses outright', async () => {
+    const shot = path.join(server.xdg, 'marked-html.png');
+    const { text, isError } = await server.call({ action: 'screenshot', payload: shot });
+    assert.equal(isError, true, text);
+    assert.match(text, /screenshot refused/i);
+    assert.equal(fs.existsSync(shot), false);
+  });
+
+  it('click (auto-capture) writes no files', async () => {
+    const filesBefore = server.capturedFiles().length;
+    const { text } = await server.call({ action: 'click', selector: '#b' });
+    assert.ok(text.includes(NOTICE), text);
+    assert.equal(server.capturedFiles().length, filesBefore, 'no capture artifacts may be written');
+  });
+
+  // get_console_messages: the gap this PR closes. The click above already
+  // logged CONTROL_VALUE to the console (its onclick handler) before this
+  // runs -- proving the refusal withholds content that is ACTUALLY
+  // buffered, not just an empty buffer that happens to have nothing to
+  // leak.
+  it('get_console_messages refuses outright, withholding console output logged before the call', async () => {
+    await server.call({ action: 'enable_console_logging' });
+    await server.call({ action: 'click', selector: '#b' });
+    const { text, isError } = await server.call({ action: 'get_console_messages' });
+    assert.equal(isError, true, text);
+    assert.match(text, /get_console_messages refused.*data-sen-secret/i);
+    assert.ok(!text.includes(CONTROL_VALUE), text);
+  });
+});
+
 describe(
   'SUPERPOWERS_CHROME_ALLOW_CREDENTIAL_CAPTURE=1 restores eval/extract/attr on a data-sen-secret page (real Chrome)',
   { skip: !CHROME_AVAILABLE && 'Chrome not installed' },
@@ -782,6 +893,16 @@ describe(
       const attr = await server.call({ action: 'attr', selector: '#secret', payload: 'value' });
       assert.equal(attr.isError, false, attr.text);
       assert.equal(attr.text, BASE32_SEED);
+    });
+
+    it('get_console_messages also returns buffered messages unredacted (same override, same gate)', async () => {
+      await server.call({ action: 'enable_console_logging' });
+      const logged = await server.call({ action: 'eval', payload: "console.log('console-override-ok'); 1" });
+      assert.equal(logged.isError, false, logged.text);
+
+      const { text, isError } = await server.call({ action: 'get_console_messages' });
+      assert.equal(isError, false, text);
+      assert.match(text, /console-override-ok/);
     });
   }
 );

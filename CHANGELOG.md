@@ -2,6 +2,27 @@
 
 All notable changes to the superpowers-chrome MCP project.
 
+## [3.4.0] - 2026-10-28 - get_console_messages gated on the same marker/URL signals as eval/extract/attr (PRI-3265)
+
+### The gap
+
+PRI-3265. The `data-sen-secret` marker and the known-sensitive-URL list already gate every other action that returns page content or pixels -- `eval`, whole-page `extract`/`attr`, `screenshot`, and auto-capture -- but `get_console_messages` (`console-logging.js`) had neither check at all: a pure buffer read, with only the final, unconditional, shape-based `redactUnlessAllowed()` pass standing between a `console.log`'d secret and the caller. A page that logs a revealed value during a "copy" action (or any other handler) leaked it through this one action untouched by every other guard in the codebase. This also closes the gap identified while evaluating whether a credential broker could arm the existing marker as a read gate by marking `<html>` before a worker ever sees the page (see the design notes this PR is based on) -- `get_console_messages` was the one action with zero marker awareness, confirmed by reproducing the leak against an unmodified build before fixing it.
+
+### The fix
+
+`getConsoleMessages` now refuses outright, before touching the buffer, on either of the same two whole-page signals `pageTextReadRefused` (`sensitive-url.js`) already gates eval/extract/attr on: a live `data-sen-secret` marker present anywhere on the page (`pageHasSecretMarker`), or the page's URL matching the known-sensitive pattern list (`urlLooksSensitive`). Not routed through `pageTextReadRefused` itself, because that function's refusal message steers toward "use a narrower, element-scoped selector instead" -- advice that doesn't apply to a console buffer, which has no selector/element form at all. A new `consoleMessagesRefusal(reason)` in `credential-guard.js` gives it its own wording, reusing the same two reason clauses `pageTextReadRefused` already uses verbatim. `SUPERPOWERS_CHROME_ALLOW_CREDENTIAL_CAPTURE=1` disables this the same way it disables every other gate -- checked first, same ordering as `pageTextReadRefused`. `clear_console_messages` is unaffected: it is a destructive write with nothing to read back, the same reasoning that already exempts `set_attr` from the marker check.
+
+No code-list-density check here (unlike `pageTextReadRefused`'s third signal): density needs visible page text to scan, which a console line isn't.
+
+### Tests
+
+Written first and confirmed failing against an unmodified build:
+
+- `test/lib/console-logging.test.mjs`: new `PRI-3265: marker/URL gate` suite -- allows a plain page; refuses on a live marker; refuses on a known-sensitive URL with no marker; proves the refusal withholds an ALREADY-buffered message, not just an empty buffer; confirms `SUPERPOWERS_CHROME_ALLOW_CREDENTIAL_CAPTURE=1` disables both checks. Updated the pre-existing `setup()` helper and one test that built its own page-session fake directly, since `getConsoleMessages` now issues its own `Runtime.evaluate` calls the old all-methods-return-`{}` fake didn't model.
+- `test/credential-guard-mcp.test.mjs` (real Chrome, new `MARKER_HTML_PAGE` fixture): a marker on `document.documentElement` itself (`<html data-sen-secret>`, broker-armed-gate style -- the top of the document marked before any element-level reveal, rather than a worker marking one element after one) blocks element-scoped `extract`/`attr` on an unrelated, unmarked element via the ancestor walk up to `<html>`, whole-page `extract` (text/html/markdown), `eval`, `screenshot`, and auto-capture (`click`) -- all already correct on an unmodified build, confirmed by running this suite against main before making any source change -- plus the new `get_console_messages` gate, which was the one action that failed. Also extended the existing `SUPERPOWERS_CHROME_ALLOW_CREDENTIAL_CAPTURE=1` override suite to cover `get_console_messages`.
+
+Full suite (`npm test` = lint + bundle-freshness check + `node --test`), real Chrome: see the PR for the final count. `mcp/dist` rebuilt; lockfiles regenerated (`npm install --package-lock-only`) for the version bump only, no dependency changes.
+
 ## [Unreleased]
 
 ### Round 6 (jc, blocking -- element-scoped reads refused ordinary text everywhere; a fail-open depth bug; object keys unchecked)

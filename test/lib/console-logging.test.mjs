@@ -1,14 +1,31 @@
 import { strict as assert } from 'node:assert';
 import { createRequire } from 'node:module';
-import { describe, it } from 'node:test';
+import { afterEach, describe, it } from 'node:test';
 import { makePageSessionFake } from './_helpers.mjs';
 
 const require = createRequire(import.meta.url);
 const { attachConsoleLogging } = require('../../skills/browsing/lib/console-logging.js');
 
+const CRED_ENV = 'SUPERPOWERS_CHROME_ALLOW_CREDENTIAL_CAPTURE';
+
 describe('console-logging', () => {
-  function setup(sessionId = 'S-test') {
-    const ps = makePageSessionFake({}, { sessionId });
+  afterEach(() => { delete process.env[CRED_ENV]; });
+
+  // PRI-3265: getConsoleMessages now issues its own Runtime.evaluate calls
+  // (the marker check, then the URL check) before touching the buffer --
+  // same discrimination-by-expression-content sensitive-url.test.mjs's own
+  // makePs uses, since a single canned response can't tell the two apart.
+  // Defaults to an unmarked page on an ordinary URL, so every PRE-EXISTING
+  // test below (none of which is about the marker/URL gate) is unaffected.
+  function setup(sessionId = 'S-test', { marker = false, url = 'https://example.test/dashboard' } = {}) {
+    const ps = makePageSessionFake({
+      'Runtime.evaluate': (params) => {
+        const expr = params.expression;
+        if (expr === 'location.href') return { result: { value: url } };
+        if (expr.includes('hasMarker')) return { result: { value: marker } };
+        return { result: { value: undefined } };
+      },
+    }, { sessionId });
     const state = { consoleMessages: new Map() };
     const getPageSession = async () => ps;
     const api = attachConsoleLogging({ state, getPageSession });
@@ -111,11 +128,7 @@ describe('console-logging', () => {
   });
 
   it('getConsoleMessages with sinceTime filters older messages', async () => {
-    const state = { consoleMessages: new Map() };
-    const ps2 = makePageSessionFake({}, { sessionId: 'S-time' });
-    const getPageSession2 = async () => ps2;
-    const { enableConsoleLogging: enable2, getConsoleMessages: get2 } =
-      attachConsoleLogging({ state, getPageSession: getPageSession2 });
+    const { state, enableConsoleLogging: enable2, getConsoleMessages: get2 } = setup('S-time');
 
     await enable2(0);
 
@@ -216,5 +229,59 @@ describe('console-logging', () => {
     const singleMsgs = await get2(0);
     assert.equal(singleMsgs.length, 3, 'single writer: 3 events → exactly 3 buffer entries');
     assert.deepEqual(singleMsgs.map(m => m.text), ['one', 'two', 'three']);
+  });
+
+  // PRI-3265: getConsoleMessages gains the same two whole-page signals
+  // pageTextReadRefused (sensitive-url.js) already gates eval/extract/attr
+  // on -- a live data-sen-secret marker, or a known-sensitive URL -- since
+  // this was previously the one read path with zero marker/URL awareness
+  // at all.
+  describe('PRI-3265: marker/URL gate', () => {
+    it('allows a plain page (no marker, ordinary URL)', async () => {
+      const { getConsoleMessages } = setup();
+      assert.deepEqual(await getConsoleMessages(0), []);
+    });
+
+    it('refuses outright when a live data-sen-secret marker is present anywhere on the page', async () => {
+      const { getConsoleMessages } = setup('S-marker', { marker: true });
+      await assert.rejects(
+        () => getConsoleMessages(0),
+        /get_console_messages refused.*data-sen-secret/i
+      );
+    });
+
+    it('refuses outright on a known-sensitive URL even with no marker present', async () => {
+      const { getConsoleMessages } = setup('S-url', { url: 'https://example.test/account/settings/2fa_app' });
+      await assert.rejects(
+        () => getConsoleMessages(0),
+        /get_console_messages refused.*sensitive/i
+      );
+    });
+
+    it('withholds buffered messages when it refuses -- the reject happens before the buffer is read', async () => {
+      const { ps, enableConsoleLogging, getConsoleMessages } = setup('S-marker-buffered', { marker: true });
+      await enableConsoleLogging(0);
+      ps.injectEvent({
+        method: 'Runtime.consoleAPICalled',
+        params: { type: 'log', args: [{ type: 'string', value: 'a-buffered-secret' }] },
+      });
+      let caught;
+      try {
+        await getConsoleMessages(0);
+      } catch (e) {
+        caught = e;
+      }
+      assert.ok(caught, 'expected getConsoleMessages to throw');
+      assert.ok(!caught.message.includes('a-buffered-secret'), caught.message);
+    });
+
+    it('SUPERPOWERS_CHROME_ALLOW_CREDENTIAL_CAPTURE=1 disables both checks, same as every other gate', async () => {
+      process.env[CRED_ENV] = '1';
+      const { getConsoleMessages } = setup('S-override', {
+        marker: true,
+        url: 'https://example.test/account/settings/2fa_app',
+      });
+      assert.deepEqual(await getConsoleMessages(0), []);
+    });
   });
 });

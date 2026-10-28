@@ -240,6 +240,7 @@ Capture browser console output for the active tab. Buffer is keyed by the page s
   - All: `{action: "get_console_messages"}`
   - Since timestamp (epoch ms): `{action: "get_console_messages", payload: {since: 1716000000000}}`
   - Returns: array of `{timestamp, level, text}` entries
+  - Refuses outright on the same whole-page signals as `extract`/`attr`/`eval` (see "Explicit reads on a sensitive page" in README.md): a live `data-sen-secret` marker anywhere on the page, or a known-sensitive URL. No element-scoped fallback -- a console line has no selector to narrow the read to, so the whole buffer is withheld or none of it is. Not disabled by anything the agent can set at runtime.
 
 - **clear_console_messages**: Reset the buffer
   - Example: `{action: "clear_console_messages"}`

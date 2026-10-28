@@ -223,6 +223,26 @@ function secretMarkerRefusal(action) {
   );
 }
 
+// PRI-3265: get_console_messages has no selector/element to narrow a read
+// to the way extract/attr do -- the console buffer is page-wide by
+// nature -- so it shares the SAME two whole-page signals
+// pageTextReadRefused already checks for eval/extract/attr (a live
+// data-sen-secret marker, or a sensitive URL), via the same
+// pageHasSecretMarker/urlLooksSensitive detectors, but needs its own
+// wording: wholePageReadRefusal's "read a narrower, element-scoped
+// selector instead" advice doesn't apply to a console-message buffer,
+// which has no narrower form at all. `reason` is one of the two reason
+// clauses sensitive-url.js's pageTextReadRefused already uses verbatim
+// for its own marker/URL branches, kept identical here for consistency.
+function consoleMessagesRefusal(reason) {
+  return (
+    `get_console_messages refused: this page is flagged sensitive (${reason}). ` +
+    'A secret revealed on this page may already be in the console buffer (e.g. a "copy to clipboard" ' +
+    'handler logging the value it just copied). Use the credential broker to capture values from this page instead. ' +
+    'SUPERPOWERS_CHROME_ALLOW_CREDENTIAL_CAPTURE=1 disables this.'
+  );
+}
+
 // PRI-3360: the element-scoped (and eval-result) counterpart to
 // secretMarkerRefusal above. extract/attr with a real element selector
 // (not the whole page -- see extraction.js's resolveIsWholePage/
@@ -384,6 +404,7 @@ module.exports = {
   CREDENTIAL_ADVICE,
   CREDENTIAL_SUPPRESSED_NOTICE,
   secretMarkerRefusal,
+  consoleMessagesRefusal,
   elementReadRefusal,
   evalResultRefusal,
   refuseIfTextLeaksSecret,
