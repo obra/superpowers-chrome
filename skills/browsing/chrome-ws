@@ -79,43 +79,82 @@ class WebSocketClient {
 
   connect() {
     return new Promise((resolve, reject) => {
-      const http = require('http');
+      const net = require('net');
       const crypto = require('crypto');
 
       const key = crypto.randomBytes(16).toString('base64');
 
-      const options = {
-        hostname: this.url.hostname,
-        port: this.url.port || 80,
-        path: this.url.pathname + this.url.search,
-        headers: {
-          'Upgrade': 'websocket',
-          'Connection': 'Upgrade',
-          'Sec-WebSocket-Key': key,
-          'Sec-WebSocket-Version': '13'
-        }
+      // Raw-socket WebSocket handshake (see lib/websocket-client.js for the
+      // full rationale): Chrome 153 returns 101 in a way Node's http parser
+      // routes to the 'response' event instead of 'upgrade', so an
+      // http.request-based handshake never resolves and every CDP command
+      // (navigate/eval/click/extract) hangs for its full timeout. Doing the
+      // handshake on a bare net.Socket sidesteps that routing entirely.
+      const socket = net.createConnection({
+        host: this.url.hostname,
+        port: parseInt(this.url.port || '80', 10),
+      });
+
+      let handshakeBuf = Buffer.alloc(0);
+      let handshakeDone = false;
+      let failed = false;
+
+      const fail = (err) => {
+        if (failed || handshakeDone) return;
+        failed = true;
+        try { socket.destroy(); } catch {}
+        if (this.callbacks.error) this.callbacks.error(err);
+        reject(err);
       };
 
-      const req = http.request(options);
+      socket.on('error', fail);
 
-      req.on('upgrade', (res, socket) => {
+      socket.on('connect', () => {
+        const path = this.url.pathname + this.url.search;
+        const req =
+          `GET ${path} HTTP/1.1\r\n` +
+          `Host: ${this.url.hostname}:${this.url.port}\r\n` +
+          `Upgrade: websocket\r\n` +
+          `Connection: Upgrade\r\n` +
+          `Sec-WebSocket-Key: ${key}\r\n` +
+          `Sec-WebSocket-Version: 13\r\n\r\n`;
+        socket.write(req, 'utf8');
+      });
+
+      socket.on('data', (data) => {
+        if (handshakeDone) return;
+        handshakeBuf = Buffer.concat([handshakeBuf, data]);
+        const headerEnd = handshakeBuf.indexOf('\r\n\r\n');
+        if (headerEnd === -1) return;
+        const headerStr = handshakeBuf.slice(0, headerEnd).toString('utf8');
+        const statusLine = headerStr.split('\r\n')[0];
+        if (!/^HTTP\/1\.[01] 101/.test(statusLine)) {
+          fail(new Error(`WebSocket handshake failed: ${statusLine}`));
+          return;
+        }
+        const leftover = handshakeBuf.slice(headerEnd + 4);
+        handshakeDone = true;
         this.socket = socket;
 
-        socket.on('data', (data) => {
-          this.buffer = Buffer.concat([this.buffer, data]);
+        socket.removeAllListeners('data');
+        socket.on('data', (d) => {
+          this.buffer = Buffer.concat([this.buffer, d]);
           this.processFrames();
         });
-
         socket.on('error', (err) => {
           if (this.callbacks.error) this.callbacks.error(err);
         });
+        socket.on('close', () => {
+          if (this.callbacks.close) this.callbacks.close();
+        });
 
+        if (leftover.length > 0) {
+          this.buffer = Buffer.concat([this.buffer, leftover]);
+          this.processFrames();
+        }
         if (this.callbacks.open) this.callbacks.open();
         resolve();
       });
-
-      req.on('error', reject);
-      req.end();
     });
   }
 

@@ -1,5 +1,5 @@
-const http = require('http');
 const crypto = require('crypto');
+const net = require('net');
 
 /**
  * Minimal dependency-free WebSocket client used for CDP transport.
@@ -14,6 +14,15 @@ const crypto = require('crypto');
  * Event interface mirrors the `ws` package: `on('open'|'message'|'error'|
  * 'close', cb)`. `connect()` returns a Promise that resolves once the
  * upgrade completes.
+ *
+ * Handshake is performed on a bare `net.Socket` rather than via
+ * `http.request` + the `'upgrade'` event: Chrome 153 (and other builds)
+ * returns the `101 Switching Protocols` response in a way Node's HTTP
+ * parser routes to the `'response'` event instead of `'upgrade'`, so the
+ * `http.request`-based handshake never resolves and every CDP command
+ * (navigate/eval/click/extract/screenshot) hangs for its full timeout.
+ * Sending the upgrade request ourselves and reading the `101` status line
+ * off the socket sidesteps Node's upgrade/response routing entirely.
  */
 class WebSocketClient {
   constructor(url) {
@@ -36,45 +45,77 @@ class WebSocketClient {
     return new Promise((resolve, reject) => {
       const key = crypto.randomBytes(16).toString('base64');
 
-      const options = {
-        hostname: this.url.hostname,
-        port: this.url.port || 80,
-        path: this.url.pathname + this.url.search,
-        headers: {
-          'Upgrade': 'websocket',
-          'Connection': 'Upgrade',
-          'Sec-WebSocket-Key': key,
-          'Sec-WebSocket-Version': '13'
-        }
+      const socket = net.createConnection({
+        host: this.url.hostname,
+        port: parseInt(this.url.port || '80', 10),
+      });
+
+      let handshakeBuf = Buffer.alloc(0);
+      let handshakeDone = false;
+      let failed = false;
+
+      const fail = (err) => {
+        if (failed || handshakeDone) return;
+        failed = true;
+        try { socket.destroy(); } catch {}
+        if (this.callbacks.error) this.callbacks.error(err);
+        reject(err);
       };
 
-      const req = http.request(options);
+      socket.on('error', fail);
 
-      req.on('upgrade', (_res, socket) => {
+      socket.on('connect', () => {
+        const path = this.url.pathname + this.url.search;
+        const req =
+          `GET ${path} HTTP/1.1\r\n` +
+          `Host: ${this.url.hostname}:${this.url.port}\r\n` +
+          `Upgrade: websocket\r\n` +
+          `Connection: Upgrade\r\n` +
+          `Sec-WebSocket-Key: ${key}\r\n` +
+          `Sec-WebSocket-Version: 13\r\n\r\n`;
+        socket.write(req, 'utf8');
+      });
+
+      socket.on('data', (data) => {
+        if (handshakeDone) return;
+        handshakeBuf = Buffer.concat([handshakeBuf, data]);
+        // Wait for the full HTTP response headers (terminated by \r\n\r\n).
+        const headerEnd = handshakeBuf.indexOf('\r\n\r\n');
+        if (headerEnd === -1) return;
+        const headerStr = handshakeBuf.slice(0, headerEnd).toString('utf8');
+        const statusLine = headerStr.split('\r\n')[0];
+        if (!/^HTTP\/1\.[01] 101/.test(statusLine)) {
+          fail(new Error(`WebSocket handshake failed: ${statusLine}`));
+          return;
+        }
+        // Any bytes after the headers belong to the first WebSocket frame.
+        const leftover = handshakeBuf.slice(headerEnd + 4);
+        handshakeDone = true;
         this.socket = socket;
         this.connected = true;
 
-        socket.on('data', (data) => {
-          this.buffer = Buffer.concat([this.buffer, data]);
+        // Switch to the steady-state frame reader on the same socket.
+        socket.removeAllListeners('data');
+        socket.on('data', (d) => {
+          this.buffer = Buffer.concat([this.buffer, d]);
           this.processFrames();
         });
-
         socket.on('error', (err) => {
           this.connected = false;
           if (this.callbacks.error) this.callbacks.error(err);
         });
-
         socket.on('close', () => {
           this.connected = false;
           if (this.callbacks.close) this.callbacks.close();
         });
 
+        if (leftover.length > 0) {
+          this.buffer = Buffer.concat([this.buffer, leftover]);
+          this.processFrames();
+        }
         if (this.callbacks.open) this.callbacks.open();
         resolve();
       });
-
-      req.on('error', reject);
-      req.end();
     });
   }
 
