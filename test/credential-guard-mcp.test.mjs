@@ -13,7 +13,7 @@ import * as fs from 'node:fs';
 import * as net from 'node:net';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { after, before, describe, it } from 'node:test';
+import { after, before, beforeEach, describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 
@@ -2007,5 +2007,147 @@ describe('element extract/attr for three ordinary must-allow strings', {
     assert.equal(refused2.isError, true, refused2.text);
     assert.match(refused2.text, /extract refused/);
     assert.match(refused2.text, /credential- or code-shaped/);
+  });
+});
+
+// PRI-3265 (child): list_tabs/switch_tab must not echo the title or URL of
+// a marked or known-sensitive-URL tab, and navigate's "Current URL:" line
+// must not echo one either. REDACTED_LABEL is response-format.ts's shared
+// placeholder; MARKER_BODY_PAGE (marks <body> directly) is the existing
+// fixture above, reused rather than duplicated.
+describe('list_tabs / switch_tab / navigate: redact a marked or sensitive-URL tab (PRI-3265)', { skip: !CHROME_AVAILABLE && 'Chrome not installed' }, () => {
+  const REDACTED_LABEL = '[redacted: secret page]';
+  let server;
+  let sensitiveDir;
+
+  before(async () => {
+    server = await startServer();
+    // The very first use_browser call against a freshly-spawned server
+    // auto-starts Chrome and gets RESTART_BANNER prepended to its result
+    // (mcp/src/index.ts's executeBrowserActionWithBanner) — absorb that
+    // here so resetToOneTab's later list_tabs calls can rely on their
+    // result being plain JSON, not banner-prefixed text.
+    await server.call({ action: 'list_tabs' });
+    sensitiveDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pri-3265-tab-redact-'));
+    fs.mkdirSync(path.join(sensitiveDir, 'account', 'settings', '2fa_app'), { recursive: true });
+    fs.writeFileSync(
+      path.join(sensitiveDir, 'account', 'settings', '2fa_app', 'index.html'),
+      '<title>Sensitive URL page</title><h1>Scan this QR code</h1>'
+    );
+  });
+  after(async () => {
+    await server?.stop();
+    if (sensitiveDir) fs.rmSync(sensitiveDir, { recursive: true, force: true });
+  });
+
+  const SENSITIVE_URL = () => `file://${path.join(sensitiveDir, 'account', 'settings', '2fa_app', 'index.html')}`;
+
+  // close_tab only ever closes the CURRENT active tab, so collapsing down
+  // to exactly one tab means repeatedly making tab 0 active and closing
+  // it until just one is left — used before every test (not just once)
+  // so a prior test's switch_tab call (which changes activeTab) can never
+  // leave a stale marked/sensitive tab for a LATER test to trip over.
+  async function resetToOneTab() {
+    for (;;) {
+      const { text } = await server.call({ action: 'list_tabs' });
+      if (JSON.parse(text).length <= 1) return;
+      await server.call({ action: 'switch_tab', payload: '0' });
+      await server.call({ action: 'close_tab' });
+    }
+  }
+
+  // Two tabs: index 0 is the one under test (marked, or on a sensitive
+  // URL); index 1 is CLEAN_PAGE, there as a control to confirm redaction
+  // is per-tab, not a blanket wipe of the whole list_tabs/switch_tab
+  // output. new_tab inserts at the front and makes the new tab active
+  // (mcp/src/index.ts's NEW_TAB case), so navigating "the active tab"
+  // afterward lands on the new tab, not CLEAN_PAGE.
+  beforeEach(resetToOneTab);
+
+  async function setUpTwoTabs(targetUrl) {
+    await server.call({ action: 'navigate', payload: CLEAN_PAGE });
+    await server.call({ action: 'new_tab' });
+    const nav = await server.call({ action: 'navigate', payload: targetUrl });
+    assert.equal(nav.isError, false, nav.text);
+    return nav;
+  }
+
+  it('list_tabs omits a marked tab\'s title and url, but keeps its index/id and still shows an unmarked tab\'s', async () => {
+    await setUpTwoTabs(MARKER_BODY_PAGE);
+    const { text, isError } = await server.call({ action: 'list_tabs' });
+    assert.equal(isError, false, text);
+    const tabs = JSON.parse(text);
+    assert.equal(tabs.length, 2);
+
+    assert.equal(tabs[0].index, 0);
+    assert.ok(tabs[0].id, 'marked tab must still carry its id — it stays selectable by index/id');
+    assert.equal(tabs[0].title, REDACTED_LABEL);
+    assert.equal(tabs[0].url, REDACTED_LABEL);
+    assert.ok(!text.includes('Marked body page'), 'marked tab\'s real title must not appear anywhere in list_tabs');
+    assert.ok(!text.includes(BASE32_SEED), 'the marked page\'s URL (a data: URL containing the seed) must not appear');
+
+    assert.equal(tabs[1].title, 'Clean page');
+    assert.match(tabs[1].url, /^data:text\/html,/);
+  });
+
+  it('list_tabs omits a sensitive-URL tab\'s title and url the same way', async () => {
+    await setUpTwoTabs(SENSITIVE_URL());
+    const { text, isError } = await server.call({ action: 'list_tabs' });
+    assert.equal(isError, false, text);
+    const tabs = JSON.parse(text);
+    assert.equal(tabs[0].title, REDACTED_LABEL);
+    assert.equal(tabs[0].url, REDACTED_LABEL);
+    assert.ok(!text.includes('Sensitive URL page'));
+    assert.ok(!text.includes('2fa_app'));
+    assert.equal(tabs[1].title, 'Clean page');
+  });
+
+  it('switch_tab to a marked tab reports it redacted, by index, without printing its title or url', async () => {
+    await setUpTwoTabs(MARKER_BODY_PAGE);
+    const { text, isError } = await server.call({ action: 'switch_tab', payload: '0' });
+    assert.equal(isError, false, text);
+    assert.equal(text, `Switched to tab 0: ${REDACTED_LABEL}`);
+    assert.ok(!text.includes('Marked body page'));
+    assert.ok(!text.includes(BASE32_SEED));
+  });
+
+  it('switch_tab to an unmarked tab is unaffected (sanity): title/url still print', async () => {
+    await setUpTwoTabs(MARKER_BODY_PAGE);
+    const { text, isError } = await server.call({ action: 'switch_tab', payload: '1' });
+    assert.equal(isError, false, text);
+    assert.match(text, /^Switched to tab 1: Clean page \(data:text\/html,/);
+  });
+
+  it('switch_tab\'s "no tab found" listing redacts the marked tab but still lists the unmarked one', async () => {
+    await setUpTwoTabs(MARKER_BODY_PAGE);
+    const { text, isError } = await server.call({ action: 'switch_tab', payload: 'no-such-tab-substring' });
+    assert.equal(isError, true, text);
+    assert.match(text, /\[0\] \[redacted: secret page\]/);
+    assert.match(text, /\[1\] Clean page \(data:text\/html,/);
+    assert.ok(!text.includes('Marked body page'));
+    assert.ok(!text.includes(BASE32_SEED));
+  });
+
+  // Pulls just the "Current URL: ..." line out of a navigate response, so
+  // these two tests check that ONE line specifically rather than the whole
+  // response — "Navigated to" on the line above it is payload.url echoed
+  // straight back (the caller already supplied it, so it is left alone;
+  // only "Current URL:", which reports what the browser actually landed
+  // on, is in scope here).
+  function currentUrlLineOf(text) {
+    const line = text.split('\n').find((l) => l.startsWith('Current URL: '));
+    assert.ok(line, `no "Current URL:" line in: ${text}`);
+    return line;
+  }
+
+  it('navigate suppresses the "Current URL:" line on a marked page, but still echoes the requested URL in "Navigated to"', async () => {
+    const nav = await setUpTwoTabs(MARKER_BODY_PAGE);
+    assert.match(nav.text, /^Navigated to data:text\/html,/);
+    assert.equal(currentUrlLineOf(nav.text), `Current URL: ${REDACTED_LABEL}`);
+  });
+
+  it('navigate suppresses the "Current URL:" line on a known-sensitive URL', async () => {
+    const nav = await setUpTwoTabs(SENSITIVE_URL());
+    assert.equal(currentUrlLineOf(nav.text), `Current URL: ${REDACTED_LABEL}`);
   });
 });

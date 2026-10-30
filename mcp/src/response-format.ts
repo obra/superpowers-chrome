@@ -33,6 +33,14 @@ function suppressedNoticeFor(reason?: string): string {
   return reason === "sensitive-url" ? sensitiveUrl.URL_SUPPRESSED_NOTICE : credentialGuard.CREDENTIAL_SUPPRESSED_NOTICE;
 }
 
+// PRI-3265 (child): the label a tab's title/URL, or a capture-based
+// response's "Current URL:" line, is replaced with when the page carries
+// the data-sen-secret marker or its URL matches sensitive-url.js's
+// known-sensitive pattern list. Shared by mcp/src/index.ts's
+// list_tabs/switch_tab (which check a tab that need not be the active
+// one) and formatActionResponse's own "Current URL:" line below.
+export const REDACTED_LABEL = "[redacted: secret page]";
+
 /**
  * Format a DialogRefusedError into a human-readable tool response string.
  * Uses duck typing (error.refused) rather than instanceof because class
@@ -101,11 +109,28 @@ export function formatActionResponse(actionResult: any, actionDescription: strin
   // is no real url/pageSize to report — showing "Current URL: unknown" /
   // "Size: undefined×undefined" would just be noise, not a leak, but it's
   // sloppy and worth skipping rather than printing placeholder values.
+  //
+  // PRI-3265 (child): this line is otherwise unconditional — a token
+  // revealed only by the URL itself (a password-reset / magic-link flow)
+  // would reach the agent here even when the rest of the capture was
+  // suppressed. Gate it on the same two signals captures already use:
+  // capture.js's credentialSuppressed (already covers the data-sen-secret
+  // marker, via containsCredentialShaped on the captured HTML) OR
+  // sensitive-url.js's urlLooksSensitive checked directly against this
+  // result's own URL, independent of whether a capture happened to run
+  // for THIS particular result (actionResult.credentialSuppressed is
+  // absent when capturePageArtifacts threw before setting it — see
+  // navigation.js's catch branch — so the direct URL check is not
+  // redundant). Off under SUPERPOWERS_CHROME_ALLOW_CREDENTIAL_CAPTURE=1.
+  const currentUrlSuppressed = !credentialGuard.credentialCaptureAllowed() &&
+    (actionResult.credentialSuppressed || sensitiveUrl.urlLooksSensitive(actionResult.url));
+  const currentUrlLine = `Current URL: ${currentUrlSuppressed ? REDACTED_LABEL : (actionResult.url || 'unknown')}`;
+
   const response = actionResult.capturePaused
     ? [`${actionDescription}`, ...formatCaptureFiles(actionResult)]
     : [
         `${actionDescription}`,
-        `Current URL: ${actionResult.url || 'unknown'}`,
+        currentUrlLine,
         `Size: ${actionResult.pageSize?.width}×${actionResult.pageSize?.height}`,
         ...formatCaptureFiles(actionResult)
       ];

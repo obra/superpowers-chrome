@@ -10,6 +10,7 @@
  * can be imported directly by tests. Mirrors mcp/src/payload.ts, which was
  * split out for the same reason.
  */
+export declare const REDACTED_LABEL = "[redacted: secret page]";
 /**
  * Format a DialogRefusedError into a human-readable tool response string.
  * Uses duck typing (error.refused) rather than instanceof because class

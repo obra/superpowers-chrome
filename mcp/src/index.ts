@@ -28,6 +28,7 @@ import {
   formatCaptureResponse,
   formatEvalDescription,
   redactUnlessAllowed,
+  REDACTED_LABEL,
 } from "./response-format.js";
 
 // Re-exported for tests (mcp/src/payload.ts and mcp/src/response-format.ts
@@ -36,7 +37,7 @@ import {
 // makes the helpers reachable from the bundled entry point too, without
 // requiring tests to boot a browser or an MCP server).
 export { parsePayload, resolveStrictStructuredPayload, tryParseJsonObject, tryParseCoords, describeUnusableScrollPayload, resolveConsoleSince, tryParseIntegerValue, PAYLOAD_SPECS } from "./payload.js";
-export { formatDialogRefusal, formatCaptureFiles, formatActionResponse, formatCaptureResponse, formatEvalDescription, redactUnlessAllowed } from "./response-format.js";
+export { formatDialogRefusal, formatCaptureFiles, formatActionResponse, formatCaptureResponse, formatEvalDescription, redactUnlessAllowed, REDACTED_LABEL } from "./response-format.js";
 
 // Get the directory and import chrome-ws-lib
 const __filename = fileURLToPath(import.meta.url);
@@ -48,6 +49,22 @@ const secretMarker = require(join(__dirname, "../../skills/browsing/lib/secret-m
 const sensitiveUrl = require(join(__dirname, "../../skills/browsing/lib/sensitive-url.js"));
 const capturePause = require(join(__dirname, "../../skills/browsing/lib/capture-pause.js"));
 const SERVER_VERSION = require(join(__dirname, "../package.json")).version;
+
+// PRI-3265 (child, PR #70): list_tabs/switch_tab must not echo the title or
+// URL of a tab whose page carries the data-sen-secret marker or whose URL
+// matches sensitive-url.js's known-sensitive pattern list -- the same two
+// signals eval/extract/attr/screenshot already gate on, here checked for a
+// tab that need not be the active one. navigate's and formatActionResponse's
+// "Current URL:" lines reuse the same check. Split out into its own
+// injected-dependency module (tab-sensitivity.js) so its fail-closed
+// behavior on a CDP error is unit-testable with a stub -- see that file for
+// the full doc comment.
+const { tabContentIsSensitive } = require(join(__dirname, "../../skills/browsing/lib/tab-sensitivity.js")).attachTabSensitivity({
+  credentialCaptureAllowed: credentialGuard.credentialCaptureAllowed,
+  urlLooksSensitive: sensitiveUrl.urlLooksSensitive,
+  getPageSession: chromeLib.getPageSession,
+  pageHasSecretMarker: secretMarker.pageHasSecretMarker,
+});
 
 /**
  * Detect if a display is available for headed browser mode.
@@ -252,11 +269,24 @@ async function executeBrowserAction(params: UseBrowserInput): Promise<string> {
         // pause), but pageSize comes from capturePageArtifacts, which never
         // ran while paused — skip that line rather than print "Size:
         // undefined×undefined".
+        //
+        // PRI-3265 (child): "Navigated to" just echoes the URL the caller
+        // itself supplied as payload.url, so it is not a reveal — but
+        // "Current URL:" below it is where a redirected-to or
+        // server-chosen URL (a password-reset / magic-link token in the
+        // query string) would otherwise reach the agent unredacted, same
+        // as a marked page's URL would. Gate it on the same two signals
+        // eval/extract/attr/screenshot already use, checked here for the
+        // tab navigate() just landed on. Live-DOM marker read is run even
+        // while capturePaused — unlike a capture, checking for the marker
+        // attribute reveals nothing about the page's content.
+        const navUrlSensitive = await tabContentIsSensitive(tabIndex, navResult.url, 'page');
+        const currentUrlLine = `Current URL: ${navUrlSensitive ? REDACTED_LABEL : navResult.url}`;
         const response = navResult.capturePaused
-          ? [`Navigated to ${navResult.url}`, `Current URL: ${navResult.url}`, ...formatCaptureFiles(navResult)]
+          ? [`Navigated to ${navResult.url}`, currentUrlLine, ...formatCaptureFiles(navResult)]
           : [
               `Navigated to ${navResult.url}`,
-              `Current URL: ${navResult.url}`,
+              currentUrlLine,
               `Size: ${navResult.pageSize?.width}×${navResult.pageSize?.height}`,
               ...formatCaptureFiles(navResult)
             ];
@@ -627,13 +657,17 @@ async function executeBrowserAction(params: UseBrowserInput): Promise<string> {
 
     case BrowserAction.LIST_TABS: {
       const tabs = await chromeLib.getTabs();
-      return JSON.stringify(tabs.map((tab: any, idx: number) => ({
-        index: idx,
-        id: tab.id,
-        title: tab.title,
-        url: tab.url,
-        type: tab.type
-      })), null, 2);
+      const tabList = await Promise.all(tabs.map(async (tab: any, idx: number) => {
+        const sensitive = await tabContentIsSensitive(idx, tab.url, tab.type);
+        return {
+          index: idx,
+          id: tab.id,
+          title: sensitive ? REDACTED_LABEL : tab.title,
+          url: sensitive ? REDACTED_LABEL : tab.url,
+          type: tab.type
+        };
+      }));
+      return JSON.stringify(tabList, null, 2);
     }
 
     case BrowserAction.SHOW_BROWSER: {
@@ -1049,16 +1083,31 @@ async function executeBrowserAction(params: UseBrowserInput): Promise<string> {
         }
       }
 
+      // PRI-3265 (child): matching above is against the tab's REAL
+      // title/url (a worker still needs to be able to pick a marked or
+      // sensitive-URL tab by substring) -- only the text shown back to the
+      // caller is redacted, here and in the "no tab found" listing below.
+      // The index/id stay visible either way, so a marked tab is still
+      // selectable by position even once its label reads redacted.
+      const describeTab = async (t: { index: number; title: string; url: string; type?: string }): Promise<string> => {
+        const sensitive = await tabContentIsSensitive(t.index, t.url, t.type);
+        return sensitive ? `[${t.index}] ${REDACTED_LABEL}` : `[${t.index}] ${t.title} (${t.url})`;
+      };
+
       if (matchedIndex < 0 || matchedIndex >= tabList.length) {
+        const described = await Promise.all(tabList.map(describeTab));
         throw new Error(
           `switch_tab: no tab found matching ${JSON.stringify(target)}. ` +
-          `Available tabs: ${tabList.map((t: {index: number; title: string; url: string}) => `[${t.index}] ${t.title} (${t.url})`).join(', ')}`
+          `Available tabs: ${described.join(', ')}`
         );
       }
 
       activeTab = matchedIndex;
       const newActive = tabList[matchedIndex];
-      return `Switched to tab ${matchedIndex}: ${newActive.title} (${newActive.url})`;
+      const newActiveSensitive = await tabContentIsSensitive(matchedIndex, newActive.url, newActive.type);
+      return newActiveSensitive
+        ? `Switched to tab ${matchedIndex}: ${REDACTED_LABEL}`
+        : `Switched to tab ${matchedIndex}: ${newActive.title} (${newActive.url})`;
     }
 
     case BrowserAction.HELP:

@@ -2,6 +2,36 @@
 
 All notable changes to the superpowers-chrome MCP project.
 
+## [3.3.1] - 2026-10-29 - list_tabs/switch_tab, and navigate's "Current URL:" line, no longer echo a marked or sensitive-URL tab (PRI-3265)
+
+### The gap
+
+PRI-3265. `list_tabs` and `switch_tab` (`mcp/src/index.ts`) print every tab's title and URL with no `data-sen-secret` marker check and no `sensitive-url.js` check at all -- the same two signals `eval`/`extract`/`attr`/`screenshot` already gate on, simply never consulted here. A marked page's title (e.g. a backup-codes page titled with the seed itself) or a known-sensitive URL (a 2FA setup route, say) came straight through `list_tabs`'s JSON and `switch_tab`'s "Switched to tab N: TITLE (URL)" / "no tab found" listing alike. Separately, `navigate`'s capture-based response always printed an unconditional `Current URL: ...` line -- unlike the rest of that response, which already suppresses itself (`credentialSuppressed`) when the page it just landed on is marked or sensitive-URLed. A token or seed that only shows up IN the URL (a password-reset / magic-link flow) reached the agent through that one line regardless.
+
+### The fix
+
+A new `tabContentIsSensitive(tabIndex, url, type)` in `mcp/src/index.ts` checks, for a given tab (not just the active one): `sensitive-url.js`'s `urlLooksSensitive(url)` first (cheap, no CDP round trip), then -- for a `'page'`-type target only -- a live-DOM check via the now-exported `chromeLib.getPageSession(tabIndex)` and `secret-marker.js`'s `pageHasSecretMarker(ps)`, the exact same helper `eval`/`extract`/`attr` already use. `getPageSession` was internal to `chrome-ws-lib.js`; it is now re-exported from `rawSession` (not added to `PAGE_TARGET_SESSION_METHODS`, so the dialog-gate wrapping loop is unaffected) so this one new caller can resolve a page session for an arbitrary tab index, the same way `getPageUrl` already let `mcp/src/index.ts` check a tab's URL.
+
+`list_tabs` and `switch_tab` both match against a tab's REAL title/url (a worker still needs to pick a marked or sensitive-URL tab by substring, or by the index/id this change leaves untouched) and only redact what gets printed back: `list_tabs`'s JSON `title`/`url` fields, `switch_tab`'s success message, and the per-tab listing in its "no tab found" error. The replacement is `response-format.ts`'s new exported `REDACTED_LABEL` (`[redacted: secret page]`), shared with the `Current URL:` fix below rather than a second literal.
+
+`formatActionResponse`'s `Current URL:` line (used by click/select/eval/set_attr) and `navigate`'s own inline `Current URL:` line are both now gated the same way: `navigate` reuses `tabContentIsSensitive` directly against the tab it just landed on (run even while `capturePaused` -- a live marker-attribute read reveals nothing about page content, unlike a capture); `formatActionResponse` has no CDP access of its own, so it reuses the capture layer's already-computed `credentialSuppressed` flag (which already folds in a marker/credential-shape finding) together with a direct `urlLooksSensitive(actionResult.url)` check -- the latter closes a gap `credentialSuppressed` alone would miss: `navigation.js`'s catch branch (`capturePageArtifacts` threw, e.g. a screenshot failure) returns `{ frameId, url, error }` with no `credentialSuppressed` field at all. `navigate`'s own "Navigated to URL" line is deliberately left alone: it echoes `payload.url`, which the caller already supplied, not a new reveal.
+
+### Review follow-up (Reeve, real Chrome): fail CLOSED on a CDP error, not open
+
+`tabContentIsSensitive`'s `catch` on a `getPageSession`/`pageHasSecretMarker` error (a tab that closed between the caller's `getTabs()` snapshot and here, a CDP hiccup) originally returned `false` -- NOT sensitive, printing the real title/url. Reeve caught this testing #70 against real Chrome: a caller that can't confirm a tab is safe to show must not show it. The `catch` now returns `true` (treated as sensitive, same as a live marker finding) instead. The tab's index/id are untouched either way -- `list_tabs` keeps them unconditionally and `switch_tab` matches against the tab's REAL title/url, not this check -- so a tab this function can't vouch for still stays listed and selectable, just redacted.
+
+Split `tabContentIsSensitive` out of `mcp/src/index.ts` into its own injected-dependency module, `skills/browsing/lib/tab-sensitivity.js` (`attachTabSensitivity({ credentialCaptureAllowed, urlLooksSensitive, getPageSession, pageHasSecretMarker })`, mirroring `attachCapture`/`attachNavigation`'s own factory-style exports elsewhere in that directory), specifically so this fail-closed behavior is unit-testable with a stub instead of needing a real Chrome race to reproduce the error path.
+
+### Tests
+
+Written first and confirmed failing against an unmodified build (and again against just the production diff reverted, tests kept):
+
+- `test/response-format-url-redaction.test.mjs` (new, pure unit test, no Chrome): `formatActionResponse`'s `Current URL:` line redacts on `credentialSuppressed` alone (ordinary URL) and on `urlLooksSensitive(url)` alone (no `credentialSuppressed` field at all, the `navigation.js` catch-branch shape); unpaired/ordinary case still prints the real URL (sanity).
+- `test/credential-guard-mcp.test.mjs` (real Chrome, new suite, reuses the existing `MARKER_BODY_PAGE` fixture): `list_tabs` omits a marked tab's title/url (keeping its index/id) while still showing a second, unmarked control tab's; same for a known-sensitive `file://.../2fa_app/` URL; `switch_tab` to a marked tab reports it redacted by index; `switch_tab` to an unmarked tab is unaffected (sanity); `switch_tab`'s "no tab found" listing redacts the marked tab but still lists the unmarked one; `navigate`'s `Current URL:` line is suppressed on both a marked page and a known-sensitive URL, while "Navigated to" still echoes the requested URL.
+- `test/lib/tab-sensitivity.test.mjs` (new, pure unit test, no Chrome -- review follow-up): stubs `pageHasSecretMarker` and, separately, `getPageSession`, to throw, and asserts `tabContentIsSensitive` returns `true` (fails closed) in both cases; confirmed failing (returning `false`) against the pre-follow-up `catch { return false; }`, with everything else unchanged; sanity cases for a live marker finding, an ordinary page, `urlLooksSensitive` short-circuiting before any CDP call, a non-`'page'` target type, and `SUPERPOWERS_CHROME_ALLOW_CREDENTIAL_CAPTURE=1` disabling the fail-closed path too.
+
+Full suite (`npm test` = lint + bundle-freshness check + `node --test`), real Chrome: see the PR for the final count. `mcp/dist` rebuilt via `npm run build` and committed; lockfiles regenerated (`npm install --package-lock-only`) for the version bump only, no dependency changes. This repo has no CI configured (no `.github/workflows` directory) -- everything above is a local run.
+
 ## [Unreleased]
 
 ### Round 6 (jc, blocking -- element-scoped reads refused ordinary text everywhere; a fail-open depth bug; object keys unchecked)

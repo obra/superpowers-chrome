@@ -21286,6 +21286,7 @@ var capturePause = require2(join(__dirname, "../../skills/browsing/lib/capture-p
 function suppressedNoticeFor(reason) {
   return reason === "sensitive-url" ? sensitiveUrl.URL_SUPPRESSED_NOTICE : credentialGuard.CREDENTIAL_SUPPRESSED_NOTICE;
 }
+var REDACTED_LABEL = "[redacted: secret page]";
 function formatDialogRefusal(error2) {
   const lines = [error2.message || "Page is behind a dialog."];
   if (error2.artifacts?.markdown) {
@@ -21324,9 +21325,11 @@ Dialog is now open \u2014 page is waiting for user input.${suppressedNotice}
 
 ${dialogDesc}`;
   }
+  const currentUrlSuppressed = !credentialGuard.credentialCaptureAllowed() && (actionResult.credentialSuppressed || sensitiveUrl.urlLooksSensitive(actionResult.url));
+  const currentUrlLine = `Current URL: ${currentUrlSuppressed ? REDACTED_LABEL : actionResult.url || "unknown"}`;
   const response = actionResult.capturePaused ? [`${actionDescription}`, ...formatCaptureFiles(actionResult)] : [
     `${actionDescription}`,
-    `Current URL: ${actionResult.url || "unknown"}`,
+    currentUrlLine,
     `Size: ${actionResult.pageSize?.width}\xD7${actionResult.pageSize?.height}`,
     ...formatCaptureFiles(actionResult)
   ];
@@ -21407,6 +21410,12 @@ var secretMarker = require3(join2(__dirname2, "../../skills/browsing/lib/secret-
 var sensitiveUrl2 = require3(join2(__dirname2, "../../skills/browsing/lib/sensitive-url.js"));
 var capturePause2 = require3(join2(__dirname2, "../../skills/browsing/lib/capture-pause.js"));
 var SERVER_VERSION = require3(join2(__dirname2, "../package.json")).version;
+var { tabContentIsSensitive } = require3(join2(__dirname2, "../../skills/browsing/lib/tab-sensitivity.js")).attachTabSensitivity({
+  credentialCaptureAllowed: credentialGuard2.credentialCaptureAllowed,
+  urlLooksSensitive: sensitiveUrl2.urlLooksSensitive,
+  getPageSession: chromeLib.getPageSession,
+  pageHasSecretMarker: secretMarker.pageHasSecretMarker
+});
 function hasDisplay() {
   const platform = process.platform;
   if (platform === "darwin") {
@@ -21518,9 +21527,11 @@ async function executeBrowserAction(params) {
       }
       const navResult = await chromeLib.navigate(tabIndex, url, true);
       if (typeof navResult === "object" && navResult.url) {
-        const response = navResult.capturePaused ? [`Navigated to ${navResult.url}`, `Current URL: ${navResult.url}`, ...formatCaptureFiles(navResult)] : [
+        const navUrlSensitive = await tabContentIsSensitive(tabIndex, navResult.url, "page");
+        const currentUrlLine = `Current URL: ${navUrlSensitive ? REDACTED_LABEL : navResult.url}`;
+        const response = navResult.capturePaused ? [`Navigated to ${navResult.url}`, currentUrlLine, ...formatCaptureFiles(navResult)] : [
           `Navigated to ${navResult.url}`,
-          `Current URL: ${navResult.url}`,
+          currentUrlLine,
           `Size: ${navResult.pageSize?.width}\xD7${navResult.pageSize?.height}`,
           ...formatCaptureFiles(navResult)
         ];
@@ -21779,13 +21790,17 @@ async function executeBrowserAction(params) {
       return `Closed tab ${tabIndex}. Active tab is now ${activeTab}.`;
     case "list_tabs" /* LIST_TABS */: {
       const tabs = await chromeLib.getTabs();
-      return JSON.stringify(tabs.map((tab, idx) => ({
-        index: idx,
-        id: tab.id,
-        title: tab.title,
-        url: tab.url,
-        type: tab.type
-      })), null, 2);
+      const tabList = await Promise.all(tabs.map(async (tab, idx) => {
+        const sensitive = await tabContentIsSensitive(idx, tab.url, tab.type);
+        return {
+          index: idx,
+          id: tab.id,
+          title: sensitive ? REDACTED_LABEL : tab.title,
+          url: sensitive ? REDACTED_LABEL : tab.url,
+          type: tab.type
+        };
+      }));
+      return JSON.stringify(tabList, null, 2);
     }
     case "show_browser" /* SHOW_BROWSER */: {
       const showResult = await chromeLib.showBrowser();
@@ -22093,14 +22108,20 @@ async function executeBrowserAction(params) {
           if (found !== void 0) matchedIndex = found.index;
         }
       }
+      const describeTab = async (t) => {
+        const sensitive = await tabContentIsSensitive(t.index, t.url, t.type);
+        return sensitive ? `[${t.index}] ${REDACTED_LABEL}` : `[${t.index}] ${t.title} (${t.url})`;
+      };
       if (matchedIndex < 0 || matchedIndex >= tabList.length) {
+        const described = await Promise.all(tabList.map(describeTab));
         throw new Error(
-          `switch_tab: no tab found matching ${JSON.stringify(target)}. Available tabs: ${tabList.map((t) => `[${t.index}] ${t.title} (${t.url})`).join(", ")}`
+          `switch_tab: no tab found matching ${JSON.stringify(target)}. Available tabs: ${described.join(", ")}`
         );
       }
       activeTab = matchedIndex;
       const newActive = tabList[matchedIndex];
-      return `Switched to tab ${matchedIndex}: ${newActive.title} (${newActive.url})`;
+      const newActiveSensitive = await tabContentIsSensitive(matchedIndex, newActive.url, newActive.type);
+      return newActiveSensitive ? `Switched to tab ${matchedIndex}: ${REDACTED_LABEL}` : `Switched to tab ${matchedIndex}: ${newActive.title} (${newActive.url})`;
     }
     case "help" /* HELP */:
       return `# Chrome Browser Control
@@ -22392,6 +22413,7 @@ main().catch((error2) => {
 });
 export {
   PAYLOAD_SPECS,
+  REDACTED_LABEL,
   describeUnusableScrollPayload,
   formatActionResponse,
   formatCaptureFiles,

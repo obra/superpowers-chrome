@@ -380,6 +380,12 @@ function createSession({ host, port, _testFakes } = {}) {
     // Internal helpers (exported for testing)
     getElementSelector,
 
+    // Shared page-session resolver (PRI-3265: exposed so mcp/src/index.ts can
+    // run its own live-DOM marker check — secret-marker.js's
+    // pageHasSecretMarker(ps) — for a specific tab, outside of any capture
+    // path, the same way getPageUrl already lets it check a tab's URL).
+    getPageSession,
+
     // Core browser actions (click/fill now use CDP events by default for React compatibility)
     getTabs,
     newTab,
