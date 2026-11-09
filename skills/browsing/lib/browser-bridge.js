@@ -2,6 +2,7 @@
 
 const { createCdpRouter } = require('./cdp-router');
 const { attachPageSession, buildPageSessionFromAttached } = require('./page-session');
+const { hasExternalResumer } = require('./resume-gate');
 
 /**
  * attachBrowserBridge({browser, host, port, rewriteWsUrl}) — consumer-facing
@@ -76,10 +77,23 @@ async function attachBrowserBridge({ browser, host, port, rewriteWsUrl, autoAtta
       catch (e) { console.error('onPageSession hook threw:', e); }
     }
 
-    // Resume the paused target AFTER the hook so any shims (e.g. dialog) are
-    // installed before the page's scripts run.
-    try { await ps.send('Runtime.runIfWaitingForDebugger', {}); }
-    catch (e) { console.error('Runtime.runIfWaitingForDebugger failed:', e); }
+    // PRI-3710: this resume alone unblocks the target globally for every
+    // attached client (Target.setAutoAttach's waitForDebuggerOnStart pause
+    // is target-scoped, not session-scoped — confirmed against real
+    // Chrome). When a designated external resumer is configured (e.g.
+    // sen-core's credential-injection arm, also attached browser-wide for
+    // popup coverage, marking newly-opened popups with its data-sen-secret
+    // marker before resuming them itself — see lib/resume-gate.js), that
+    // resumer is the ONLY one allowed to resume an auto-attached target;
+    // this module must stay out of its way entirely rather than race or
+    // wait on it. With no external resumer configured — the common case,
+    // no such host attached at all — behavior is unchanged from before
+    // PRI-3710: resume immediately, every time, right after the hook so
+    // any shims (e.g. dialog) are installed before the page's scripts run.
+    if (!hasExternalResumer()) {
+      try { await ps.send('Runtime.runIfWaitingForDebugger', {}); }
+      catch (e) { console.error('Runtime.runIfWaitingForDebugger failed:', e); }
+    }
   });
 
   // Subscribe — replays existing targets as targetCreated events.
